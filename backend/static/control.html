@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Battle Control</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
+    h2 { margin-top: 0; font-size: 16px; letter-spacing: 0.02em; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    button.secondary { background: #334155; }
+    button.danger { background: #ef4444; }
+    input, select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; }
+    ul { list-style: none; padding: 0; margin: 0; max-height: 220px; overflow: auto; }
+    li { padding: 8px; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; }
+    .badge { padding: 4px 8px; border-radius: 6px; background: #1e293b; font-size: 12px; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; text-transform: uppercase; }
+    .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 6px 4px; border-bottom: 1px solid #1f2937; }
+    .overlay-toggle { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding: 6px 8px; background: #0b1222; border-radius: 6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>TikTok Battle Control</h1>
+      <div class="status"><span class="dot" id="wsDot"></span><span id="statusText">Connecting</span></div>
+    </div>
+    <div id="current"></div>
+  </header>
+  <main>
+    <section>
+      <h2>Battle</h2>
+      <div class="row">
+        <button onclick="startBattle()">Start Battle</button>
+        <button class="danger" onclick="endBattle()">End Battle</button>
+      </div>
+      <div class="row">
+        <button onclick="addScore('slot_one')">Slot One +1</button>
+        <button onclick="addScore('slot_two')">Slot Two +1</button>
+        <button class="secondary" onclick="refreshState()">Refresh</button>
+      </div>
+      <table>
+        <tr><td>Mode</td><td id="modeCell">-</td></tr>
+        <tr><td>Slot One</td><td id="slotOneCell">-</td></tr>
+        <tr><td>Slot Two</td><td id="slotTwoCell">-</td></tr>
+        <tr><td>Score</td><td id="scoreCell">0 - 0</td></tr>
+      </table>
+      <div class="row">
+        <button class="secondary" onclick="pullFromStudio()">Sync from TikTok Studio</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Overlays</h2>
+      <div id="overlays"></div>
+    </section>
+
+    <section>
+      <h2>Virtual Cam Preview</h2>
+      <div class="row">
+        <select id="cameraSelect" style="flex:1;"></select>
+        <button class="secondary" onclick="refreshCameras()">Refresh Cameras</button>
+      </div>
+      <div class="row">
+        <button class="secondary" onclick="startPreview()">Start Preview</button>
+      </div>
+      <video id="preview" width="100%" autoplay playsinline style="background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
+    </section>
+  </main>
+
+  <script>
+    const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
+    let state = {};
+
+    function renderState() {
+      document.getElementById("modeCell").textContent = state.battle_mode || "-";
+      document.getElementById("slotOneCell").textContent = state.slot_one || "-";
+      document.getElementById("slotTwoCell").textContent = state.slot_two || "-";
+      document.getElementById("scoreCell").textContent = `${state.scores?.slot_one||0} - ${state.scores?.slot_two||0}`;
+      renderOverlays();
+    }
+
+    function renderOverlays() {
+      const wrap = document.getElementById("overlays");
+      wrap.innerHTML = "";
+      const overlays = state.overlay_states || {};
+      Object.keys(overlays).forEach(name => {
+        const row = document.createElement("div");
+        row.className = "overlay-toggle";
+        row.innerHTML = `<span>${name}</span>`;
+        const btn = document.createElement("button");
+        btn.textContent = overlays[name] ? "Hide" : "Show";
+        btn.onclick = () => toggleOverlay(name, !overlays[name]);
+        row.appendChild(btn);
+        wrap.appendChild(row);
+      });
+    }
+
+    function refreshState() {
+      api("/state").then(r => r.json()).then(s => { state = s; renderState(); });
+    }
+
+    function startBattle() { api("/battle/start", {method:"POST", body:{}}).then(refreshState); }
+    function endBattle() { api("/battle/end", {method:"POST"}).then(refreshState); }
+    function addScore(slot) { api(`/score/${slot}/add`, {method:"POST", body:{amount:1}}).then(refreshState); }
+    function pullFromStudio() {
+      // External automation should POST to /battle/slots/import; this button just refreshes state.
+      refreshState();
+    }
+    function toggleOverlay(name, show) { api(`/overlay/${name}/${show?"show":"hide"}`, {method:"POST"}).then(refreshState); }
+
+    async function refreshCameras() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        // Only list physical/non-virtual cams for feeding into the virtual cam
+        const cams = devices.filter(d => d.kind === "videoinput" && !/virtual/i.test(d.label || ""));
+        const select = document.getElementById("cameraSelect");
+        select.innerHTML = "";
+        cams.forEach((cam, idx) => {
+          const opt = document.createElement("option");
+          opt.value = cam.deviceId || "";
+          opt.dataset.idx = idx;
+          opt.dataset.label = cam.label || `Camera ${idx}`;
+          opt.textContent = cam.label || `Camera ${idx}`;
+          select.appendChild(opt);
+        });
+        if (!select.value && cams[0]) select.value = cams[0].deviceId;
+      } catch (e) {
+        console.warn("Camera enumeration failed", e);
+      }
+    }
+
+    async function startPreview() {
+      const video = document.getElementById("preview");
+      if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
+      try {
+        await applyCamera();
+        // Always preview the virtual camera; fall back to first device
+        const refreshed = await navigator.mediaDevices.enumerateDevices();
+        const vcams = refreshed.filter(d => d.kind === "videoinput");
+        const virtualTarget = vcams.find(c => /virtual/i.test(c.label || "")) || vcams[0];
+        if (!virtualTarget) return alert("No camera found");
+        const constraints = virtualTarget.deviceId ? { deviceId: { exact: virtualTarget.deviceId } } : true;
+        const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+        video.srcObject = stream;
+        await video.play();
+      } catch (err) {
+        alert("Camera access denied or unavailable: " + err);
+      }
+    }
+
+    function applyCamera() {
+      const select = document.getElementById("cameraSelect");
+      const idx = Number(select.selectedOptions[0]?.dataset.idx ?? 0);
+      const label = select.selectedOptions[0]?.dataset.label || "";
+      return api("/camera/select", {method:"POST", body:{index: idx, label}}).then(()=>refreshState());
+    }
+
+    // Initial camera list load
+    refreshCameras();
+
+    // WebSocket live updates
+    const ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
+    ws.onopen = () => { document.getElementById("wsDot").style.background = "#22c55e"; document.getElementById("statusText").textContent = "Live"; };
+    ws.onclose = () => { document.getElementById("wsDot").style.background = "#ef4444"; document.getElementById("statusText").textContent = "Disconnected"; setTimeout(()=>location.reload(), 2000); };
+    ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
+
+    refreshState();
+  </script>
+</body>
+</html>

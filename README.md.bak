@@ -1,0 +1,116 @@
+# TikTok LIVE Battle Control Stack
+
+Windows-first control stack for automated TikTok LIVE battles. FastAPI backend orchestrates OBS (scenes/overlays/scoreboard), broadcasts realtime state to overlays via WebSockets, exposes a control panel, and listens to TikTok LIVE events through the unofficial `tiktoklive` library. All visuals live in OBS (browser sources + text sources). Slots are neutral (`slot_one` / `slot_two`); no left/right or manual participant entry in the UI.
+
+## Repository Layout
+
+- `backend/` – FastAPI app, OBS controller, state manager, static overlay/control UI.
+- `backend/static/overlay.html` – Browser-source overlay for OBS (connects to `/ws/state`, includes a dotted black vertical center line).
+- `backend/static/control.html` – Web control panel at `/battle/control` (start/end battle, score bumps, overlay toggles, read slot names).
+- `scripts/tiktok_listener.py` – TikTok LIVE automation listener.
+- `requirements.txt` – Python dependencies.
+
+## Quick Start (Windows)
+
+```powershell
+cd C:\Users\kylep\OneDrive\Desktop\newstarhost
+python -m venv .venv
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass  # if activation is blocked
+.\.venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Configure OBS websocket: Tools → WebSocket Server Settings → Enable, port `4455`, password `changeme` (or your choice).
+
+Run backend:
+```powershell
+& .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+Open control panel: `http://localhost:8000/battle/control`  
+Add OBS Browser Source: `http://localhost:8000/overlay` (1920x1080, local file disabled).  
+Run TikTok listener:
+```powershell
+$env:TIKTOK_USERNAME="zerokomodo"
+$env:BATTLE_API="http://127.0.0.1:8000"
+$env:SLOT_ONE_NAME="Performer One"   # optional default
+$env:SLOT_TWO_NAME="Performer Two"   # optional default
+python scripts/tiktok_listener.py
+```
+
+## Backend (FastAPI)
+
+Endpoints:
+- `POST /battle/start` – start battle (`{"mode":"rapid"}` optional).
+- `POST /battle/end`
+- `POST /battle/slot/{slot_one|slot_two}` – set a single slot (payload uses `slot_one`/`slot_two` keys).
+- `POST /battle/slots/import` – set both slots (`{"slot_one":"A","slot_two":"B"}`), intended for TikTok Studio automation when “Start now” is pressed.
+- `POST /overlay/{name}/show|hide` – toggle OBS overlay sources.
+- `POST /score/{slot_one|slot_two}/add` – increment score (`{"amount":1}`).
+- `GET /state` – current state.
+- `GET /battle/control` – control UI.
+- `GET /overlay` – OBS overlay HTML.
+- `WS /ws/state` – realtime state feed (overlays & control UI subscribe).
+
+Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`, `SCENE_BATTLE`, `TEXT_SOURCE_SLOT_ONE_NAME`, `OVERLAY_SOURCES`, etc.
+
+## OBS Setup
+
+- Scenes: `MainScene`, `BattleScene` (override via env).
+- `BattleScene` sources:
+  - Text: `SlotOneName`, `SlotTwoName`, `SlotOneScore`, `SlotTwoScore`.
+  - Browser source: `http://localhost:8000/overlay` (includes dotted black vertical line).
+  - Optional overlays matching `OVERLAY_SOURCES` (default: `BattleLowerThird`, `BurstOverlay`, `CenterDottedLine`).
+- Start OBS Virtual Camera. In TikTok LIVE Studio, select OBS Virtual Camera for video and routed audio input (VB-Cable or VoiceMeeter).
+
+## Control Panel
+
+- Start/End battle.
+- Increment scores per slot.
+- Toggle overlays.
+- Read-only slot names (populated by automation hook; hit Refresh/Sync to pull current state).
+
+## OBS Overlay (browser)
+
+`backend/static/overlay.html`:
+- Subscribes to `/ws/state`.
+- Displays slot_one/slot_two names, scores, battle mode, and status.
+- Renders a dotted black vertical line at mid-screen for framing.
+- Falls back to `/state` fetch on load.
+
+## TikTok LIVE Listener
+
+`scripts/tiktok_listener.py` (async):
+- Connects via `tiktoklive` to `TIKTOK_USERNAME`.
+- Logs raw events to `tiktok_events.log`.
+- Commands: `!battle` starts, `!end` stops, `!slots A|B` sets slot_one/slot_two (fallback to env defaults).
+- Heuristics: “battle” keywords or gifts labeled “battle” start; “end battle”/“gg”/whistle gifts end (cooldown 30s).
+- Calls backend: `/battle/start`, `/battle/end`, `/battle/slots/import`.
+
+## Audio Routing (Windows)
+
+Simple (VB-Audio Virtual Cable):
+1) Install VB-Cable.  
+2) Windows Sound > Recording: set “CABLE Output” as needed.  
+3) OBS: Monitoring Device = “CABLE Input”; monitor sources you want.  
+4) TikTok LIVE Studio: Mic = “CABLE Output”. Avoid duplicating desktop audio.
+
+Pro (VoiceMeeter Banana):
+1) Install VoiceMeeter Banana + VB-Cables.  
+2) Route mic to Bus B1 (stream), headphones to A1; route system audio to B1 as desired.  
+3) OBS: Monitoring Device = “VoiceMeeter VAIO” (or B1); monitor desired sources.  
+4) TikTok LIVE Studio: Mic = “VoiceMeeter Output (VB-Audio VoiceMeeter VAIO)”; mute duplicate feeds.
+
+## Optional Automation Hooks
+
+- AutoHotkey / pywinauto / pyautogui can be used to detect the “Set up 1 vs 1 performance” → “Start now” action in TikTok LIVE Studio, then POST to `/battle/slots/import` with detected names.
+- The listener also exposes `!slots A|B` chat command as a lightweight hook for slot assignment.
+
+## Running Everything
+
+1) Start OBS (websocket enabled, virtual camera on, sources named).  
+2) Run FastAPI backend.  
+3) Add OBS Browser Source to `http://localhost:8000/overlay`.  
+4) Open `http://localhost:8000/battle/control` to operate manually (scores/overlays).  
+5) Run `python scripts/tiktok_listener.py` for automation.  
+6) In TikTok LIVE Studio, choose OBS Virtual Camera + routed audio.  
