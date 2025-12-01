@@ -38,19 +38,31 @@
     <section>
       <h2>Battle</h2>
       <div class="row">
-        <button onclick="startBattle()">Start Battle</button>
-        <button class="danger" onclick="endBattle()">End Battle</button>
+        <button class="secondary" onclick="startRoutine()">Simulate 2m Battle Routine</button>
+        <button class="danger" onclick="cancelRoutine()">Cancel Routine</button>
       </div>
       <div class="row">
-        <button onclick="addScore('slot_one')">Slot One +1</button>
-        <button onclick="addScore('slot_two')">Slot Two +1</button>
-        <button class="secondary" onclick="refreshState()">Refresh</button>
+        <span>Timer: <strong id="timerDisplay">-</strong></span>
       </div>
+      <div class="row">
+        <label style="display:flex;gap:6px;align-items:center; width:100%;">
+          <span style="white-space:nowrap;">Last winner:</span>
+          <select id="winnerSelect" style="flex:1;" onchange="saveWinnerSelect()"></select>
+        </label>
+      </div>
+      <div class="row">
+        <label style="display:flex;gap:6px;align-items:center; width:100%;">
+          <span style="white-space:nowrap;">Current group:</span>
+          <select id="groupSelect" style="flex:1;" onchange="saveGroupSelect()"></select>
+        </label>
+      </div>
+      <div class="row" id="enabledDancers"></div>
+      <div class="row" id="winsEditor" style="flex-wrap:wrap; gap:8px;"></div>
       <table>
         <tr><td>Mode</td><td id="modeCell">-</td></tr>
         <tr><td>Slot One</td><td id="slotOneCell">-</td></tr>
         <tr><td>Slot Two</td><td id="slotTwoCell">-</td></tr>
-        <tr><td>Score</td><td id="scoreCell">0 - 0</td></tr>
+        <tr><td>Points</td><td id="scoreCell">0 - 0</td></tr>
       </table>
       <div class="row">
         <button class="secondary" onclick="pullFromStudio()">Sync from TikTok Studio</button>
@@ -60,6 +72,36 @@
     <section>
       <h2>Overlays</h2>
       <div id="overlays"></div>
+    </section>
+
+    <section>
+      <h2>Music Control</h2>
+      <div class="row">
+        <button class="secondary" id="tabGroup" onclick="selectTab('group')">Group</button>
+        <button class="secondary" id="tabOne" onclick="selectTab('slot_one')">Dancer 1</button>
+        <button class="secondary" id="tabTwo" onclick="selectTab('slot_two')">Dancer 2</button>
+      </div>
+      <div class="row">
+        <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
+        <datalist id="songSuggestions"></datalist>
+      </div>
+      <div class="row">
+        <select id="songSelect" style="flex:1;"></select>
+        <button onclick="playSong()">Play Song</button>
+      </div>
+      <div class="row" style="align-items:center;">
+        <label style="display:flex;gap:6px;align-items:center;">
+          <input type="checkbox" id="fadeToggle" checked> Fade in 0.5s
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;">
+          <input type="checkbox" id="fadeOutToggle" checked> Fade out 0.5s
+        </label>
+      </div>
+      <div class="row">
+        <span>Current song: <span id="currentSongLabel">-</span></span>
+      </div>
+      <audio id="player" preload="auto" controls style="width:100%;" loop></audio>
+      <audio id="applause" preload="auto" src="https://actions.google.com/sounds/v1/crowds/applause_small_group.ogg"></audio>
     </section>
 
     <section>
@@ -78,19 +120,34 @@
   <script>
     const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
     let state = {};
+    let currentTab = "group";
+    let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null };
+    let timerInterval = null;
+    const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
+    const CENTER_LINE = "CenterDottedLine";
 
     function renderState() {
       document.getElementById("modeCell").textContent = state.battle_mode || "-";
       document.getElementById("slotOneCell").textContent = state.slot_one || "-";
       document.getElementById("slotTwoCell").textContent = state.slot_two || "-";
       document.getElementById("scoreCell").textContent = `${state.scores?.slot_one||0} - ${state.scores?.slot_two||0}`;
+      renderWinnerSelect();
+      renderGroupSelect();
+      renderEnabledDancers();
+      renderWinsEditor();
       renderOverlays();
+      renderSongs();
+      renderTimer();
     }
 
     function renderOverlays() {
       const wrap = document.getElementById("overlays");
       wrap.innerHTML = "";
       const overlays = state.overlay_states || {};
+      if (!routine.active && overlays[CENTER_LINE]) {
+        setCenterLine(false);
+        overlays[CENTER_LINE] = false;
+      }
       Object.keys(overlays).forEach(name => {
         const row = document.createElement("div");
         row.className = "overlay-toggle";
@@ -103,18 +160,602 @@
       });
     }
 
-    function refreshState() {
-      api("/state").then(r => r.json()).then(s => { state = s; renderState(); });
+    function renderWinnerSelect() {
+      const sel = document.getElementById("winnerSelect");
+      if (!sel) return;
+      sel.innerHTML = "";
+      const current = (state.last_winner || "").toLowerCase();
+      const opts = [];
+      const enabled = state.enabled_dancers || [];
+      const enabledSet = new Set(enabled.map(x=>x.toLowerCase()));
+      (state.dancers || []).forEach(d => {
+        const name = d.name || "";
+        if (!name) return;
+        if (enabled.length && !enabledSet.has(name.toLowerCase())) return;
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        if (name.toLowerCase() === current) opt.selected = true;
+        opts.push(opt);
+      });
+      // add empty option
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "(none)";
+      sel.appendChild(empty);
+      opts.forEach(o => sel.appendChild(o));
+      if (current && !sel.value) sel.value = current;
     }
 
-    function startBattle() { api("/battle/start", {method:"POST", body:{}}).then(refreshState); }
-    function endBattle() { api("/battle/end", {method:"POST"}).then(refreshState); }
+    function renderGroupSelect() {
+      const sel = document.getElementById("groupSelect");
+      if (!sel) return;
+      sel.innerHTML = "";
+      const current = (state.group_name || "").toLowerCase();
+      const opts = [];
+      const enabled = state.enabled_dancers || [];
+      const enabledSet = new Set(enabled.map(x=>x.toLowerCase()));
+      (state.dancers || []).forEach(d => {
+        const name = d.name || "";
+        if (!name) return;
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        if (name.toLowerCase() === current) opt.selected = true;
+        opts.push(opt);
+      });
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "(none)";
+      sel.appendChild(empty);
+      opts.forEach(o => sel.appendChild(o));
+      if (current && !sel.value) sel.value = current;
+    }
+
+    function renderEnabledDancers() {
+      const container = document.getElementById("enabledDancers");
+      if (!container) return;
+      container.innerHTML = "";
+      const enabled = new Set((state.enabled_dancers || []).map(x => (x||"").toLowerCase()));
+      (state.dancers || []).forEach(d => {
+        const name = d.name || "";
+        if (!name) return;
+        const wrap = document.createElement("label");
+        wrap.style.display = "flex";
+        wrap.style.alignItems = "center";
+        wrap.style.gap = "6px";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = enabled.has(name.toLowerCase());
+        cb.onchange = () => toggleEnabledDancer(name, cb.checked);
+        const span = document.createElement("span");
+        span.textContent = name;
+        wrap.appendChild(cb);
+        wrap.appendChild(span);
+        container.appendChild(wrap);
+      });
+    }
+
+    function renderWinsEditor() {
+      const container = document.getElementById("winsEditor");
+      if (!container) return;
+      container.innerHTML = "";
+      const wins = state.win_counts || {};
+      const enabled = new Set((state.enabled_dancers || []).map(x => (x||"").toLowerCase()));
+      (state.dancers || []).forEach(d => {
+        const name = d.name || "";
+        if (!name) return;
+        if (enabled.size && !enabled.has(name.toLowerCase())) return;
+        const wrap = document.createElement("div");
+        wrap.style.display = "flex";
+        wrap.style.alignItems = "center";
+        wrap.style.gap = "4px";
+        const label = document.createElement("span");
+        label.textContent = name;
+        const input = document.createElement("input");
+        input.type = "number";
+        input.min = "0";
+        input.value = wins[name] || 0;
+        input.style.width = "70px";
+        const btn = document.createElement("button");
+        btn.textContent = "Save";
+        btn.onclick = () => {
+          const val = parseInt(input.value, 10);
+          api("/battle/win", {method:"POST", body:{name, wins: isNaN(val)?0:val}}).then(refreshState);
+        };
+        wrap.appendChild(label);
+        wrap.appendChild(input);
+        wrap.appendChild(btn);
+        container.appendChild(wrap);
+      });
+    }
+
+    function refreshState() {
+      api("/state").then(r => r.json()).then(s => { state = s; renderState(); renderGroupSelect(); renderWinnerSelect(); });
+    }
+
+    function startBattle() {
+      routine.active = false;
+      clearRoutineTimers();
+      setCenterLine(false);
+      api("/battle/start", {method:"POST", body:{}}).then(refreshState);
+    }
+    function endBattle() {
+      routine.active = false;
+      clearRoutineTimers();
+      api("/battle/end", {method:"POST"}).then(refreshState);
+    }
     function addScore(slot) { api(`/score/${slot}/add`, {method:"POST", body:{amount:1}}).then(refreshState); }
     function pullFromStudio() {
       // External automation should POST to /battle/slots/import; this button just refreshes state.
       refreshState();
     }
     function toggleOverlay(name, show) { api(`/overlay/${name}/${show?"show":"hide"}`, {method:"POST"}).then(refreshState); }
+
+    function selectTab(tab) {
+      currentTab = tab;
+      ["tabGroup","tabOne","tabTwo"].forEach(id=>{
+        const el = document.getElementById(id);
+        if (!el) return;
+        const isActive = (id==="tabGroup" && tab==="group") || (id==="tabOne" && tab==="slot_one") || (id==="tabTwo" && tab==="slot_two");
+        el.className = isActive ? "secondary active" : "secondary";
+      });
+      renderSongs();
+    }
+
+    function renderSongs() {
+      const songs = state.songs || {};
+      const lib = songs.library || {};
+      const currentUrl = songs.current || "";
+      const backgroundUrl = songs.background || "";
+      const filter = (document.getElementById("songFilter").value || "").toLowerCase();
+      const tabFilter = currentTab === "slot_one" ? (state.slot_one || "").toLowerCase()
+                     : currentTab === "slot_two" ? (state.slot_two || "").toLowerCase()
+                     : currentTab === "group" ? (state.group_name || "").toLowerCase()
+                     : "";
+      const datalist = document.getElementById("songSuggestions");
+      datalist.innerHTML = "";
+      let currentName = "-";
+      const tryResolve = (url) => {
+        let name = "-";
+        Object.values(lib).forEach(item => {
+          if (item.url === url) {
+            name = item.name || url;
+          }
+        });
+        if (name === "-" && url && url === backgroundUrl) {
+          name = "Background";
+        }
+        if (name === "-" && url) name = url;
+        return name;
+      };
+      if (currentUrl) {
+        currentName = tryResolve(currentUrl);
+      } else if (backgroundUrl) {
+        currentName = tryResolve(backgroundUrl);
+      }
+      document.getElementById("currentSongLabel").textContent = currentName;
+      const select = document.getElementById("songSelect");
+      select.innerHTML = "";
+      Object.keys(lib).forEach(key => {
+        const opt = document.createElement("option");
+        opt.value = lib[key].url;
+        let label = lib[key].name || key;
+        const fronts = (lib[key].front_dancers || []).join(", ");
+        if (fronts) {
+          label += ` (Front: ${fronts})`;
+        }
+        opt.textContent = label;
+        const dancerMatch = tabFilter
+          ? (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
+          : true;
+        const matches = (!filter || label.toLowerCase().includes(filter)) && dancerMatch;
+        if (matches) {
+          select.appendChild(opt);
+        }
+        if (matches) {
+          const dOpt = document.createElement("option");
+          dOpt.value = label;
+          datalist.appendChild(dOpt);
+        }
+      });
+      if (!select.value && select.options.length) select.selectedIndex = 0;
+      select.onchange = () => playSong(true);
+    }
+
+    function filterSelected() {
+      const filterVal = document.getElementById("songFilter").value.toLowerCase();
+      const select = document.getElementById("songSelect");
+      for (let i = 0; i < select.options.length; i++) {
+        if (select.options[i].textContent.toLowerCase() === filterVal) {
+          select.selectedIndex = i;
+          playSong(true);
+          break;
+        }
+      }
+    }
+
+    function refreshSongs() {
+      api("/songs").then(r => r.json()).then(s => {
+        if (!state.songs) state.songs = {};
+        state.songs.library = s.library || {};
+        state.songs.background = s.background || state.songs.background;
+        state.songs.current = state.songs.current || s.current || "";
+        renderSongs();
+        ensureBackground();
+      });
+    }
+
+    async function playSong(fromSelect=false) {
+      const select = document.getElementById("songSelect");
+      const url = select.value;
+      if (!url) {
+        if (fromSelect) return;
+        return alert("Enter a song URL");
+      }
+      // cancel routine if user manually picks music
+      cancelRoutine();
+      await api("/songs/play", {method:"POST", body:{target: currentTab, url}});
+      const songs = state.songs || {};
+      songs.current = url;
+      songs[currentTab] = url;
+      state.songs = songs;
+      // play selected -> applause -> background
+      startAudio(url, {loop:false, onEnd: () => {
+        playSequence(["applause"], false, () => {
+          const bg = state.songs?.background;
+          if (bg) startAudio(bg, {loop:true});
+        });
+      }});
+      refreshState();
+    }
+
+    function startAudio(url, opts={}) {
+      const player = document.getElementById("player");
+      const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
+      const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
+      const doPlay = () => {
+        player.loop = !!opts.loop;
+        player.onended = () => {
+          if (typeof opts.onEnd === "function") {
+            opts.onEnd();
+            return;
+          }
+          const bg = state.songs?.background;
+          if (bg) {
+            startAudio(bg, {loop:true});
+          }
+        };
+        player.src = url;
+        if (fadeIn) {
+          let vol = 0.0;
+          player.volume = 0;
+          player.play();
+          const steps = 10;
+          const stepMs = 50;
+          const inc = 1/steps;
+          let count = 0;
+          const intv = setInterval(()=>{
+            count += 1;
+            vol = Math.min(1, vol + inc);
+            player.volume = vol;
+            if (count >= steps) clearInterval(intv);
+          }, stepMs);
+        } else {
+          player.volume = 1;
+          player.play();
+        }
+      };
+      if (fadeOut && !player.paused && player.src) {
+        let vol = player.volume;
+        const steps = 10;
+        const stepMs = 50;
+        const dec = vol/steps;
+        let count = 0;
+        const outv = setInterval(()=>{
+          count += 1;
+          vol = Math.max(0, vol - dec);
+          player.volume = vol;
+          if (count >= steps) {
+            clearInterval(outv);
+            player.pause();
+            doPlay();
+          }
+        }, stepMs);
+      } else {
+        doPlay();
+      }
+    }
+
+    function getRoleUrl(role) {
+      const lib = state.songs?.library || {};
+      for (const key of Object.keys(lib)) {
+        const roles = lib[key].roles || [];
+        if (roles.includes(role)) return lib[key].url;
+      }
+      return null;
+    }
+
+    function ensureBackground() {
+      const lib = state.songs?.library || {};
+      const bgExplicit = state.songs?.background;
+      let bg = bgExplicit;
+      if (!bg) {
+        bg = getRoleUrl("background");
+        if (bg) {
+          api("/songs/play", {method:"POST", body:{target:"background", url:bg}});
+          state.songs = state.songs || {};
+          state.songs.background = bg;
+          state.songs.current = state.songs.current || bg;
+        }
+      }
+      if (bg) {
+        startAudio(bg, {loop:true});
+      }
+    }
+
+    function pickRandom(arr) {
+      if (!arr?.length) return null;
+      return arr[Math.floor(Math.random() * arr.length)];
+    }
+
+    function tickPoints() {
+      if (!routine.active || !routine.startTime || !routine.endTime) return;
+      const now = Date.now();
+      const remaining = routine.endTime - now;
+      if (remaining <= 0) {
+        stopPointsInterval();
+        return;
+      }
+      const total = routine.endTime - routine.startTime;
+      const progress = Math.max(0, Math.min(1, 1 - remaining / total));
+      const mean = (1 + progress * 4) * 10; // ramped up and multiplied
+      const amount = Math.max(1, Math.round(Math.random() * mean) + 1);
+      const slot = Math.random() < 0.5 ? "slot_one" : "slot_two";
+      api(`/score/${slot}/add`, {method:"POST", body:{amount}}).then(refreshState);
+    }
+
+    function getEnabledDancers() {
+      const enabled = state.enabled_dancers || [];
+      const set = new Set((enabled || []).map(x => (x || "").toLowerCase()));
+      const pool = state.dancers || [];
+      if (!enabled.length) return pool;
+      return pool.filter(d => set.has((d.name || "").toLowerCase()));
+    }
+
+    function chooseTwoDancers() {
+      const dancers = getEnabledDancers();
+      if (dancers.length < 2) return ["Dancer A", "Dancer B"];
+      const last = (state.last_winner || "").toLowerCase();
+      const match = dancers.find(d => (d.name||"").toLowerCase() === last);
+      const others = dancers.filter(d => d !== match);
+      const pickOther = others.length ? others[Math.floor(Math.random()*others.length)] : null;
+      if (match && pickOther) {
+        return [match.name || "Dancer A", pickOther.name || "Dancer B"];
+      }
+      const shuffled = [...dancers].sort(()=>Math.random()-0.5);
+      return [shuffled[0].name || "Dancer A", shuffled[1].name || "Dancer B"];
+    }
+
+    function songsForDancer(name) {
+      const lib = state.songs?.library || {};
+      const target = (name||"").toLowerCase();
+      return Object.values(lib).filter(s => {
+        const dancers = (s.dancers||[]).map(x=>x.toLowerCase());
+        const knows = (s.knows_song||[]).map(x=>x.toLowerCase());
+        return dancers.includes(target) || knows.includes(target);
+      });
+    }
+
+    function nextSongFor(dancerA, dancerB, excludeUrl=null) {
+      const pool = [...songsForDancer(dancerA), ...songsForDancer(dancerB)].filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+      const filtered = pool.filter(s => s.url !== excludeUrl);
+      const chosen = pickRandom(filtered.length ? filtered : pool);
+      return chosen ? chosen.url : null;
+    }
+
+    function clearRoutineTimers() {
+      routine.timers.forEach(t=>clearTimeout(t));
+      routine.timers = [];
+    }
+
+    function stopTimerInterval() {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+      }
+    }
+
+    function startPointsInterval() {
+      stopPointsInterval();
+      routine.pointsInterval = setInterval(tickPoints, 1000);
+    }
+
+    function stopPointsInterval() {
+      if (routine.pointsInterval) {
+        clearInterval(routine.pointsInterval);
+        routine.pointsInterval = null;
+      }
+    }
+
+    function startRoutine() {
+      clearRoutineTimers();
+      routine.active = true;
+      routine.startTime = Date.now();
+      routine.endTime = routine.startTime + 120000; // 2 minutes
+      routine.dancers = chooseTwoDancers();
+      routine.firstSongPlayed = false;
+      routine.warned = false;
+      startPointsInterval();
+      setCenterLine(true);
+      api("/battle/start", {method:"POST", body:{}}).then(()=> {
+        api("/battle/slot/slot_one", {method:"POST", body:{slot_one: routine.dancers[0], slot_two: routine.dancers[1]}}).catch(()=>{});
+        api("/battle/slot/slot_two", {method:"POST", body:{slot_one: routine.dancers[0], slot_two: routine.dancers[1]}}).catch(()=>{});
+        saveWinnerValue(routine.dancers[0]); // pre-fill last winner with first dancer for convenience
+      });
+      playRoutineSong(null);
+      renderTimer(true);
+      renderWinnerSelect();
+    }
+
+    function cancelRoutine() {
+      routine.active = false;
+      routine.warned = false;
+      clearRoutineTimers();
+      stopPointsInterval();
+      const player = document.getElementById("player");
+      try { player.pause(); } catch(e){}
+      ensureBackground();
+      stopTimerInterval();
+      setCenterLine(false);
+      renderTimer(true);
+    }
+
+    function playRoutineSong(lastUrl) {
+      if (!routine.active) return;
+      const now = Date.now();
+      const remaining = routine.endTime - now;
+      if (remaining <= 0) {
+        playSequence(["applause","win"], true);
+        routine.active = false;
+        stopPointsInterval();
+        evaluateWinner();
+        return;
+      }
+      if (remaining <= 30000) {
+        // stop current audio
+        const player = document.getElementById("player");
+        try { player.pause(); } catch(e){}
+        setCenterLine(false);
+        playSequence(["applause","attention"], false, () => {
+          const wait = Math.max(0, routine.endTime - Date.now());
+          const t = setTimeout(() => playRoutineSong(null), wait);
+          routine.timers.push(t);
+        });
+        return;
+      }
+      const url = nextSongFor(routine.dancers[0], routine.dancers[1], lastUrl) || getRoleUrl("background");
+      if (!url) { ensureBackground(); return; }
+      const afterDoorbell = () => {
+        api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
+        if (!state.songs) state.songs = {};
+        state.songs.current = url;
+        startAudio(url, {loop:false, onEnd: () => {
+          playSequence(["applause","bell"], false, () => playRoutineSong(url));
+        }});
+      };
+      if (!routine.firstSongPlayed) {
+        routine.firstSongPlayed = true;
+        playSequence(["bell"], false, afterDoorbell);
+      } else {
+        afterDoorbell();
+      }
+    }
+
+    function playSequence(roleNames, loopLast=false, onDone=null) {
+      const [first, ...rest] = roleNames;
+      const url = getRoleUrl(first);
+      if (!url) { if (rest.length) return playSequence(rest, loopLast, onDone); if (onDone) onDone(); return; }
+      startAudio(url, {loop: loopLast && rest.length===0, onEnd: () => {
+        if (!rest.length) { if (onDone) onDone(); return; }
+        playSequence(rest, loopLast, onDone);
+      }});
+    }
+
+    function setCenterLine(show) {
+      api(`/overlay/${CENTER_LINE}/${show ? "show" : "hide"}`, {method:"POST"}).catch(()=>{});
+      if (state.overlay_states) state.overlay_states[CENTER_LINE] = show;
+    }
+
+    function saveWinnerValue(name) {
+      api("/battle/winner", {method:"POST", body:{name}});
+      const sel = document.getElementById("winnerSelect");
+      if (sel) sel.value = name;
+    }
+
+    function saveWinnerSelect() {
+      const sel = document.getElementById("winnerSelect");
+      if (!sel) return;
+      saveWinnerValue(sel.value);
+    }
+
+    function saveGroupValue(name) {
+      api("/battle/group", {method:"POST", body:{name}});
+      const sel = document.getElementById("groupSelect");
+      if (sel) sel.value = name;
+    }
+
+    function saveGroupSelect() {
+      const sel = document.getElementById("groupSelect");
+      if (!sel) return;
+      saveGroupValue(sel.value);
+      renderSongs();
+    }
+
+    function toggleEnabledDancer(name, enabled) {
+      const list = new Set(state.enabled_dancers || []);
+      if (enabled) list.add(name); else list.delete(name);
+      const arr = Array.from(list);
+      api("/dancers/enabled", {method:"POST", body:{names: arr}});
+      state.enabled_dancers = arr;
+      renderWinnerSelect();
+      renderGroupSelect();
+      renderSongs();
+    }
+
+    function evaluateWinner() {
+      const scores = state.scores || {slot_one:0, slot_two:0};
+      const a = scores.slot_one || 0;
+      const b = scores.slot_two || 0;
+      if (a === b) return;
+      const winnerName = a > b ? (state.slot_one || "") : (state.slot_two || "");
+      const target = winnerName || (a > b ? "slot_one" : "slot_two");
+      api("/battle/win", {method:"POST", body:{name: target}});
+      if (winnerName) saveWinnerValue(winnerName);
+      refreshState();
+    }
+
+    function renderTimer(force=false) {
+      const el = document.getElementById("timerDisplay");
+      if (!el) return;
+      const update = () => {
+        if (!routine.active || !routine.endTime) {
+          el.textContent = "-";
+          el.style.color = "#e2e8f0";
+          stopTimerInterval();
+          return;
+        }
+        const remaining = Math.max(0, Math.ceil((routine.endTime - Date.now()) / 1000));
+        const mins = String(Math.floor(remaining / 60)).padStart(2,"0");
+        const secs = String(remaining % 60).padStart(2,"0");
+        el.textContent = `${mins}:${secs}`;
+        el.style.color = remaining <= 30 ? "#ef4444" : "#e2e8f0";
+        if (remaining <= 30 && remaining > 0 && !routine.warned) {
+          // once under 30s, stop current and force applause->attention
+          const player = document.getElementById("player");
+          try { player.pause(); } catch(e){}
+          playSequence(["applause","attention"], false);
+          routine.warned = true;
+          setCenterLine(false);
+        }
+        if (remaining <= 0) {
+          routine.active = false;
+          routine.warned = false;
+          stopTimerInterval();
+          stopPointsInterval();
+          const player = document.getElementById("player");
+          try { player.pause(); } catch(e){}
+          evaluateWinner();
+          playSequence(["applause","win"], true);
+        }
+      };
+      if (!timerInterval || force) {
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = setInterval(update, 1000);
+      }
+      update();
+    }
+
 
     async function refreshCameras() {
       try {
@@ -173,6 +814,7 @@
     ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
 
     refreshState();
+    refreshSongs();
   </script>
 </body>
 </html>

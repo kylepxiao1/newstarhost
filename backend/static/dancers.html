@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Dancer Registry</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; padding: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    h2 { margin-top: 0; font-size: 16px; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; }
+    input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 8px; border-bottom: 1px solid #1f2937; text-align: left; }
+  </style>
+</head>
+<body>
+  <h1>Dancer Registry</h1>
+  <section>
+    <h2>Add Dancer</h2>
+    <div class="row">
+      <input id="dancerName" placeholder="Name">
+      <input id="dancerHandle" placeholder="TikTok handle">
+      <button onclick="addDancer()">Add</button>
+    </div>
+  </section>
+  <section>
+    <h2>Registered Dancers</h2>
+    <table>
+      <thead><tr><th>Name</th><th>Handle</th></tr></thead>
+      <tbody id="dancerTable"></tbody>
+    </table>
+  </section>
+
+  <script>
+    const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
+
+    function render(dancers) {
+      const tbody = document.getElementById("dancerTable");
+      tbody.innerHTML = "";
+      dancers.forEach(d => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${d.name||""}</td><td>${d.handle||""}</td>`;
+        tbody.appendChild(tr);
+      });
+    }
+
+    function load() {
+      api("/dancers").then(r=>r.json()).then(render);
+    }
+
+    function addDancer() {
+      const name = document.getElementById("dancerName").value.trim();
+      const handle = document.getElementById("dancerHandle").value.trim();
+      if (!name || !handle) return;
+      api("/dancers/register",{method:"POST", body:{name, handle}}).then(()=>{document.getElementById("dancerName").value="";document.getElementById("dancerHandle").value="";load();});
+    }
+
+    load();
+  </script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Audio Tools</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; padding: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    h2 { margin-top: 0; font-size: 16px; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; }
+    input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    label { font-weight: 600; display: block; margin-bottom: 6px; }
+    #result { margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>Audio Tools</h1>
+  <section>
+    <h2>Download / Trim to MP3</h2>
+    <div class="row">
+      <div style="flex:1;">
+        <label>Song Name</label>
+        <input id="songName" placeholder="Song title">
+      </div>
+    </div>
+    <div class="row">
+      <button class="secondary" onclick="selectMode('youtube')">YouTube URL</button>
+      <button class="secondary" onclick="selectMode('upload')">Local Upload</button>
+    </div>
+    <div id="youtubePane">
+      <div class="row">
+        <div style="flex:1;">
+          <label>YouTube/direct URL</label>
+          <input id="sourceUrl" placeholder="https://...">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Start (sec)</label>
+          <input id="start" type="number" step="0.1" value="0">
+        </div>
+        <div>
+          <label>End (sec)</label>
+          <input id="end" type="number" step="0.1" value="">
+        </div>
+      </div>
+    </div>
+    <div id="uploadPane" style="display:none;">
+      <div class="row">
+        <div style="flex:1;">
+          <label>Upload MP4/MP3</label>
+          <input id="fileInput" type="file" accept=".mp4,.mp3,video/*,audio/*">
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label>Start (sec)</label>
+          <input id="startUpload" type="number" step="0.1" value="0">
+        </div>
+        <div>
+          <label>End (sec)</label>
+          <input id="endUpload" type="number" step="0.1" value="">
+        </div>
+      </div>
+    </div>
+    <div class="row">
+      <div style="align-self:flex-end;">
+        <button onclick="processAudio()">Preview</button>
+        <button onclick="saveSong()">Save Song</button>
+      </div>
+    </div>
+    <div id="result"></div>
+    <div id="progress" style="margin-top:10px; height:8px; width:100%; background:#1f2937; border-radius:4px; overflow:hidden; display:none;">
+      <div id="progressFill" style="height:100%; width:0%; background:#22c55e;"></div>
+    </div>
+    <div class="row">
+      <label>Preview</label>
+      <audio id="preview" controls></audio>
+    </div>
+  </section>
+
+  <script>
+    let mode = "youtube";
+    function selectMode(next) {
+      mode = next;
+      document.getElementById("youtubePane").style.display = next === "youtube" ? "block" : "none";
+      document.getElementById("uploadPane").style.display = next === "upload" ? "block" : "none";
+    }
+
+    let lastPreview = null;
+
+    async function processAudio() {
+      const nameInput = document.getElementById("songName").value.trim();
+      const src = document.getElementById("sourceUrl").value.trim();
+      const file = document.getElementById("fileInput").files[0];
+      const start = mode === "youtube" ? document.getElementById("start").value : document.getElementById("startUpload").value;
+      const end = mode === "youtube" ? document.getElementById("end").value : document.getElementById("endUpload").value;
+      const form = new FormData();
+      if (mode === "youtube" && src) form.append("source_url", src);
+      if (mode === "upload" && file) form.append("file", file);
+      if (start) form.append("start", start);
+      if (end) form.append("end", end);
+      const progress = document.getElementById("progress");
+      const progressFill = document.getElementById("progressFill");
+      progress.style.display = "block";
+      progressFill.style.width = "20%";
+      const res = await fetch("/audio/process", { method: "POST", body: form });
+      progressFill.style.width = "70%";
+      const data = await res.json();
+      progressFill.style.width = "100%";
+      setTimeout(()=>{progress.style.display="none"; progressFill.style.width="0%";}, 500);
+      const div = document.getElementById("result");
+      if (data.output) {
+        div.innerHTML = `Preview ready: <a href="${data.output}" target="_blank">${data.output}</a><br>${data.note||""}`;
+        const audio = document.getElementById("preview");
+        audio.src = data.output;
+        audio.load();
+        lastPreview = {
+          url: data.output,
+          title: data.title || (file ? file.name : nameInput),
+          nameInput,
+          fileName: file ? file.name : "",
+        };
+      } else {
+        div.textContent = data.note || "Failed";
+      }
+    }
+
+    async function saveSong() {
+      if (!lastPreview) return alert("Run Preview first.");
+      const {
+        url,
+        title,
+        nameInput,
+        fileName,
+      } = lastPreview;
+      const derivedName = nameInput || title || fileName || "";
+      const song_id = crypto.randomUUID();
+      await fetch("/songs/register", {method:"POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({song_id, name: derivedName, url})});
+      const div = document.getElementById("result");
+      div.innerHTML += `<br>Registered as: ${derivedName || url}`;
+    }
+  </script>
+</body>
+</html>

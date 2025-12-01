@@ -95,3 +95,14 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 - OBS path: start OBS, add Browser Source `/overlay`, start OBS Virtual Camera or RTMP, run backend, run listener.
 - Control UI: `http://localhost:8000/battle/control`
 - Automation: `python scripts/tiktok_listener.py`.
+
+## Installing FFmpeg (local)
+Run from repo root:
+```powershell
+# Optionally override URL:
+$env:FFMPEG_URL="https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+powershell -ExecutionPolicy Bypass -File .\scripts\install_ffmpeg.ps1
+# Set ffmpeg for this session (path printed by the script):
+$env:FFMPEG_BIN="C:\Users\kylep\OneDrive\Desktop\newstarhost\scripts\ffmpeg-bin\...\ffmpeg.exe"
+```
+If the default URLs fail, set `FFMPEG_URL` to a working archive (zip or 7z). 7z archives require 7-Zip on PATH.

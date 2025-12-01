@@ -54,12 +54,13 @@ async def ws_state_listener(state_holder: Dict):
 
 def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
     overlay = frame.copy()
-    slot_one = state.get("slot_one") or "Waiting"
-    slot_two = state.get("slot_two") or "Waiting"
-    scores = state.get("scores") or {"slot_one": 0, "slot_two": 0}
+    wins = state.get("win_counts") or {}
+    enabled = set((state.get("enabled_dancers") or []))
+    dancers = state.get("dancers") or []
+    display_dancers = dancers if not enabled else [d for d in dancers if (d.get("name") or "") in enabled]
     overlays = state.get("overlay_states") or {}
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 1.0
+    scale = 0.8
     thick = 2
 
     if overlays.get("CenterDottedLine", True):
@@ -79,8 +80,11 @@ def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
         def outlined_text(img, text, org):
             cv2.putText(img, text, org, font, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
             cv2.putText(img, text, org, font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-        outlined_text(overlay, f"{slot_one}: {scores.get('slot_one',0)}", (40, 80))
-        outlined_text(overlay, f"{slot_two}: {scores.get('slot_two',0)}", (40, 120))
+        y = 80
+        for dancer in display_dancers:
+            name = dancer.get("name") or "Waiting"
+            outlined_text(overlay, f"{name}: {wins.get(name, 0)} wins", (40, y))
+            y += 40
     return overlay
 
 
