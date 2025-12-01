@@ -54,15 +54,20 @@ class BattleStateManager:
         self._state.dancers = dancers
         if not self._state.enabled_dancers:
             enabled = []
+            default_group = ""
             for d in dancers:
                 name = (d.get("name") or "").strip()
                 if not name:
                     continue
                 low = name.lower()
+                if not default_group and ("boys" in low or "girls" in low):
+                    default_group = name
                 if "boys" in low or "girls" in low:
                     continue
                 enabled.append(name)
             self._state.enabled_dancers = enabled
+            if default_group:
+                self._state.group_name = default_group
         self._lock = threading.RLock()
 
     def get_state(self) -> Dict:

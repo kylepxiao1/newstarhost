@@ -12,6 +12,8 @@
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     table { width: 100%; border-collapse: collapse; }
     th, td { padding: 8px; border-bottom: 1px solid #1f2937; text-align: left; }
+    .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+    select, option { color: #0b1222; }
   </style>
 </head>
 <body>
@@ -27,7 +29,7 @@
   <section>
     <h2>Registered Dancers</h2>
     <table>
-      <thead><tr><th>Name</th><th>Handle</th></tr></thead>
+      <thead><tr><th>Name</th><th>Handle</th><th>Songs</th><th>Front Dancer</th><th>Actions</th></tr></thead>
       <tbody id="dancerTable"></tbody>
     </table>
   </section>
@@ -35,18 +37,69 @@
   <script>
     const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
 
+    let songsLib = {};
+
     function render(dancers) {
       const tbody = document.getElementById("dancerTable");
       tbody.innerHTML = "";
       dancers.forEach(d => {
+        const name = d.name || "";
+        const knows = [];
+        const fronts = [];
+        Object.values(songsLib).forEach(song => {
+          const sname = song.name || "";
+          const dancerList = (song.dancers || []).map(x => (x || "").toLowerCase());
+          const knowsList = (song.knows_song || []).map(x => (x || "").toLowerCase());
+          const frontsList = (song.front_dancers || []).map(x => (x || "").toLowerCase());
+          const target = name.toLowerCase();
+          if (dancerList.includes(target) || knowsList.includes(target)) knows.push(sname);
+          if (frontsList.includes(target)) fronts.push(sname);
+        });
         const tr = document.createElement("tr");
-        tr.innerHTML = `<td>${d.name||""}</td><td>${d.handle||""}</td>`;
+        const actions = document.createElement("td");
+        actions.className = "actions";
+        const selKnow = document.createElement("select");
+        Object.values(songsLib).sort((a,b)=>((a.name||"").localeCompare(b.name||""))).forEach(s=>{
+          const opt=document.createElement("option");
+          opt.value=s.name||s.url||"";
+          opt.textContent=s.name||s.url||"";
+          selKnow.appendChild(opt);
+        });
+        const btnAddKnow = document.createElement("button");
+        btnAddKnow.textContent = "Add to dancer";
+        btnAddKnow.onclick = ()=>updateDancerList(name, selKnow.value, true);
+        const btnRemKnow = document.createElement("button");
+        btnRemKnow.textContent = "Remove from dancer";
+        btnRemKnow.onclick = ()=>updateDancerList(name, selKnow.value, false);
+        actions.appendChild(selKnow); actions.appendChild(btnAddKnow); actions.appendChild(btnRemKnow);
+
+        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${knows.join(", ")}</td><td>${fronts.join(", ")}</td>`;
+        tr.appendChild(actions);
         tbody.appendChild(tr);
       });
     }
 
+    function updateDancerList(dancerName, songName, add=true) {
+      const entry = Object.entries(songsLib).find(([,s]) => (s.name||s.url||"") === songName);
+      if (!entry) return;
+      const [songId, song] = entry;
+      const dancersSet = new Set(song.dancers || []);
+      if (add) dancersSet.add(dancerName); else dancersSet.delete(dancerName);
+      api("/songs/update_dancers", {method:"POST", body:{
+        song_id: songId,
+        dancers: Array.from(dancersSet),
+        front_dancers: song.front_dancers || [],
+        mvp_dancers: song.mvp_dancers || [],
+        roles: song.roles || [],
+        knows_song: song.knows_song || [],
+      }}).then(()=>load());
+    }
+
     function load() {
-      api("/dancers").then(r=>r.json()).then(render);
+      Promise.all([api("/dancers").then(r=>r.json()), api("/songs").then(r=>r.json())]).then(([dancers, songs]) => {
+        songsLib = songs.library || {};
+        render(dancers || []);
+      });
     }
 
     function addDancer() {

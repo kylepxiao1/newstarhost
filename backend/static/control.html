@@ -24,6 +24,9 @@
     table { width: 100%; border-collapse: collapse; }
     td { padding: 6px 4px; border-bottom: 1px solid #1f2937; }
     .overlay-toggle { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; padding: 6px 8px; background: #0b1222; border-radius: 6px; }
+    .bar-wrap { width: 100%; height: 18px; background: #0b1222; border: 1px solid #1f2937; border-radius: 10px; overflow: hidden; display: flex; }
+    .bar-left { background: #ef4444; height: 100%; }
+    .bar-right { background: #3b82f6; height: 100%; }
   </style>
 </head>
 <body>
@@ -62,7 +65,13 @@
         <tr><td>Mode</td><td id="modeCell">-</td></tr>
         <tr><td>Slot One</td><td id="slotOneCell">-</td></tr>
         <tr><td>Slot Two</td><td id="slotTwoCell">-</td></tr>
-        <tr><td>Points</td><td id="scoreCell">0 - 0</td></tr>
+        <tr><td>Points</td><td>
+          <div class="bar-wrap"><div id="barLeft" class="bar-left" style="width:50%"></div><div id="barRight" class="bar-right" style="width:50%"></div></div>
+          <div class="row" style="margin-top:4px; gap:12px;">
+            <span id="pointsLeftLabel">0</span>
+            <span id="pointsRightLabel" style="margin-left:auto;">0</span>
+          </div>
+        </td></tr>
       </table>
       <div class="row">
         <button class="secondary" onclick="pullFromStudio()">Sync from TikTok Studio</button>
@@ -121,7 +130,7 @@
     const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
     let state = {};
     let currentTab = "group";
-    let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null };
+    let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"" };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
     const CENTER_LINE = "CenterDottedLine";
@@ -130,7 +139,7 @@
       document.getElementById("modeCell").textContent = state.battle_mode || "-";
       document.getElementById("slotOneCell").textContent = state.slot_one || "-";
       document.getElementById("slotTwoCell").textContent = state.slot_two || "-";
-      document.getElementById("scoreCell").textContent = `${state.scores?.slot_one||0} - ${state.scores?.slot_two||0}`;
+      renderPointsBar();
       renderWinnerSelect();
       renderGroupSelect();
       renderEnabledDancers();
@@ -138,6 +147,23 @@
       renderOverlays();
       renderSongs();
       renderTimer();
+    }
+
+    function renderPointsBar() {
+      const scores = state.scores || {slot_one:0, slot_two:0};
+      const a = scores.slot_one || 0;
+      const b = scores.slot_two || 0;
+      const total = Math.max(1, a + b);
+      const leftPct = Math.round((a / total) * 100);
+      const rightPct = 100 - leftPct;
+      const leftEl = document.getElementById("barLeft");
+      const rightEl = document.getElementById("barRight");
+      const leftLabel = document.getElementById("pointsLeftLabel");
+      const rightLabel = document.getElementById("pointsRightLabel");
+      if (leftEl) leftEl.style.width = `${leftPct}%`;
+      if (rightEl) rightEl.style.width = `${rightPct}%`;
+      if (leftLabel) leftLabel.textContent = a;
+      if (rightLabel) rightLabel.textContent = b;
     }
 
     function renderOverlays() {
@@ -446,7 +472,8 @@
           player.play();
         }
       };
-      if (fadeOut && !player.paused && player.src) {
+      // only fade out on normal transitions; skip fading when interrupting (opts.skipFadeOut)
+      if (fadeOut && !opts.skipFadeOut && !player.paused && player.src) {
         let vol = player.volume;
         const steps = 10;
         const stepMs = 50;
@@ -507,11 +534,19 @@
         stopPointsInterval();
         return;
       }
-      const total = routine.endTime - routine.startTime;
-      const progress = Math.max(0, Math.min(1, 1 - remaining / total));
-      const mean = (1 + progress * 4) * 10; // ramped up and multiplied
-      const amount = Math.max(1, Math.round(Math.random() * mean) + 1);
-      const slot = Math.random() < 0.5 ? "slot_one" : "slot_two";
+      const scores = state.scores || {slot_one:0, slot_two:0};
+      const a = scores.slot_one || 0;
+      const b = scores.slot_two || 0;
+      const totalPts = Math.max(1, a + b);
+      const mean = Math.max(1, Math.round(totalPts * 0.05)); // 5% of current total points
+      let amount = Math.max(1, Math.round(Math.random() * mean) + 1);
+      let slot = Math.random() < 0.5 ? "slot_one" : "slot_two";
+      const diff = (scores.slot_one||0) - (scores.slot_two||0);
+      const losing = diff > 0 ? "slot_two" : diff < 0 ? "slot_one" : null;
+      if (losing && Math.random() < 0.05) { // comeback chance
+        slot = losing;
+        amount += Math.round(mean * 30);
+      }
       api(`/score/${slot}/add`, {method:"POST", body:{amount}}).then(refreshState);
     }
 
@@ -547,6 +582,37 @@
       });
     }
 
+    function intersectSongsFor(a, b) {
+      const listA = new Set(songsForDancer(a).map(s => s.url));
+      return songsForDancer(b).filter(s => listA.has(s.url));
+    }
+
+    function groupSongs() {
+      const group = (state.group_name || "").toLowerCase();
+      const lib = state.songs?.library || {};
+      return Object.values(lib).filter(s => {
+        const dancers = (s.dancers||[]).map(x=>x.toLowerCase());
+        const knows = (s.knows_song||[]).map(x=>x.toLowerCase());
+        return group && (dancers.includes(group) || knows.includes(group));
+      });
+    }
+
+    function pickSongFor(name, excludeUrl=null) {
+      const pool = songsForDancer(name).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+      const filtered = excludeUrl ? pool.filter(s => s.url !== excludeUrl) : pool;
+      const chosen = pickRandom(filtered.length ? filtered : pool);
+      return chosen ? chosen.url : null;
+    }
+
+    function getLeaderName() {
+      const scores = state.scores || {slot_one:0, slot_two:0};
+      const a = scores.slot_one || 0;
+      const b = scores.slot_two || 0;
+      if (a > b) return state.slot_one || "";
+      if (b > a) return state.slot_two || "";
+      return "";
+    }
+
     function nextSongFor(dancerA, dancerB, excludeUrl=null) {
       const pool = [...songsForDancer(dancerA), ...songsForDancer(dancerB)].filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
       const filtered = pool.filter(s => s.url !== excludeUrl);
@@ -578,6 +644,13 @@
       }
     }
 
+    function stopSwitchInterval() {
+      if (routine.switchInterval) {
+        clearInterval(routine.switchInterval);
+        routine.switchInterval = null;
+      }
+    }
+
     function startRoutine() {
       clearRoutineTimers();
       routine.active = true;
@@ -603,6 +676,7 @@
       routine.warned = false;
       clearRoutineTimers();
       stopPointsInterval();
+      stopSwitchInterval();
       const player = document.getElementById("player");
       try { player.pause(); } catch(e){}
       ensureBackground();
@@ -619,6 +693,7 @@
         playSequence(["applause","win"], true);
         routine.active = false;
         stopPointsInterval();
+        stopSwitchInterval();
         evaluateWinner();
         return;
       }
@@ -627,6 +702,7 @@
         const player = document.getElementById("player");
         try { player.pause(); } catch(e){}
         setCenterLine(false);
+        stopSwitchInterval();
         playSequence(["applause","attention"], false, () => {
           const wait = Math.max(0, routine.endTime - Date.now());
           const t = setTimeout(() => playRoutineSong(null), wait);
@@ -634,14 +710,38 @@
         });
         return;
       }
-      const url = nextSongFor(routine.dancers[0], routine.dancers[1], lastUrl) || getRoleUrl("background");
+      let url = nextSongFor(routine.dancers[0], routine.dancers[1], lastUrl);
+      if (routine.firstSongPlayed) {
+        const leader = getLeaderName();
+        if (leader) {
+          const leaderSong = pickSongFor(leader, lastUrl);
+          if (leaderSong) url = leaderSong;
+        }
+      }
+      if (!routine.firstSongPlayed) {
+        const both = intersectSongsFor(routine.dancers[0], routine.dancers[1]);
+        const filteredBoth = both.filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+        const pickBoth = pickRandom(filteredBoth.length ? filteredBoth : both);
+        if (pickBoth) {
+          url = pickBoth.url;
+        } else {
+          const groupList = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+          const pickGroup = pickRandom(groupList.length ? groupList : groupSongs());
+          if (pickGroup) url = pickGroup.url;
+        }
+      }
+      if (!url) url = getRoleUrl("background");
       if (!url) { ensureBackground(); return; }
       const afterDoorbell = () => {
         api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
         if (!state.songs) state.songs = {};
         state.songs.current = url;
+        routine.currentSongOwner = routine.firstSongPlayed ? getLeaderName() : "";
+        routine.currentSongUrl = url;
+        stopSwitchInterval();
+        routine.switchInterval = setInterval(() => monitorSongSwitch(), 2000);
         startAudio(url, {loop:false, onEnd: () => {
-          playSequence(["applause","bell"], false, () => playRoutineSong(url));
+          playSequence(["bell"], false, () => playRoutineSong(url));
         }});
       };
       if (!routine.firstSongPlayed) {
@@ -715,6 +815,39 @@
       refreshState();
     }
 
+    function monitorSongSwitch() {
+      if (!routine.active || !routine.currentSongUrl) return;
+      if (!routine.currentSongOwner) return;
+      const scores = state.scores || {slot_one:0, slot_two:0};
+      const a = scores.slot_one || 0;
+      const b = scores.slot_two || 0;
+      const leaderSlot = a > b ? "slot_one" : b > a ? "slot_two" : null;
+      if (!leaderSlot) return;
+      const leaderName = leaderSlot === "slot_one" ? (state.slot_one || "") : (state.slot_two || "");
+      const loserScore = leaderSlot === "slot_one" ? b : a;
+      const leaderScore = leaderSlot === "slot_one" ? a : b;
+      if (!leaderName || leaderName === routine.currentSongOwner) return;
+      if (loserScore <= 0) return;
+      if (leaderScore < loserScore * 1.67) return; // needs 67% margin
+      const leaderKnows = songsForDancer(leaderName).some(s => s.url === routine.currentSongUrl);
+      const otherName = leaderSlot === "slot_one" ? (state.slot_two || "") : (state.slot_one || "");
+      const otherKnows = songsForDancer(otherName).some(s => s.url === routine.currentSongUrl);
+      // do not interrupt if both know the song or if it's a group song
+      const isGroupSong = groupSongs().some(s => s.url === routine.currentSongUrl);
+      if (leaderKnows && otherKnows) return;
+      if (isGroupSong) return;
+      const newUrl = pickSongFor(leaderName, routine.currentSongUrl) || getRoleUrl("background");
+      if (!newUrl) return;
+      routine.currentSongOwner = leaderName;
+      routine.currentSongUrl = newUrl;
+      api("/songs/play", {method:"POST", body:{target:"group", url:newUrl}}).catch(()=>{});
+      playSequence(["bell"], false, () => {
+        startAudio(newUrl, {skipFadeOut:true, loop:false, onEnd: () => {
+          playSequence(["bell"], false, () => playRoutineSong(newUrl));
+        }});
+      });
+    }
+
     function renderTimer(force=false) {
       const el = document.getElementById("timerDisplay");
       if (!el) return;
@@ -729,19 +862,20 @@
         const mins = String(Math.floor(remaining / 60)).padStart(2,"0");
         const secs = String(remaining % 60).padStart(2,"0");
         el.textContent = `${mins}:${secs}`;
-        el.style.color = remaining <= 30 ? "#ef4444" : "#e2e8f0";
-        if (remaining <= 30 && remaining > 0 && !routine.warned) {
-          // once under 30s, stop current and force applause->attention
-          const player = document.getElementById("player");
-          try { player.pause(); } catch(e){}
-          playSequence(["applause","attention"], false);
-          routine.warned = true;
-          setCenterLine(false);
-        }
-        if (remaining <= 0) {
-          routine.active = false;
-          routine.warned = false;
-          stopTimerInterval();
+       el.style.color = remaining <= 30 ? "#ef4444" : "#e2e8f0";
+       if (remaining <= 30 && remaining > 0 && !routine.warned) {
+         // once under 30s, stop current and force applause->attention
+         const player = document.getElementById("player");
+         try { player.pause(); } catch(e){}
+         playSequence(["applause","attention"], false);
+         routine.warned = true;
+         setCenterLine(false);
+         stopSwitchInterval();
+       }
+       if (remaining <= 0) {
+         routine.active = false;
+         routine.warned = false;
+         stopTimerInterval();
           stopPointsInterval();
           const player = document.getElementById("player");
           try { player.pause(); } catch(e){}
