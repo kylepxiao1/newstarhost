@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Intro Group Dances</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; padding: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+    h1, h2 { margin: 0 0 10px 0; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
+    .songs { display: flex; gap: 8px; flex-wrap: wrap; }
+    .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; min-width: 180px; }
+    .card h3 { margin: 0 0 6px 0; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <h1>Intro Group Dances</h1>
+  <section>
+    <h2>Select Front Dancer</h2>
+    <div class="row">
+      <select id="frontSelect" onchange="renderSongs()"></select>
+      <button onclick="refreshData()">Refresh</button>
+    </div>
+  </section>
+
+  <section>
+    <h2>Group Songs</h2>
+    <div id="songsContainer" class="songs"></div>
+  </section>
+
+  <section>
+    <h2>Playback Controls</h2>
+    <div class="row">
+      <button class="secondary" id="tabGroup" onclick="selectTab('group')">Group</button>
+      <button class="secondary" id="tabOne" onclick="selectTab('slot_one')">Dancer 1</button>
+      <button class="secondary" id="tabTwo" onclick="selectTab('slot_two')">Dancer 2</button>
+    </div>
+    <div class="row">
+      <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
+      <datalist id="songSuggestions"></datalist>
+    </div>
+    <div class="row">
+      <select id="songSelect" style="flex:1;"></select>
+      <button onclick="playSong()">Play Song</button>
+    </div>
+    <div class="row" style="align-items:center;">
+      <label style="display:flex;gap:6px;align-items:center;">
+        <input type="checkbox" id="fadeToggle" checked> Fade in 0.5s
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;">
+        <input type="checkbox" id="fadeOutToggle" checked> Fade out 0.5s
+      </label>
+    </div>
+    <div class="row" style="align-items:center;">
+      <span style="min-width:120px;">Current song:</span>
+      <span id="currentSongLabel">None</span>
+    </div>
+    <audio id="player" preload="auto" controls style="width:100%;"></audio>
+  </section>
+
+  <script>
+    const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
+    let library = {};
+    let songsState = {};
+    let state = {};
+    let currentTab = "group";
+    let currentUrl = "";
+
+    async function refreshData() {
+      const songs = await api("/songs").then(r=>r.json());
+      songsState = songs || {};
+      library = songs.library || {};
+      renderFronts();
+      renderSongs();
+    }
+
+    function renderFronts() {
+      const sel = document.getElementById("frontSelect");
+      if (!sel) return;
+      const fronts = new Set();
+      Object.values(library).forEach(s => (s.front_dancers||[]).forEach(f => fronts.add(f)));
+      sel.innerHTML = "";
+      const any = document.createElement("option");
+      any.value = "";
+      any.textContent = "All fronts";
+      sel.appendChild(any);
+      Array.from(fronts).sort((a,b)=>a.localeCompare(b)).forEach(f => {
+        const opt = document.createElement("option");
+        opt.value = f;
+        opt.textContent = f;
+        sel.appendChild(opt);
+      });
+    }
+
+    function renderSongs() {
+      const container = document.getElementById("songsContainer");
+      if (container) {
+        container.innerHTML = "";
+        const selectedFront = (document.getElementById("frontSelect")?.value || "").toLowerCase();
+        Object.values(library)
+          .filter(s => {
+            if (!selectedFront) return true;
+            return (s.front_dancers||[]).map(x=>x.toLowerCase()).includes(selectedFront);
+          })
+          .filter(s => {
+            const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
+            return all.some(n => {
+              const low = (n||"").toLowerCase();
+              return low.includes("boys") || low.includes("girls");
+            });
+          })
+          .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
+          .forEach(song => {
+            const card = document.createElement("div");
+            card.className = "card";
+            card.innerHTML = `<h3>${song.name||"Unnamed"}</h3><div>${(song.front_dancers||[]).join(", ")||"Front: -"}<br>${(song.dancers||[]).join(", ")||""}</div>`;
+            const playBtn = document.createElement("button");
+            playBtn.textContent = "Play intro";
+            playBtn.onclick = () => playSongWithUrl(song.url);
+            card.appendChild(playBtn);
+            container.appendChild(card);
+          });
+      }
+
+      const songs = songsState || {};
+      const lib = songs.library || {};
+      const currentUrlLocal = songs.current || "";
+      const backgroundUrlLocal = songs.background || "";
+      const filter = (document.getElementById("songFilter")?.value || "").toLowerCase();
+      const tabFilter = currentTab === "slot_one" ? (state.slot_one || "").toLowerCase()
+                     : currentTab === "slot_two" ? (state.slot_two || "").toLowerCase()
+                     : currentTab === "group" ? (state.group_name || "").toLowerCase()
+                     : "";
+      const datalist = document.getElementById("songSuggestions");
+      if (datalist) datalist.innerHTML = "";
+      let currentName = "None";
+      const tryResolve = (url) => {
+        let name = "None";
+        Object.values(lib).forEach(item => {
+          if (item.url === url) {
+            name = item.name || url;
+          }
+        });
+        if (name === "None" && url && url === backgroundUrlLocal) {
+          name = "Background";
+        }
+        if (name === "None" && url) name = url;
+        return name;
+      };
+      if (currentUrlLocal) {
+        currentName = tryResolve(currentUrlLocal);
+      } else if (backgroundUrlLocal) {
+        currentName = tryResolve(backgroundUrlLocal);
+      }
+      const currentLabel = document.getElementById("currentSongLabel");
+      if (currentLabel) currentLabel.textContent = currentName;
+      const select = document.getElementById("songSelect");
+      if (select) {
+        select.innerHTML = "";
+        Object.keys(lib).forEach(key => {
+          const opt = document.createElement("option");
+          opt.value = lib[key].url;
+          let label = lib[key].name || key;
+          const fronts = (lib[key].front_dancers || []).join(", ");
+          if (fronts) {
+            label += ` (Front: ${fronts})`;
+          }
+          opt.textContent = label;
+          const dancerMatch = tabFilter
+            ? (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
+            : true;
+          const matches = (!filter || label.toLowerCase().includes(filter)) && dancerMatch;
+          if (matches) {
+            select.appendChild(opt);
+          }
+          if (matches && datalist) {
+            const dOpt = document.createElement("option");
+            dOpt.value = label;
+            datalist.appendChild(dOpt);
+          }
+        });
+        if (!select.value && select.options.length) select.selectedIndex = 0;
+      }
+    }
+
+    function filterSelected() {
+      const filterVal = (document.getElementById("songFilter")?.value || "").toLowerCase();
+      const select = document.getElementById("songSelect");
+      if (!select) return;
+      for (let i = 0; i < select.options.length; i++) {
+        if (select.options[i].textContent.toLowerCase() === filterVal) {
+          select.selectedIndex = i;
+          playSong(true);
+          break;
+        }
+      }
+    }
+
+    function renderState() {
+      renderSongs();
+    }
+
+    function refreshState() {
+      api("/state").then(r=>r.json()).then(s => { state = s; renderState(); });
+    }
+
+    function refreshSongs() {
+      api("/songs").then(r => r.json()).then(s => {
+        songsState = s || {};
+        renderSongs();
+      });
+    }
+
+    function selectTab(tab) {
+      currentTab = tab;
+      ["tabGroup","tabOne","tabTwo"].forEach(id=>{
+        const el = document.getElementById(id);
+        if (!el) return;
+        const isActive = (id==="tabGroup" && tab==="group") || (id==="tabOne" && tab==="slot_one") || (id==="tabTwo" && tab==="slot_two");
+        el.className = isActive ? "secondary active" : "secondary";
+      });
+      renderSongs();
+    }
+
+    async function playSong(fromSelect=false) {
+      const select = document.getElementById("songSelect");
+      const url = select ? select.value : "";
+      playSongWithUrl(url, fromSelect);
+    }
+
+    function playSongWithUrl(url, fromSelect=false) {
+      if (!url) {
+        if (fromSelect) return;
+        return alert("Select a song");
+      }
+      const bellUrl = getRoleUrl("bell");
+      api("/songs/play", {method:"POST", body:{target: currentTab, url}}).catch(()=>{});
+      if (!songsState) songsState = {};
+      songsState.current = url;
+      // bell -> song -> applause -> background (if any)
+      const steps = [];
+      if (bellUrl) steps.push(bellUrl);
+      steps.push(url);
+      steps.push("applause_role");
+      steps.push("background_role");
+      playSequence(steps);
+      refreshState();
+    }
+
+    function startAudio(url, opts={}) {
+      const player = document.getElementById("player");
+      const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
+      const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
+      const doPlay = () => {
+        try { player.pause(); } catch(e){}
+        player.loop = !!opts.loop;
+        player.onended = () => {
+          if (typeof opts.onEnd === "function") {
+            opts.onEnd();
+            return;
+          }
+        };
+        player.src = url;
+        if (fadeIn) {
+          let vol = 0.0;
+          player.volume = 0;
+          player.play().catch(()=>{});
+          const steps = 10;
+          const stepMs = 50;
+          const inc = 1/steps;
+          let count = 0;
+          const intv = setInterval(()=>{
+            count += 1;
+            vol = Math.min(1, vol + inc);
+            player.volume = vol;
+            if (count >= steps) clearInterval(intv);
+          }, stepMs);
+        } else {
+          player.volume = 1;
+          player.play().catch(()=>{});
+        }
+      };
+      if (fadeOut && !opts.skipFadeOut && !player.paused && player.src) {
+        let vol = player.volume;
+        const steps = 10;
+        const stepMs = 50;
+        const dec = vol/steps;
+        let count = 0;
+        const outv = setInterval(()=>{
+          count += 1;
+          vol = Math.max(0, vol - dec);
+          player.volume = vol;
+          if (count >= steps) {
+            clearInterval(outv);
+            player.pause();
+            doPlay();
+          }
+        }, stepMs);
+      } else {
+        doPlay();
+      }
+    }
+
+    function getRoleUrl(role) {
+      return Object.values(library).find(s => (s.roles||[]).includes(role))?.url || "";
+    }
+
+    function setCurrent(url) {
+      currentUrl = url;
+      const label = document.getElementById("currentSongLabel");
+      let name = "None";
+      Object.values(library).forEach(s => { if (s.url === url) name = s.name || url; });
+      if (!url) name = "None";
+      if (label) label.textContent = name;
+    }
+
+    function playSequence(steps) {
+      if (!steps || !steps.length) return;
+      const [first, ...rest] = steps.filter(Boolean);
+      if (!first) return;
+      let url = first;
+      if (first === "applause_role") {
+        url = getRoleUrl("applause");
+        if (!url) { playSequence(rest); return; }
+      } else if (first === "background_role") {
+        url = getRoleUrl("background");
+        if (!url) { playSequence(rest); return; }
+        songsState.background = url;
+        setCurrent(url);
+        startAudio(url, {loop:true, fade:false, fadeOut:false, skipFadeOut:true});
+        return;
+      }
+      // normal audio
+      setCurrent(url);
+      startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, onEnd: () => playSequence(rest)});
+    }
+
+    refreshData();
+    refreshState();
+    refreshSongs();
+  </script>
+</body>
+</html>
