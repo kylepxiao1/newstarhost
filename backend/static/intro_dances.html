@@ -63,6 +63,8 @@
     let currentTab = "group";
     let currentUrl = "";
     let backgroundStarted = false;
+    let playCounts = loadPlayCounts();
+    let lastSongUrl = loadLastSong();
 
     async function refreshData() {
       const songs = await api("/songs").then(r=>r.json());
@@ -260,6 +262,9 @@
           }
         };
         player.src = url;
+        if (!opts.isRole) {
+          notePlay(url);
+        }
         if (fadeIn) {
           let vol = 0.0;
           player.volume = 0;
@@ -318,20 +323,22 @@
       const [first, ...rest] = steps.filter(Boolean);
       if (!first) return;
       let url = first;
+      let isRole = false;
       if (first === "applause_role") {
         url = getRoleUrl("applause");
         if (!url) { playSequence(rest); return; }
+        isRole = true;
       } else if (first === "background_role") {
         url = getRoleUrl("background");
         if (!url) { playSequence(rest); return; }
         songsState.background = url;
         setCurrent(url);
-        startAudio(url, {loop:true, fade:false, fadeOut:false, skipFadeOut:true});
+        startAudio(url, {loop:true, fade:false, fadeOut:false, skipFadeOut:true, isRole:true});
         return;
       }
       // normal audio
       setCurrent(url);
-      startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, onEnd: () => playSequence(rest)});
+      startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, isRole, onEnd: () => playSequence(rest)});
     }
 
     function ensureBackground() {
@@ -340,7 +347,30 @@
       if (!bg) return;
       backgroundStarted = true;
       setCurrent(bg);
-      startAudio(bg, {loop:true, fade:false, fadeOut:false, skipFadeOut:true});
+      startAudio(bg, {loop:true, fade:false, fadeOut:false, skipFadeOut:true, isRole:true});
+    }
+
+    function loadPlayCounts() {
+      try {
+        const raw = localStorage.getItem("playCounts");
+        return raw ? JSON.parse(raw) : {};
+      } catch (e) { return {}; }
+    }
+    function savePlayCounts() {
+      try { localStorage.setItem("playCounts", JSON.stringify(playCounts)); } catch (e) {}
+    }
+    function loadLastSong() {
+      try { return localStorage.getItem("lastSongUrl") || ""; } catch (e) { return ""; }
+    }
+    function saveLastSong(url) {
+      lastSongUrl = url || "";
+      try { localStorage.setItem("lastSongUrl", lastSongUrl); } catch (e) {}
+    }
+    function notePlay(url) {
+      if (!url) return;
+      playCounts[url] = (playCounts[url] || 0) + 1;
+      savePlayCounts();
+      saveLastSong(url);
     }
 
     refreshData();

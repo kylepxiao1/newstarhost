@@ -133,7 +133,34 @@
     let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"" };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
+    let playCounts = loadPlayCounts();
+    let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
+
+    function loadPlayCounts() {
+      try {
+        const raw = localStorage.getItem("playCounts");
+        return raw ? JSON.parse(raw) : {};
+      } catch (e) {
+        return {};
+      }
+    }
+    function savePlayCounts() {
+      try { localStorage.setItem("playCounts", JSON.stringify(playCounts)); } catch (e) {}
+    }
+    function loadLastSong() {
+      try { return localStorage.getItem("lastSongUrl") || ""; } catch (e) { return ""; }
+    }
+    function saveLastSong(url) {
+      lastSongUrl = url || "";
+      try { localStorage.setItem("lastSongUrl", lastSongUrl); } catch (e) {}
+    }
+    function notePlay(url) {
+      if (!url || SPECIAL_ROLES.includes(url)) return;
+      playCounts[url] = (playCounts[url] || 0) + 1;
+      savePlayCounts();
+      saveLastSong(url);
+    }
 
     function renderState() {
       document.getElementById("modeCell").textContent = state.battle_mode || "-";
@@ -453,6 +480,9 @@
           }
         };
         player.src = url;
+        if (!opts.isRole) {
+          notePlay(url);
+        }
         if (fadeIn) {
           let vol = 0.0;
           player.volume = 0;
@@ -523,7 +553,24 @@
 
     function pickRandom(arr) {
       if (!arr?.length) return null;
-      return arr[Math.floor(Math.random() * arr.length)];
+      const processed = arr.map(item => {
+        const key = typeof item === "string" ? item : (item?.url || item?.id || null);
+        const count = key ? (playCounts[key] || 0) : 0;
+        return { item, key, count };
+      });
+      let candidates = processed;
+      if (processed.length > 1 && lastSongUrl) {
+        const filtered = processed.filter(p => p.key && p.key !== lastSongUrl);
+        if (filtered.length) candidates = filtered;
+      }
+      const weights = candidates.map(p => p.key ? 1 / (1 + p.count) : 1);
+      const total = weights.reduce((a,b)=>a+b,0);
+      let r = Math.random() * total;
+      for (let i=0;i<candidates.length;i++) {
+        r -= weights[i];
+        if (r <= 0) return candidates[i].item;
+      }
+      return candidates[candidates.length-1].item;
     }
 
     function tickPoints() {
@@ -756,7 +803,7 @@
       const [first, ...rest] = roleNames;
       const url = getRoleUrl(first);
       if (!url) { if (rest.length) return playSequence(rest, loopLast, onDone); if (onDone) onDone(); return; }
-      startAudio(url, {loop: loopLast && rest.length===0, onEnd: () => {
+      startAudio(url, {loop: loopLast && rest.length===0, isRole:true, onEnd: () => {
         if (!rest.length) { if (onDone) onDone(); return; }
         playSequence(rest, loopLast, onDone);
       }});
