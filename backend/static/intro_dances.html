@@ -33,11 +33,6 @@
   <section>
     <h2>Playback Controls</h2>
     <div class="row">
-      <button class="secondary" id="tabGroup" onclick="selectTab('group')">Group</button>
-      <button class="secondary" id="tabOne" onclick="selectTab('slot_one')">Dancer 1</button>
-      <button class="secondary" id="tabTwo" onclick="selectTab('slot_two')">Dancer 2</button>
-    </div>
-    <div class="row">
       <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
       <datalist id="songSuggestions"></datalist>
     </div>
@@ -119,7 +114,7 @@
             card.className = "card";
             card.innerHTML = `<h3>${song.name||"Unnamed"}</h3><div>${(song.front_dancers||[]).join(", ")||"Front: -"}<br>${(song.dancers||[]).join(", ")||""}</div>`;
             const playBtn = document.createElement("button");
-            playBtn.textContent = "Play intro";
+            playBtn.textContent = "Play Song";
             playBtn.onclick = () => playSongWithUrl(song.url);
             card.appendChild(playBtn);
             container.appendChild(card);

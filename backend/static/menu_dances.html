@@ -33,9 +33,9 @@
   <section>
     <h2>Playback Controls</h2>
     <div class="row">
-      <button class="secondary" id="tabGroup" onclick="selectTab('group')">Group</button>
-      <button class="secondary" id="tabOne" onclick="selectTab('slot_one')">Dancer 1</button>
-      <button class="secondary" id="tabTwo" onclick="selectTab('slot_two')">Dancer 2</button>
+      <input id="randomDancerInput" placeholder="Registered dancer for random pick" list="registeredDancers" style="flex:1;">
+      <datalist id="registeredDancers"></datalist>
+      <button onclick="playRandomForDancer()">Play Random for Dancer</button>
     </div>
     <div class="row">
       <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
@@ -65,16 +65,40 @@
     let library = {};
     let songsState = {};
     let state = {};
-    let currentTab = "group";
     let currentUrl = "";
     let backgroundStarted = false;
+    let dancersList = [];
 
     async function refreshData() {
       const songs = await api("/songs").then(r=>r.json());
       songsState = songs || {};
       library = songs.library || {};
+      try {
+        const dancersResp = await api("/dancers").then(r=>r.json());
+        if (Array.isArray(dancersResp)) {
+          dancersList = dancersResp.map(d => typeof d === "string" ? d : (d?.name || "")).filter(Boolean);
+        } else if (dancersResp && typeof dancersResp === "object") {
+          dancersList = Object.keys(dancersResp || {});
+        } else {
+          dancersList = [];
+        }
+      } catch (e) {
+        dancersList = [];
+      }
+      renderDancerDatalist();
       renderSongs();
       ensureBackground();
+    }
+
+    function renderDancerDatalist() {
+      const dl = document.getElementById("registeredDancers");
+      if (!dl) return;
+      dl.innerHTML = "";
+      dancersList.sort((a,b)=>a.localeCompare(b)).forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        dl.appendChild(opt);
+      });
     }
 
     function renderSongs() {
@@ -100,7 +124,7 @@
             card.className = "card";
             card.innerHTML = `<h3>${song.name||"Unnamed"}</h3><div>Front: ${(song.front_dancers||[]).join(", ")||"-"}<br>Dancers: ${(song.dancers||[]).join(", ")||"-"}</div>`;
             const playBtn = document.createElement("button");
-            playBtn.textContent = "Play intro";
+            playBtn.textContent = "Play Song";
             playBtn.onclick = () => playSongWithUrl(song.url);
             card.appendChild(playBtn);
             container.appendChild(card);
@@ -112,10 +136,7 @@
       const currentUrlLocal = songs.current || "";
       const backgroundUrlLocal = songs.background || "";
       const filter = (document.getElementById("songFilter")?.value || "").toLowerCase();
-      const tabFilter = currentTab === "slot_one" ? (state.slot_one || "").toLowerCase()
-                     : currentTab === "slot_two" ? (state.slot_two || "").toLowerCase()
-                     : currentTab === "group" ? (state.group_name || "").toLowerCase()
-                     : "";
+      const tabFilter = (state.group_name || "").toLowerCase();
       const datalist = document.getElementById("songSuggestions");
       if (datalist) datalist.innerHTML = "";
       let currentName = "None";
@@ -184,13 +205,6 @@
     }
 
     function selectTab(tab) {
-      currentTab = tab;
-      ["tabGroup","tabOne","tabTwo"].forEach(id=>{
-        const el = document.getElementById(id);
-        if (!el) return;
-        const isActive = (id==="tabGroup" && tab==="group") || (id==="tabOne" && tab==="slot_one") || (id==="tabTwo" && tab==="slot_two");
-        el.className = isActive ? "secondary active" : "secondary";
-      });
       renderSongs();
     }
 
@@ -205,10 +219,11 @@
         if (fromSelect) return;
         return alert("Select a song");
       }
-      api("/songs/play", {method:"POST", body:{target: currentTab, url}}).catch(()=>{});
+      api("/songs/play", {method:"POST", body:{target: "group", url}}).catch(()=>{});
       if (!songsState) songsState = {};
       songsState.current = url;
       const bellUrl = getRoleUrl("bell");
+      // bell -> song -> applause -> background (loop)
       const steps = [];
       if (bellUrl) steps.push(bellUrl);
       steps.push(url);
@@ -304,6 +319,29 @@
       // normal audio
       setCurrent(url);
       startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, onEnd: () => playSequence(rest)});
+    }
+
+    function playRandomForDancer() {
+      const raw = (document.getElementById("randomDancerInput")?.value || "").trim();
+      if (!raw) {
+        alert("Select a registered dancer");
+        return;
+      }
+      const match = dancersList.find(d => d.toLowerCase() === raw.toLowerCase());
+      if (!match) {
+        alert("Select a registered dancer");
+        return;
+      }
+      const name = match.toLowerCase();
+      const pool = Object.values(library).filter(s => (s.dancers||[]).some(d => (d||"").toLowerCase() === name));
+      if (!pool.length) {
+        alert("No songs found for that dancer");
+        return;
+      }
+      const choice = pool[Math.floor(Math.random() * pool.length)];
+      if (choice?.url) {
+        playSongWithUrl(choice.url);
+      }
     }
 
     function ensureBackground() {
