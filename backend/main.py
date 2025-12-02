@@ -407,6 +407,11 @@ async def group_dances_page() -> FileResponse:
     return _static_file("intro_dances.html")
 
 
+@app.get("/dances/menu")
+async def dances_menu_page() -> FileResponse:
+    return _static_file("menu_dances.html")
+
+
 @app.post("/audio/process", response_model=AudioProcessResponse)
 async def process_audio(
     source_url: Optional[str] = Form(None),

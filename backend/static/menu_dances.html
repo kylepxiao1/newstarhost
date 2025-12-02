@@ -2,31 +2,31 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Intro Group Dances</title>
+  <title>Dance Menu</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; padding: 20px; }
     section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
     h1, h2 { margin: 0 0 10px 0; }
     .row { display: flex; gap: 8px; margin-bottom: 10px; }
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
-    select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
+    select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
     .songs { display: flex; gap: 8px; flex-wrap: wrap; }
-    .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; min-width: 180px; }
+    .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; min-width: 200px; }
     .card h3 { margin: 0 0 6px 0; font-size: 14px; }
   </style>
 </head>
 <body>
-  <h1>Intro Group Dances</h1>
+  <h1>Dance Menu</h1>
   <section>
-    <h2>Select Front Dancer</h2>
+    <h2>Filters</h2>
     <div class="row">
-      <select id="frontSelect" onchange="renderSongs()"></select>
+      <input id="dancerFilter" placeholder="Filter by dancer" oninput="renderSongs()">
       <button onclick="refreshData()">Refresh</button>
     </div>
   </section>
 
   <section>
-    <h2>Group Songs</h2>
+    <h2>All Songs</h2>
     <div id="songsContainer" class="songs"></div>
   </section>
 
@@ -73,51 +73,32 @@
       const songs = await api("/songs").then(r=>r.json());
       songsState = songs || {};
       library = songs.library || {};
-      renderFronts();
       renderSongs();
       ensureBackground();
     }
 
-    function renderFronts() {
-      const sel = document.getElementById("frontSelect");
-      if (!sel) return;
-      const fronts = new Set();
-      Object.values(library).forEach(s => (s.front_dancers||[]).forEach(f => fronts.add(f)));
-      sel.innerHTML = "";
-      const any = document.createElement("option");
-      any.value = "";
-      any.textContent = "All fronts";
-      sel.appendChild(any);
-      Array.from(fronts).sort((a,b)=>a.localeCompare(b)).forEach(f => {
-        const opt = document.createElement("option");
-        opt.value = f;
-        opt.textContent = f;
-        sel.appendChild(opt);
-      });
-    }
-
     function renderSongs() {
       const container = document.getElementById("songsContainer");
+      const baseFilter = (s) => {
+        const hasRole = (s.roles || []).length > 0;
+        const hasDancers = (s.dancers || []).length > 0;
+        return !hasRole && hasDancers;
+      };
       if (container) {
         container.innerHTML = "";
-        const selectedFront = (document.getElementById("frontSelect")?.value || "").toLowerCase();
+        const dancerFilter = (document.getElementById("dancerFilter")?.value || "").toLowerCase();
         Object.values(library)
+          .filter(baseFilter)
           .filter(s => {
-            if (!selectedFront) return true;
-            return (s.front_dancers||[]).map(x=>x.toLowerCase()).includes(selectedFront);
-          })
-          .filter(s => {
+            if (!dancerFilter) return true;
             const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
-            return all.some(n => {
-              const low = (n||"").toLowerCase();
-              return low.includes("boys") || low.includes("girls");
-            });
+            return all.some(n => (n||"").toLowerCase().includes(dancerFilter));
           })
           .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
           .forEach(song => {
             const card = document.createElement("div");
             card.className = "card";
-            card.innerHTML = `<h3>${song.name||"Unnamed"}</h3><div>${(song.front_dancers||[]).join(", ")||"Front: -"}<br>${(song.dancers||[]).join(", ")||""}</div>`;
+            card.innerHTML = `<h3>${song.name||"Unnamed"}</h3><div>Front: ${(song.front_dancers||[]).join(", ")||"-"}<br>Dancers: ${(song.dancers||[]).join(", ")||"-"}</div>`;
             const playBtn = document.createElement("button");
             playBtn.textContent = "Play intro";
             playBtn.onclick = () => playSongWithUrl(song.url);
@@ -162,16 +143,18 @@
       if (select) {
         select.innerHTML = "";
         Object.keys(lib).forEach(key => {
+          const song = lib[key];
+          if (!baseFilter(song)) return;
           const opt = document.createElement("option");
-          opt.value = lib[key].url;
-          let label = lib[key].name || key;
-          const fronts = (lib[key].front_dancers || []).join(", ");
+          opt.value = song.url;
+          let label = song.name || key;
+          const fronts = (song.front_dancers || []).join(", ");
           if (fronts) {
             label += ` (Front: ${fronts})`;
           }
           opt.textContent = label;
           const dancerMatch = tabFilter
-            ? (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
+            ? (song.dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
             : true;
           const matches = (!filter || label.toLowerCase().includes(filter)) && dancerMatch;
           if (matches) {
@@ -200,21 +183,6 @@
       }
     }
 
-    function renderState() {
-      renderSongs();
-    }
-
-    function refreshState() {
-      api("/state").then(r=>r.json()).then(s => { state = s; renderState(); ensureBackground(); });
-    }
-
-    function refreshSongs() {
-      api("/songs").then(r => r.json()).then(s => {
-        songsState = s || {};
-        renderSongs();
-      });
-    }
-
     function selectTab(tab) {
       currentTab = tab;
       ["tabGroup","tabOne","tabTwo"].forEach(id=>{
@@ -237,11 +205,10 @@
         if (fromSelect) return;
         return alert("Select a song");
       }
-      const bellUrl = getRoleUrl("bell");
       api("/songs/play", {method:"POST", body:{target: currentTab, url}}).catch(()=>{});
       if (!songsState) songsState = {};
       songsState.current = url;
-      // bell -> song -> applause -> background (if any)
+      const bellUrl = getRoleUrl("bell");
       const steps = [];
       if (bellUrl) steps.push(bellUrl);
       steps.push(url);
