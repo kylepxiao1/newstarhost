@@ -43,6 +43,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.debug("Camera source ensure skipped")
     logger.info("Service started. Overlay websocket at %s", config.WEBSOCKET_PATH)
+    _cleanup_unregistered_media(state_manager)
     yield
     obs.disconnect()
 
@@ -164,6 +165,29 @@ def _norm_filename(s: str) -> str:
     s = re.sub(r'[\\/*?:"<>|]+', "", s)
     s = re.sub(r"\s+", " ", s.strip())
     return s[:200] or "untitled"
+
+def _cleanup_unregistered_media(state_manager: BattleStateManager) -> None:
+    """
+    Remove mp3 files in media/ that are not referenced by the song library.
+    """
+    try:
+        state = state_manager.get_state()
+        lib = state.get("songs", {}).get("library", {}) or {}
+        keep = set()
+        for val in lib.values():
+            url = val.get("url") or ""
+            name = url.split("/")[-1] if url else ""
+            if name.lower().endswith(".mp3"):
+                keep.add(name)
+        for path in MEDIA_DIR.glob("*.mp3"):
+            if path.name not in keep:
+                try:
+                    path.unlink()
+                    logger.info("Removed unregistered media file: %s", path.name)
+                except Exception as exc:
+                    logger.warning("Failed to remove %s: %s", path, exc)
+    except Exception as exc:
+        logger.warning("Cleanup of unregistered media failed: %s", exc)
 
 
 async def download_via_api(url: str) -> Optional[Path]:

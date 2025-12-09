@@ -213,3 +213,6 @@ scripts/ffmpeg-download*
 *.cookies
 *.cookie
 *.pem
+
+# Zip files
+*.zip

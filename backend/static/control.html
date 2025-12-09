@@ -27,6 +27,8 @@
     .bar-wrap { width: 100%; height: 18px; background: #0b1222; border: 1px solid #1f2937; border-radius: 10px; overflow: hidden; display: flex; }
     .bar-left { background: #ef4444; height: 100%; }
     .bar-right { background: #3b82f6; height: 100%; }
+    .leader1 { background: #7f1d1d; color:#fef2f2; border-radius: 6px; padding: 4px 6px; }
+    .leader2 { background: #1d4ed8; color:#eff6ff; border-radius: 6px; padding: 4px 6px; }
     .secondary.active { background:#22c55e; color:#0b1222; }
     .hint { position: relative; display:flex; flex:1; }
     .hint-text { position:absolute; top:-28px; left:0; background:#111827; border:1px solid #1f2937; padding:4px 8px; border-radius:6px; font-size:12px; white-space:nowrap; opacity:0; visibility:hidden; transition:opacity .1s; z-index:10; }
@@ -64,7 +66,6 @@
         <select id="nextPairSelect" style="flex:1;">
           <option value="">(choose next dancer or leave random)</option>
         </select>
-        <button class="secondary" onclick="pickNextPair()">Pick Next Pair</button>
       </div>
       <div class="row" style="align-items:center;">
         <span id="nextPairLabel" style="font-weight:700;">Next pair: -</span>
@@ -87,7 +88,6 @@
       <div class="row" id="enabledDancers"></div>
       <div class="row" id="winsEditor" style="flex-wrap:wrap; gap:8px;"></div>
       <table>
-        <tr><td>Mode</td><td id="modeCell">-</td></tr>
         <tr><td>Slot One</td><td id="slotOneCell">-</td></tr>
         <tr><td>Slot Two</td><td id="slotTwoCell">-</td></tr>
         <tr><td>Points</td><td>
@@ -201,9 +201,25 @@
     }
 
     function renderState() {
-      document.getElementById("modeCell").textContent = state.battle_mode || "-";
-      document.getElementById("slotOneCell").textContent = state.slot_one || "-";
-      document.getElementById("slotTwoCell").textContent = state.slot_two || "-";
+      const slotOne = state.slot_one || "-";
+      const slotTwo = state.slot_two || "-";
+      const scores = state.scores || {slot_one:0, slot_two:0};
+      const a = scores.slot_one || 0;
+      const b = scores.slot_two || 0;
+      const slotOneCell = document.getElementById("slotOneCell");
+      const slotTwoCell = document.getElementById("slotTwoCell");
+      slotOneCell.textContent = slotOne;
+      slotTwoCell.textContent = slotTwo;
+      slotOneCell.classList.remove("leader","leader1","leader2");
+      slotTwoCell.classList.remove("leader","leader1","leader2");
+      if (a === b && a > 0) {
+        slotOneCell.classList.add("leader1");
+        slotTwoCell.classList.add("leader2");
+      } else if (a > b) {
+        slotOneCell.classList.add("leader1");
+      } else if (b > a) {
+        slotTwoCell.classList.add("leader2");
+      }
       renderPointsBar();
       renderWinnerSelect();
       renderGroupSelect();
@@ -355,6 +371,7 @@
         const match = Array.from(sel.options).find(o => (o.value || "").toLowerCase() === currentVal.toLowerCase());
         if (match) sel.value = match.value;
       }
+      sel.onchange = () => pickNextPair();
     }
 
     function renderWinsEditor() {
