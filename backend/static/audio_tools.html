@@ -15,6 +15,14 @@
   </style>
 </head>
 <body>
+  <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:5;width:100%;">
+    <a href="/battle/control" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
+    <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
+    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;">Dance Menu</a>
+    <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
+    <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
+    <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;font-weight:700;">Audio Tools</a>
+  </nav>
   <h1>Audio Tools</h1>
   <section>
     <h2>Download / Trim to MP3</h2>
@@ -80,6 +88,16 @@
     </div>
   </section>
 
+  <section>
+    <h2>Batch CSV (title,artist) → Shorts</h2>
+    <label for="csvBox">Paste CSV rows like: Title,Artist</label>
+    <textarea id="csvBox" style="width:100%; min-height:140px; background:#0b1222; color:#e2e8f0; border:1px solid #1f2937; border-radius:8px; padding:8px;"></textarea>
+    <div class="row" style="margin-top:8px;">
+      <button onclick="processCsv()">Process CSV</button>
+    </div>
+    <div id="csvResults" style="font-family:monospace; white-space:pre-wrap;"></div>
+  </section>
+
   <script>
     let mode = "youtube";
     function selectMode(next) {
@@ -141,6 +159,42 @@
       const div = document.getElementById("result");
       div.innerHTML += `<br>Registered as: ${derivedName || url}`;
     }
+
+    async function processCsv() {
+      const text = document.getElementById("csvBox").value || "";
+      if (!text.trim()) return alert("Paste CSV rows first.");
+      const out = document.getElementById("csvResults");
+      out.textContent = "Processing...";
+      try {
+        const res = await fetch("/audio/batch_csv", {method:"POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({csv_text: text})});
+        const data = await res.json();
+        const rows = (data.results || []).map(r => {
+          const status = r.status || "error";
+          const path = r.output || "";
+          const note = r.note || "";
+          return `${status.toUpperCase()} | ${r.title || ""} — ${r.artist || ""} ${path ? "=> "+path : ""} ${note} ${r.song_id ? "(registered)" : ""}`;
+        });
+        out.textContent = rows.join("\n") || "No rows processed.";
+      } catch (e) {
+        out.textContent = "Failed: " + e;
+      }
+    }
+    function highlightNav() {
+      let here = location.pathname.replace(/\/+$/,"");
+      if (!here) here = "/";
+      const links = Array.from(document.querySelectorAll(".nav-bar a"));
+      let best = null;
+      links.forEach(a => {
+        let link = (a.getAttribute("href") || "").replace(/\/+$/,"");
+        if (!link) link = "/";
+        if (here === link || here.startsWith(link)) {
+          if (!best || link.length > best.href.length) best = {el:a, href:link};
+        }
+      });
+      links.forEach(a => a.classList.remove("active"));
+      if (best) best.el.classList.add("active");
+    }
+    highlightNav();
   </script>
 </body>
 </html>

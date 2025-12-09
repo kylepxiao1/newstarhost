@@ -13,9 +13,18 @@
     .songs { display: flex; gap: 8px; flex-wrap: wrap; }
     .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; min-width: 180px; }
     .card h3 { margin: 0 0 6px 0; font-size: 14px; }
+    .nav-bar a.active { font-weight:700; }
   </style>
 </head>
 <body>
+  <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:10px;position:sticky;top:0;z-index:5;">
+    <a href="/battle/control" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
+    <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
+    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;">Dance Menu</a>
+    <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
+    <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
+    <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
+  </nav>
   <h1>Intro Group Dances</h1>
   <section>
     <h2>Select Front Dancer</h2>
@@ -373,9 +382,18 @@
       saveLastSong(url);
     }
 
+    function highlightNav() {
+      const here = location.pathname.replace(/\/+$/,"") || "/";
+      document.querySelectorAll(".nav-bar a").forEach(a => {
+        const link = (a.getAttribute("href") || "").replace(/\/+$/,"") || "/";
+        if (link === here) a.classList.add("active"); else a.classList.remove("active");
+      });
+    }
+
     refreshData();
     refreshState();
     refreshSongs();
+    highlightNav();
   </script>
 </body>
 </html>

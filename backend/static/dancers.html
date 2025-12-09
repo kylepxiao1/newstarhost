@@ -14,9 +14,18 @@
     th, td { padding: 8px; border-bottom: 1px solid #1f2937; text-align: left; }
     .actions { display: flex; gap: 6px; flex-wrap: wrap; }
     select, option { color: #0b1222; }
+    
   </style>
 </head>
 <body>
+  <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:5;width:100%;">
+    <a href="/battle/control" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
+    <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
+    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;">Dance Menu</a>
+    <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;font-weight:700;">Dancers</a>
+    <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
+    <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
+  </nav>
   <h1>Dancer Registry</h1>
   <section>
     <h2>Add Dancer</h2>
@@ -29,7 +38,7 @@
   <section>
     <h2>Registered Dancers</h2>
     <table>
-      <thead><tr><th>Name</th><th>Handle</th><th>Songs</th><th>Front Dancer</th><th>Actions</th></tr></thead>
+      <thead><tr><th>Name</th><th>Handle</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>Actions</th></tr></thead>
       <tbody id="dancerTable"></tbody>
     </table>
   </section>
@@ -45,6 +54,7 @@
       dancers.forEach(d => {
         const name = d.name || "";
         const knows = [];
+        const knowsOnly = [];
         const fronts = [];
         Object.values(songsLib).forEach(song => {
           const sname = song.name || "";
@@ -52,7 +62,8 @@
           const knowsList = (song.knows_song || []).map(x => (x || "").toLowerCase());
           const frontsList = (song.front_dancers || []).map(x => (x || "").toLowerCase());
           const target = name.toLowerCase();
-          if (dancerList.includes(target) || knowsList.includes(target)) knows.push(sname);
+          if (dancerList.includes(target)) knows.push(sname);
+          if (knowsList.includes(target)) knowsOnly.push(sname);
           if (frontsList.includes(target)) fronts.push(sname);
         });
         const tr = document.createElement("tr");
@@ -71,9 +82,12 @@
         const btnRemKnow = document.createElement("button");
         btnRemKnow.textContent = "Remove from dancer";
         btnRemKnow.onclick = ()=>updateDancerList(name, selKnow.value, false);
-        actions.appendChild(selKnow); actions.appendChild(btnAddKnow); actions.appendChild(btnRemKnow);
+        const btnDel = document.createElement("button");
+        btnDel.textContent = "Delete dancer";
+        btnDel.onclick = () => deleteDancer(name);
+        actions.appendChild(selKnow); actions.appendChild(btnAddKnow); actions.appendChild(btnRemKnow); actions.appendChild(btnDel);
 
-        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${knows.join(", ")}</td><td>${fronts.join(", ")}</td>`;
+        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${knows.join(", ")}</td><td>${knowsOnly.join(", ")}</td><td>${fronts.join(", ")}</td>`;
         tr.appendChild(actions);
         tbody.appendChild(tr);
       });
@@ -108,6 +122,19 @@
       if (!name || !handle) return;
       api("/dancers/register",{method:"POST", body:{name, handle}}).then(()=>{document.getElementById("dancerName").value="";document.getElementById("dancerHandle").value="";load();});
     }
+
+    function deleteDancer(name) {
+      if (!confirm(`Delete dancer ${name} and remove from all songs?`)) return;
+      api("/dancers/delete", {method:"POST", body:{name}}).then(()=>load());
+    }
+
+    (function highlightNav(){
+      const here = location.pathname.replace(/\/+$/,"") || "/";
+      document.querySelectorAll(".nav-bar a").forEach(a => {
+        const link = (a.getAttribute("href") || "").replace(/\/+$/,"") || "/";
+        if (link === here) a.classList.add("active"); else a.classList.remove("active");
+      });
+    })();
 
     load();
   </script>

@@ -1,11 +1,17 @@
 import logging
 import os
 import re
+import io
+import csv
+import unicodedata
+import uuid
+import shutil
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Tuple
 
 import uvicorn
 import httpx
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
@@ -27,7 +33,21 @@ MEDIA_DIR.mkdir(exist_ok=True)
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "522756c8bamshcbed3268bd8d8a7p15af50jsn5acd33380e60")
 RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "youtube-mp310.p.rapidapi.com")
 
-app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    obs.connect()
+    try:
+        obs.ensure_capture_source_visible(config.SCENE_BATTLE, config.CACHE_CAMERA_SOURCE)
+        obs.ensure_capture_source_visible(config.SCENE_MAIN, config.CACHE_CAMERA_SOURCE)
+    except Exception:
+        logger.debug("Camera source ensure skipped")
+    logger.info("Service started. Overlay websocket at %s", config.WEBSOCKET_PATH)
+    yield
+    obs.disconnect()
+
+
+app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json", lifespan=lifespan)
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 app.add_middleware(
     CORSMiddleware,
@@ -135,6 +155,42 @@ class WinRequest(BaseModel):
     wins: Optional[int] = None
 
 
+class DeleteDancerRequest(BaseModel):
+    name: str
+
+
+def _norm_filename(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
+    s = re.sub(r'[\\/*?:"<>|]+', "", s)
+    s = re.sub(r"\s+", " ", s.strip())
+    return s[:200] or "untitled"
+
+
+async def download_via_api(url: str) -> Optional[Path]:
+    if not RAPIDAPI_KEY:
+        return None
+    api_url = f"https://{RAPIDAPI_HOST}/download/mp3"
+    headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
+    temp_path = None
+    try:
+        resp = httpx.get(api_url, params={"url": url}, headers=headers, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+        link = data.get("downloadUrl") or data.get("link") or data.get("result") or data.get("url")
+        if not link:
+            return None
+        audio = httpx.get(link, timeout=120)
+        audio.raise_for_status()
+        if not audio.headers.get("content-type", "").startswith("audio/"):
+            return None
+        temp_path = MEDIA_DIR / f"api_{uuid.uuid4().hex}.mp3"
+        temp_path.write_bytes(audio.content)
+        return temp_path
+    except Exception as exc:
+        logger.warning("RapidAPI download failed: %s", exc)
+        return None
+
+
 def _broadcast_state(state: dict) -> None:
     # Fire-and-forget broadcast
     import asyncio
@@ -156,22 +212,6 @@ def _normalize_slot(raw: str) -> str:
     if token in {"2", "two", "slot2", "slot_two", "b", "beta"}:
         return "slot_two"
     return raw
-
-
-@app.on_event("startup")
-async def startup_event() -> None:
-    obs.connect()
-    try:
-        obs.ensure_capture_source_visible(config.SCENE_BATTLE, config.CACHE_CAMERA_SOURCE)
-        obs.ensure_capture_source_visible(config.SCENE_MAIN, config.CACHE_CAMERA_SOURCE)
-    except Exception:
-        logger.debug("Camera source ensure skipped")
-    logger.info("Service started. Overlay websocket at %s", config.WEBSOCKET_PATH)
-
-
-@app.on_event("shutdown")
-async def shutdown_event() -> None:
-    obs.disconnect()
 
 
 @app.post("/battle/start")
@@ -336,6 +376,12 @@ async def register_dancer(body: DancerRequest) -> JSONResponse:
     _broadcast_state(state)
     return JSONResponse(state)
 
+@app.post("/dancers/delete")
+async def delete_dancer(body: DeleteDancerRequest) -> JSONResponse:
+    state = state_manager.delete_dancer(body.name)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
 
 @app.get("/dancers")
 async def get_dancers() -> JSONResponse:
@@ -443,29 +489,6 @@ async def process_audio(
             return ""
         return ""
 
-    async def download_via_api(url: str) -> Optional[Path]:
-        if not RAPIDAPI_KEY:
-            return None
-        api_url = f"https://{RAPIDAPI_HOST}/download/mp3"
-        headers = {"x-rapidapi-key": RAPIDAPI_KEY, "x-rapidapi-host": RAPIDAPI_HOST}
-        try:
-            resp = httpx.get(api_url, params={"url": url}, headers=headers, timeout=60)
-            resp.raise_for_status()
-            data = resp.json()
-            link = data.get("downloadUrl") or data.get("link") or data.get("result") or data.get("url")
-            if not link:
-                return None
-            audio = httpx.get(link, timeout=120)
-            audio.raise_for_status()
-            if not audio.headers.get("content-type", "").startswith("audio/"):
-                return None
-            temp_path = MEDIA_DIR / f"api_{uuid.uuid4().hex}.mp3"
-            temp_path.write_bytes(audio.content)
-            return temp_path
-        except Exception as exc:
-            logger.warning("RapidAPI download failed: %s", exc)
-            return None
-
     if file:
         temp_path = MEDIA_DIR / f"upload_{uuid.uuid4().hex}_{file.filename}"
         with temp_path.open("wb") as f:
@@ -525,6 +548,149 @@ async def process_audio(
         )
 
     return JSONResponse({"output": f"/media/{out_name}", "note": note or "Downloaded", "title": title})
+
+EXCLUDE_TERMS = {"tutorial", "dancetutorial", "slow"}
+
+
+def _find_short_url(query: str) -> Optional[str]:
+    try:
+        import yt_dlp
+    except ImportError:
+        logger.warning("yt_dlp not installed for short search")
+        return None
+    def _looks_like_short(entry: dict) -> bool:
+        dur = entry.get("duration")
+        return isinstance(dur, (int, float)) and dur > 0 and dur <= 90
+    def _is_excluded(entry: dict) -> bool:
+        fields = " ".join(str(entry.get(k, "")) for k in ("title", "description", "tags")).lower()
+        return any(term in fields for term in EXCLUDE_TERMS)
+    # Get duration data; avoid flat extraction so duration is available
+    opts = {
+        "quiet": True,
+        "skip_download": True,
+        "extract_flat": False,
+        "default_search": "ytsearch",
+        "noplaylist": True,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(f"ytsearch12:{query}", download=False)
+        entries = (info or {}).get("entries") or []
+        shorts = []
+        for e in entries:
+            if _is_excluded(e):
+                logger.debug("Excluded entry for '%s' due to terms: %s", query, e.get("title"))
+                continue
+            if _looks_like_short(e):
+                shorts.append(e)
+        if not shorts:
+            logger.warning("No shorts found for query '%s'", query)
+            return None
+        shorts.sort(key=lambda e: e.get("duration") or 9999)
+        target = shorts[0]
+        return target.get("url") or target.get("webpage_url")
+    except Exception as exc:
+        logger.warning("Short search failed for '%s': %s", query, exc)
+    return None
+
+
+def _download_short_mp3(url: str, title: str, artist: str) -> Optional[Tuple[str, str]]:
+    """Returns (public_path, note) or None"""
+    try:
+        import yt_dlp
+    except ImportError:
+        logger.warning("yt_dlp not installed for short download")
+        return None
+    out_name = f"{_norm_filename(artist)} - {_norm_filename(title)}.mp3"
+    out_path = MEDIA_DIR / out_name
+    ydl_opts = {
+        "quiet": True,
+        "format": "bestaudio/best",
+        "outtmpl": str(MEDIA_DIR / f"tmp_%(id)s.%(ext)s"),
+        "noplaylist": True,
+    }
+    temp_file = None
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+        if not info:
+            logger.warning("yt_dlp returned no info for %s", url)
+            return None
+        for r in (info.get("requested_downloads") or []):
+            if r.get("filepath"):
+                temp_file = r["filepath"]
+                break
+        if not temp_file:
+            vid = info.get("id")
+            ext = info.get("ext") or "m4a"
+            guess = MEDIA_DIR / f"tmp_{vid}.{ext}"
+            if guess.exists():
+                temp_file = str(guess)
+        if not temp_file:
+            logger.warning("No temp file produced for %s", url)
+            return None
+        ffmpeg_bin = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg")
+        if ffmpeg_bin and Path(ffmpeg_bin).exists():
+            cmd = [ffmpeg_bin, "-y", "-i", temp_file, "-vn", "-acodec", "libmp3lame", "-b:a", "192k", str(out_path)]
+            subprocess.run(cmd, check=True, capture_output=True)
+        else:
+            shutil.copyfile(temp_file, out_path)
+        return (f"/media/{out_name}", "Downloaded short")
+    except Exception as exc:
+        logger.warning("Short download failed for %s: %s", url, exc)
+        return None
+    finally:
+        try:
+            if temp_file and os.path.exists(temp_file):
+                os.remove(temp_file)
+        except Exception:
+            pass
+
+
+class CSVBatchRequest(BaseModel):
+    csv_text: str
+
+
+@app.post("/audio/batch_csv")
+async def audio_batch_csv(body: CSVBatchRequest) -> JSONResponse:
+    """
+    Accepts CSV text with columns: title, artist
+    Returns per-row status and output path if downloaded.
+    """
+    text = body.csv_text or ""
+    reader = csv.reader(io.StringIO(text))
+    results = []
+    latest_state = None
+    for row in reader:
+        if not row or len(row) < 2:
+            continue
+        title, artist = row[0].strip(), row[1].strip()
+        if not title and not artist:
+            continue
+        if title.lower() == "title" and artist.lower() == "artist":
+            continue
+        query = f"{artist} {title}".strip()
+        url = _find_short_url(query)
+        if not url:
+            results.append({"title": title, "artist": artist, "status": "error", "note": "no short found"})
+            continue
+        dl_tmp = await download_via_api(url)
+        if not dl_tmp:
+            results.append({"title": title, "artist": artist, "status": "error", "note": "download failed"})
+            continue
+        final_name = f"{_norm_filename(artist)} - {_norm_filename(title)}.mp3"
+        final_path = MEDIA_DIR / final_name
+        try:
+            shutil.move(str(dl_tmp), final_path)
+        except Exception:
+            final_path = dl_tmp
+        public = f"/media/{final_path.name}"
+        song_id = uuid.uuid4().hex
+        latest_state = state_manager.register_song(song_id, title or final_path.stem, public, [], [], [], None, None)
+        results.append({"title": title, "artist": artist, "status": "ok", "output": public, "note": "Downloaded via API", "song_id": song_id})
+    if latest_state:
+        _broadcast_state(latest_state)
+    return JSONResponse({"results": results})
 
 
 def run() -> None:

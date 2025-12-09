@@ -236,6 +236,37 @@ class BattleStateManager:
             self._persist_dancers(dancers)
             return self._state.copy()
 
+    def delete_dancer(self, name: str) -> Dict:
+        with self._lock:
+            target = (name or "").lower()
+            dancers = [d for d in (self._state.dancers or []) if (d.get("name","").lower() != target and d.get("handle","").lower() != target)]
+            self._state.dancers = dancers
+            self._persist_dancers(dancers)
+            # remove from enabled
+            self._state.enabled_dancers = [d for d in (self._state.enabled_dancers or []) if d.lower() != target]
+            # clear last_winner/group if matches
+            if (self._state.last_winner or "").lower() == target:
+                self._state.last_winner = ""
+            if (self._state.group_name or "").lower() == target:
+                self._state.group_name = ""
+            # drop win counts
+            wins = self._state.win_counts or {}
+            wins.pop(name, None)
+            self._state.win_counts = wins
+            # remove from songs
+            lib = self._state.songs.get("library", {})
+            changed = False
+            for sid, val in lib.items():
+                for key in ["dancers", "front_dancers", "mvp_dancers", "knows_song"]:
+                    if key in val and isinstance(val[key], list):
+                        before = len(val[key])
+                        val[key] = [x for x in val[key] if (x or "").lower() != target]
+                        if len(val[key]) != before:
+                            changed = True
+            if changed:
+                self._persist_library(lib)
+            return self._state.copy()
+
     def set_last_winner(self, name: str) -> Dict:
         with self._lock:
             self._state.last_winner = name

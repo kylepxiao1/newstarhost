@@ -27,9 +27,22 @@
     .bar-wrap { width: 100%; height: 18px; background: #0b1222; border: 1px solid #1f2937; border-radius: 10px; overflow: hidden; display: flex; }
     .bar-left { background: #ef4444; height: 100%; }
     .bar-right { background: #3b82f6; height: 100%; }
+    .secondary.active { background:#22c55e; color:#0b1222; }
+    .hint { position: relative; display:flex; flex:1; }
+    .hint-text { position:absolute; top:-28px; left:0; background:#111827; border:1px solid #1f2937; padding:4px 8px; border-radius:6px; font-size:12px; white-space:nowrap; opacity:0; visibility:hidden; transition:opacity .1s; z-index:10; }
+    .hint:hover .hint-text { opacity:1; visibility:visible; }
+    .nav-bar a.active { font-weight:700; }
   </style>
 </head>
 <body>
+  <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:10px;position:sticky;top:0;z-index:5;">
+    <a href="/battle/control" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
+    <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
+    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;">Dance Menu</a>
+    <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
+    <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
+    <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
+  </nav>
   <header>
     <div>
       <h1>TikTok Battle Control</h1>
@@ -43,6 +56,18 @@
       <div class="row">
         <button class="secondary" onclick="startRoutine()">Simulate 2m Battle Routine</button>
         <button class="danger" onclick="cancelRoutine()">Cancel Routine</button>
+      </div>
+      <div class="row">
+        <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
+      </div>
+      <div class="row" style="align-items:center;">
+        <select id="nextPairSelect" style="flex:1;">
+          <option value="">(choose next dancer or leave random)</option>
+        </select>
+        <button class="secondary" onclick="pickNextPair()">Pick Next Pair</button>
+      </div>
+      <div class="row" style="align-items:center;">
+        <span id="nextPairLabel" style="font-weight:700;">Next pair: -</span>
       </div>
       <div class="row">
         <span>Timer: <strong id="timerDisplay">-</strong></span>
@@ -89,9 +114,13 @@
         <button class="secondary" id="tabGroup" onclick="selectTab('group')">Group</button>
         <button class="secondary" id="tabOne" onclick="selectTab('slot_one')">Dancer 1</button>
         <button class="secondary" id="tabTwo" onclick="selectTab('slot_two')">Dancer 2</button>
+        <button class="secondary" id="tabIntersect" onclick="selectTab('intersect')">Intersect</button>
       </div>
       <div class="row">
-        <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
+        <div class="hint">
+          <span class="hint-text">Type to filter; select to play</span>
+          <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
+        </div>
         <datalist id="songSuggestions"></datalist>
       </div>
       <div class="row">
@@ -130,12 +159,21 @@
     const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
     let state = {};
     let currentTab = "group";
-    let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"" };
+    let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set() };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
+    let nextPairOverride = null;
+
+    function highlightNav() {
+      const here = location.pathname.replace(/\/+$/,"") || "/";
+      document.querySelectorAll(".nav-bar a").forEach(a => {
+        const link = (a.getAttribute("href") || "").replace(/\/+$/,"") || "/";
+        if (link === here) a.classList.add("active"); else a.classList.remove("active");
+      });
+    }
 
     function loadPlayCounts() {
       try {
@@ -238,6 +276,7 @@
       sel.appendChild(empty);
       opts.forEach(o => sel.appendChild(o));
       if (current && !sel.value) sel.value = current;
+      renderNextPairOptions();
     }
 
     function renderGroupSelect() {
@@ -263,6 +302,7 @@
       sel.appendChild(empty);
       opts.forEach(o => sel.appendChild(o));
       if (current && !sel.value) sel.value = current;
+      renderNextPairOptions();
     }
 
     function renderEnabledDancers() {
@@ -287,6 +327,34 @@
         wrap.appendChild(span);
         container.appendChild(wrap);
       });
+      renderNextPairOptions();
+    }
+
+    function renderNextPairOptions() {
+      const sel = document.getElementById("nextPairSelect");
+      if (!sel) return;
+      const currentVal = sel.value;
+      const enabled = state.enabled_dancers || [];
+      const dancers = state.dancers || [];
+      sel.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "(choose next dancer or leave random)";
+      sel.appendChild(placeholder);
+      const enabledSet = new Set(enabled.map(x => (x||"").toLowerCase()));
+      dancers.forEach(d => {
+        const name = d.name || "";
+        if (!name) return;
+        if (enabled.length && !enabledSet.has(name.toLowerCase())) return;
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      if (currentVal) {
+        const match = Array.from(sel.options).find(o => (o.value || "").toLowerCase() === currentVal.toLowerCase());
+        if (match) sel.value = match.value;
+      }
     }
 
     function renderWinsEditor() {
@@ -321,6 +389,7 @@
         wrap.appendChild(btn);
         container.appendChild(wrap);
       });
+      renderNextPairOptions();
     }
 
     function refreshState() {
@@ -346,12 +415,24 @@
     function toggleOverlay(name, show) { api(`/overlay/${name}/${show?"show":"hide"}`, {method:"POST"}).then(refreshState); }
 
     function selectTab(tab) {
-      currentTab = tab;
-      ["tabGroup","tabOne","tabTwo"].forEach(id=>{
+      // toggle off if clicking the active tab
+      if (currentTab === tab) {
+        currentTab = "";
+      } else {
+        currentTab = tab;
+      }
+      ["tabGroup","tabOne","tabTwo","tabIntersect"].forEach(id=>{
         const el = document.getElementById(id);
         if (!el) return;
-        const isActive = (id==="tabGroup" && tab==="group") || (id==="tabOne" && tab==="slot_one") || (id==="tabTwo" && tab==="slot_two");
-        el.className = isActive ? "secondary active" : "secondary";
+        const isActive = (id==="tabGroup" && tab==="group")
+          || (id==="tabOne" && tab==="slot_one")
+          || (id==="tabTwo" && tab==="slot_two")
+          || (id==="tabIntersect" && tab==="intersect");
+        const shouldActive = isActive && currentTab === tab;
+        el.className = shouldActive ? "secondary active" : "secondary";
+        if (shouldActive) {
+          el.focus();
+        }
       });
       renderSongs();
     }
@@ -365,9 +446,11 @@
       const tabFilter = currentTab === "slot_one" ? (state.slot_one || "").toLowerCase()
                      : currentTab === "slot_two" ? (state.slot_two || "").toLowerCase()
                      : currentTab === "group" ? (state.group_name || "").toLowerCase()
+                     : currentTab === "intersect" ? "intersect"
                      : "";
       const datalist = document.getElementById("songSuggestions");
-      datalist.innerHTML = "";
+      const filterFocused = document.activeElement && document.activeElement.id === "songFilter";
+      if (!filterFocused) datalist.innerHTML = "";
       let currentName = "-";
       const tryResolve = (url) => {
         let name = "-";
@@ -399,17 +482,25 @@
           label += ` (Front: ${fronts})`;
         }
         opt.textContent = label;
-        const dancerMatch = tabFilter
-          ? (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
-          : true;
-        const matches = (!filter || label.toLowerCase().includes(filter)) && dancerMatch;
-        if (matches) {
-          select.appendChild(opt);
+        let matches = (!filter || label.toLowerCase().includes(filter));
+        if (tabFilter && tabFilter !== "intersect") {
+          matches = matches && (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter));
+        }
+        if (tabFilter === "intersect") {
+          if (state.slot_one && state.slot_two) {
+            const both = intersectSongsFor(state.slot_one, state.slot_two).map(s => s.url);
+            matches = matches && both.includes(lib[key].url);
+          } else {
+            matches = false;
+          }
         }
         if (matches) {
-          const dOpt = document.createElement("option");
-          dOpt.value = label;
-          datalist.appendChild(dOpt);
+          select.appendChild(opt);
+          if (!filterFocused) {
+            const dOpt = document.createElement("option");
+            dOpt.value = label;
+            datalist.appendChild(dOpt);
+          }
         }
       });
       if (!select.value && select.options.length) select.selectedIndex = 0;
@@ -590,9 +681,9 @@
       let slot = Math.random() < 0.5 ? "slot_one" : "slot_two";
       const diff = (scores.slot_one||0) - (scores.slot_two||0);
       const losing = diff > 0 ? "slot_two" : diff < 0 ? "slot_one" : null;
-      if (losing && Math.random() < 0.05) { // comeback chance
+      if (losing && Math.random() < 0.03) { // comeback chance
         slot = losing;
-        amount += Math.round(mean * 30);
+        amount += Math.round(mean * 25);
       }
       api(`/score/${slot}/add`, {method:"POST", body:{amount}}).then(refreshState);
     }
@@ -608,6 +699,12 @@
     function chooseTwoDancers() {
       const dancers = getEnabledDancers();
       if (dancers.length < 2) return ["Dancer A", "Dancer B"];
+      if (nextPairOverride && nextPairOverride.length === 2) {
+        const pair = nextPairOverride;
+        nextPairOverride = null;
+        setNextPairLabel("-");
+        return pair;
+      }
       const last = (state.last_winner || "").toLowerCase();
       const match = dancers.find(d => (d.name||"").toLowerCase() === last);
       const others = dancers.filter(d => d !== match);
@@ -619,19 +716,154 @@
       return [shuffled[0].name || "Dancer A", shuffled[1].name || "Dancer B"];
     }
 
+    function setNextPairLabel(text) {
+      const el = document.getElementById("nextPairLabel");
+      if (el) el.textContent = `Next pair: ${text || "-"}`;
+    }
+
+    function pickNextPair() {
+      const dancers = getEnabledDancers();
+      if (dancers.length < 2) {
+        alert("Need at least two enabled dancers");
+        return;
+      }
+      const sel = document.getElementById("nextPairSelect");
+      const desired = (sel?.value || "").trim();
+      const last = (state.last_winner || "").toLowerCase();
+      const winner = dancers.find(d => (d.name || "").toLowerCase() === last);
+      const others = winner ? dancers.filter(d => d !== winner) : dancers;
+      let pair;
+      if (desired) {
+        const target = dancers.find(d => (d.name || "").toLowerCase() === desired.toLowerCase());
+        if (target) {
+          if (winner && winner !== target) {
+            pair = [winner.name || "Dancer A", target.name || "Dancer B"];
+          } else {
+            const pool = dancers.filter(d => d !== target);
+            const partner = pool.length ? pool[Math.floor(Math.random()*pool.length)] : null;
+            if (partner) pair = [target.name || "Dancer A", partner.name || "Dancer B"];
+          }
+        }
+      }
+      if (!pair) {
+        if (winner && others.length) {
+          const challenger = others[Math.floor(Math.random() * others.length)];
+          pair = [winner.name || "Dancer A", challenger.name || "Dancer B"];
+        } else {
+          const shuffled = [...dancers].sort(() => Math.random() - 0.5);
+          pair = [shuffled[0].name || "Dancer A", shuffled[1].name || "Dancer B"];
+        }
+      }
+      nextPairOverride = pair;
+      setNextPairLabel(pair.join(" vs "));
+    }
+
     function songsForDancer(name) {
       const lib = state.songs?.library || {};
       const target = (name||"").toLowerCase();
       return Object.values(lib).filter(s => {
         const dancers = (s.dancers||[]).map(x=>x.toLowerCase());
+        return dancers.includes(target);
+      });
+    }
+
+    function songsKnownBy(name) {
+      const lib = state.songs?.library || {};
+      const target = (name||"").toLowerCase();
+      return Object.values(lib).filter(s => {
         const knows = (s.knows_song||[]).map(x=>x.toLowerCase());
-        return dancers.includes(target) || knows.includes(target);
+        return knows.includes(target);
       });
     }
 
     function intersectSongsFor(a, b) {
-      const listA = new Set(songsForDancer(a).map(s => s.url));
-      return songsForDancer(b).filter(s => listA.has(s.url));
+      const lib = state.songs?.library || {};
+      const mapUrl = {};
+      Object.values(lib).forEach(s => { if (s.url) mapUrl[s.url] = s; });
+
+      const assignedA = new Set(songsForDancer(a).map(s => s.url));
+      const knowsA = new Set(songsKnownBy(a).map(s => s.url));
+      const assignedB = new Set(songsForDancer(b).map(s => s.url));
+      const knowsB = new Set(songsKnownBy(b).map(s => s.url));
+
+      // Must be assigned to at least one dancer AND known by both
+      const assignedAny = new Set([...assignedA, ...assignedB]);
+      const unionA = new Set([...assignedA, ...knowsA]);
+      const unionB = new Set([...assignedB, ...knowsB]);
+      const shared = new Set([...unionA].filter(u => unionB.has(u) && assignedAny.has(u)));
+
+      const urls = new Set(shared);
+      const result = [];
+      urls.forEach(u => { if (mapUrl[u]) result.push(mapUrl[u]); });
+      return result;
+    }
+
+    function markRoutinePlayed(url) {
+      if (!url) return;
+      if (!routine.playedSongs) routine.playedSongs = new Set();
+      routine.playedSongs.add(url);
+    }
+
+    function scoresForDancers(a, b) {
+      const scores = state.scores || {slot_one:0, slot_two:0};
+      const slotOneName = (state.slot_one || "").toLowerCase();
+      const slotTwoName = (state.slot_two || "").toLowerCase();
+      const aName = (a||"").toLowerCase();
+      const bName = (b||"").toLowerCase();
+      const scoreA = aName === slotOneName ? scores.slot_one || 0 : aName === slotTwoName ? scores.slot_two || 0 : 0;
+      const scoreB = bName === slotOneName ? scores.slot_one || 0 : bName === slotTwoName ? scores.slot_two || 0 : 0;
+      if (scoreA === scoreB) return null;
+      return scoreA > scoreB
+        ? {leader:a, loser:b, leaderScore:scoreA, loserScore:scoreB}
+        : {leader:b, loser:a, leaderScore:scoreB, loserScore:scoreA};
+    }
+
+    function isGroupSong(url) {
+      return groupSongs().some(s => s.url === url);
+    }
+
+    function decideNextSong(currentUrl) {
+      const dancers = routine.dancers || [];
+      if (dancers.length < 2) return getRoleUrl("background");
+      const played = routine.playedSongs || new Set();
+      const scoreInfo = scoresForDancers(dancers[0], dancers[1]);
+      // First song logic prefers shared/group
+      if (!routine.firstSongPlayed) {
+        const both = intersectSongsFor(dancers[0], dancers[1]).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r))).filter(s => !played.has(s.url));
+        if (both.length) return pickRandom(both).url;
+        const groups = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r))).filter(s => !played.has(s.url));
+        if (groups.length) return pickRandom(groups).url;
+        // if exhausted, allow repeats of shared/group
+        const bothRepeat = intersectSongsFor(dancers[0], dancers[1]).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+        if (bothRepeat.length) return pickRandom(bothRepeat).url;
+        const groupRepeat = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+        if (groupRepeat.length) return pickRandom(groupRepeat).url;
+      }
+      if (!scoreInfo) return currentUrl || getRoleUrl("background");
+      const {leader, loser, leaderScore, loserScore} = scoreInfo;
+      return pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl, played);
+    }
+
+    function pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl=null, played=new Set()) {
+      const leaderAssigned = songsForDancer(leader).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+      const loserAssigned = new Set(songsForDancer(loser).map(s => s.url));
+      const loserKnows = new Set(songsKnownBy(loser).map(s => s.url));
+      const isHighMargin = leaderScore > loserScore * 1.2;
+      const exclude = (list) => list.filter(s => s.url !== currentUrl && !played.has(s.url));
+
+      if (isHighMargin) {
+        const pool = exclude(leaderAssigned);
+        const pick = pickRandom(pool.length ? pool : leaderAssigned);
+        return pick ? pick.url : null;
+      }
+      const shared = exclude(leaderAssigned).filter(s => loserAssigned.has(s.url) || loserKnows.has(s.url));
+      if (shared.length) {
+        const pick = pickRandom(shared);
+        return pick ? pick.url : null;
+      }
+      const groups = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r))).filter(s => !played.has(s.url) && s.url !== currentUrl);
+      const pickGroup = pickRandom(groups.length ? groups : groupSongs());
+      return pickGroup ? pickGroup.url : null;
     }
 
     function groupSongs() {
@@ -639,8 +871,7 @@
       const lib = state.songs?.library || {};
       return Object.values(lib).filter(s => {
         const dancers = (s.dancers||[]).map(x=>x.toLowerCase());
-        const knows = (s.knows_song||[]).map(x=>x.toLowerCase());
-        return group && (dancers.includes(group) || knows.includes(group));
+        return group && dancers.includes(group);
       });
     }
 
@@ -706,6 +937,7 @@
       routine.dancers = chooseTwoDancers();
       routine.firstSongPlayed = false;
       routine.warned = false;
+       routine.playedSongs = new Set();
       startPointsInterval();
       setCenterLine(true);
       api("/battle/start", {method:"POST", body:{}}).then(()=> {
@@ -718,9 +950,25 @@
       renderWinnerSelect();
     }
 
+   function skipSong() {
+      const next = decideNextSong(routine.currentSongUrl);
+      if (!next || next === routine.currentSongUrl) return;
+      markRoutinePlayed(next);
+      routine.currentSongUrl = next;
+      api("/songs/play", {method:"POST", body:{target:"group", url: next}}).catch(()=>{});
+      playSequence(["bell"], false, () => {
+        startAudio(next, {skipFadeOut:true, loop:false, onEnd: () => {
+          const after = decideNextSong(next);
+          if (!after) return;
+          playSequence(["bell"], false, () => playRoutineSong(after));
+        }});
+      });
+    }
+
     function cancelRoutine() {
       routine.active = false;
       routine.warned = false;
+      routine.playedSongs = new Set();
       clearRoutineTimers();
       stopPointsInterval();
       stopSwitchInterval();
@@ -757,27 +1005,7 @@
         });
         return;
       }
-      let url = nextSongFor(routine.dancers[0], routine.dancers[1], lastUrl);
-      if (routine.firstSongPlayed) {
-        const leader = getLeaderName();
-        if (leader) {
-          const leaderSong = pickSongFor(leader, lastUrl);
-          if (leaderSong) url = leaderSong;
-        }
-      }
-      if (!routine.firstSongPlayed) {
-        const both = intersectSongsFor(routine.dancers[0], routine.dancers[1]);
-        const filteredBoth = both.filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
-        const pickBoth = pickRandom(filteredBoth.length ? filteredBoth : both);
-        if (pickBoth) {
-          url = pickBoth.url;
-        } else {
-          const groupList = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
-          const pickGroup = pickRandom(groupList.length ? groupList : groupSongs());
-          if (pickGroup) url = pickGroup.url;
-        }
-      }
-      if (!url) url = getRoleUrl("background");
+      const url = decideNextSong(lastUrl) || getRoleUrl("background");
       if (!url) { ensureBackground(); return; }
       const afterDoorbell = () => {
         api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
@@ -785,10 +1013,13 @@
         state.songs.current = url;
         routine.currentSongOwner = routine.firstSongPlayed ? getLeaderName() : "";
         routine.currentSongUrl = url;
+        markRoutinePlayed(url);
         stopSwitchInterval();
         routine.switchInterval = setInterval(() => monitorSongSwitch(), 2000);
         startAudio(url, {loop:false, onEnd: () => {
-          playSequence(["bell"], false, () => playRoutineSong(url));
+          const next = decideNextSong(url);
+          if (!next) return;
+          playSequence(["bell"], false, () => playRoutineSong(next));
         }});
       };
       if (!routine.firstSongPlayed) {
@@ -864,33 +1095,29 @@
 
     function monitorSongSwitch() {
       if (!routine.active || !routine.currentSongUrl) return;
-      if (!routine.currentSongOwner) return;
-      const scores = state.scores || {slot_one:0, slot_two:0};
-      const a = scores.slot_one || 0;
-      const b = scores.slot_two || 0;
-      const leaderSlot = a > b ? "slot_one" : b > a ? "slot_two" : null;
-      if (!leaderSlot) return;
-      const leaderName = leaderSlot === "slot_one" ? (state.slot_one || "") : (state.slot_two || "");
-      const loserScore = leaderSlot === "slot_one" ? b : a;
-      const leaderScore = leaderSlot === "slot_one" ? a : b;
-      if (!leaderName || leaderName === routine.currentSongOwner) return;
-      if (loserScore <= 0) return;
-      if (leaderScore < loserScore * 1.67) return; // needs 67% margin
-      const leaderKnows = songsForDancer(leaderName).some(s => s.url === routine.currentSongUrl);
-      const otherName = leaderSlot === "slot_one" ? (state.slot_two || "") : (state.slot_one || "");
-      const otherKnows = songsForDancer(otherName).some(s => s.url === routine.currentSongUrl);
-      // do not interrupt if both know the song or if it's a group song
-      const isGroupSong = groupSongs().some(s => s.url === routine.currentSongUrl);
-      if (leaderKnows && otherKnows) return;
-      if (isGroupSong) return;
-      const newUrl = pickSongFor(leaderName, routine.currentSongUrl) || getRoleUrl("background");
-      if (!newUrl) return;
-      routine.currentSongOwner = leaderName;
+      if (!routine.dancers || routine.dancers.length < 2) return;
+      const [a, b] = routine.dancers;
+      const shared = intersectSongsFor(a, b).some(s => s.url === routine.currentSongUrl);
+      const isGroup = isGroupSong(routine.currentSongUrl);
+      const scoreInfo = scoresForDancers(a, b);
+      if (!scoreInfo) return;
+      const {leader, loser, leaderScore, loserScore} = scoreInfo;
+      const loserAssigned = songsForDancer(loser).some(s => s.url === routine.currentSongUrl);
+      if (shared || isGroup) return;
+      // If the current song owner is the leader and leader is ahead, let it keep playing
+      if ((routine.currentSongOwner || "").toLowerCase() === (leader || "").toLowerCase()) return;
+      // Otherwise (loser overtook or no owner), switch by margin logic
+      const newUrl = pickSongByMargin(leader, loser, leaderScore, loserScore, routine.currentSongUrl);
+      if (!newUrl || newUrl === routine.currentSongUrl) return;
+      routine.currentSongOwner = leader;
       routine.currentSongUrl = newUrl;
+      markRoutinePlayed(newUrl);
       api("/songs/play", {method:"POST", body:{target:"group", url:newUrl}}).catch(()=>{});
       playSequence(["bell"], false, () => {
         startAudio(newUrl, {skipFadeOut:true, loop:false, onEnd: () => {
-          playSequence(["bell"], false, () => playRoutineSong(newUrl));
+          const next = decideNextSong(newUrl);
+          if (!next) return;
+          playSequence(["bell"], false, () => playRoutineSong(next));
         }});
       });
     }
@@ -987,6 +1214,7 @@
 
     // Initial camera list load
     refreshCameras();
+    highlightNav();
 
     // WebSocket live updates
     const ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
