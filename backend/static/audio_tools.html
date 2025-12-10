@@ -148,13 +148,14 @@
 
     async function saveSong() {
       if (!lastPreview) return alert("Run Preview first.");
+      const currentName = document.getElementById("songName").value.trim();
       const {
         url,
         title,
         nameInput,
         fileName,
       } = lastPreview;
-      const derivedName = nameInput || title || fileName || "";
+      const derivedName = currentName || nameInput || title || fileName || "";
       const song_id = crypto.randomUUID();
       await fetch("/songs/register", {method:"POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({song_id, name: derivedName, url})});
       const div = document.getElementById("result");
