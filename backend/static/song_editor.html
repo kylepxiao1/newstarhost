@@ -84,6 +84,13 @@
     <div id="knowsList"></div>
 
     <div class="row" style="margin-top:10px;">
+      <label style="width:100%;">Exclusive MVP for (one dancer max)</label>
+    </div>
+    <div class="row">
+      <select id="exclusiveMvpSelect" style="flex:1;" onchange="exclusiveMvpFor=this.value; save();"></select>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
       <button class="danger" onclick="removeSong()">Delete Song</button>
     </div>
   </section>
@@ -98,6 +105,7 @@
   let mvpsAssigned = [];
   let rolesAssigned = [];
   let knowsAssigned = [];
+  let exclusiveMvpFor = "";
   const ROLE_OPTIONS = ["bell","applause","mvp","attention","background","win"];
 
     function renderSongsList() {
@@ -143,7 +151,10 @@
       mvpsAssigned = [...(song.mvp_dancers || [])];
       rolesAssigned = [...(song.roles || [])];
       knowsAssigned = [...(song.knows_song || [])];
+      exclusiveMvpFor = song.exclusive_mvp_for || "";
       document.getElementById("renameInput").value = song.name || id || "";
+      const exSel = document.getElementById("exclusiveMvpSelect");
+      if (exSel) exSel.value = exclusiveMvpFor || "";
       renderLists();
       renderPreview();
       renderRoles();
@@ -163,7 +174,7 @@
           if (state && state.library) {
             songs = state.library;
           }
-          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned}});
+          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, exclusive_mvp_for: exclusiveMvpFor}});
         })
         .then(()=>loadSongs())
         .finally(()=>btns.forEach(b=>b.disabled=false));
@@ -250,6 +261,7 @@
       populateList("knowsList", knowsAssigned, "knows_song");
       populateSuggestions();
       renderRoles();
+      renderExclusive();
     }
 
     function renderRoles() {
@@ -301,6 +313,23 @@
           dl.appendChild(opt);
         });
       });
+    }
+
+    function renderExclusive() {
+      const sel = document.getElementById("exclusiveMvpSelect");
+      if (!sel) return;
+      sel.innerHTML = "";
+      const blank = document.createElement("option");
+      blank.value = "";
+      blank.textContent = "(none)";
+      sel.appendChild(blank);
+      dancers.forEach(d => {
+        const opt = document.createElement("option");
+        opt.value = d.name;
+        opt.textContent = d.name;
+        sel.appendChild(opt);
+      });
+      sel.value = exclusiveMvpFor || "";
     }
 
     function highlightNav() {

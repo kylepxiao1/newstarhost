@@ -104,6 +104,7 @@ class RegisterSongRequest(BaseModel):
     mvp_dancers: Optional[List[str]] = None
     knows_song: Optional[List[str]] = None
     roles: Optional[List[str]] = None
+    exclusive_mvp_for: Optional[str] = None
 
 
 class TagSongRequest(BaseModel):
@@ -118,6 +119,7 @@ class UpdateSongDancersRequest(BaseModel):
     mvp_dancers: List[str]
     knows_song: Optional[List[str]] = None
     roles: Optional[List[str]] = None
+    exclusive_mvp_for: Optional[str] = None
 
 
 class RenameSongRequest(BaseModel):
@@ -365,6 +367,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
         body.mvp_dancers,
         body.roles,
         body.knows_song,
+        body.exclusive_mvp_for,
     )
     _broadcast_state(state)
     return JSONResponse(state)
@@ -407,7 +410,15 @@ async def get_dancers() -> JSONResponse:
 
 @app.post("/songs/update_dancers")
 async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
-    state = state_manager.update_song_dancers(body.song_id, body.dancers, body.front_dancers, body.mvp_dancers, body.roles, body.knows_song)
+    state = state_manager.update_song_dancers(
+        body.song_id,
+        body.dancers,
+        body.front_dancers,
+        body.mvp_dancers,
+        body.roles,
+        body.knows_song,
+        body.exclusive_mvp_for,
+    )
     _broadcast_state(state)
     return JSONResponse(state)
 

@@ -148,7 +148,7 @@ class BattleStateManager:
             self._state.songs["position"] = str(pos)
             return self._state.copy()
 
-    def register_song(self, song_id: str, name: str, url: str, dancers: Optional[list] = None, front_dancers: Optional[list] = None, mvp_dancers: Optional[list] = None, roles: Optional[list] = None, knows_song: Optional[list] = None) -> Dict:
+    def register_song(self, song_id: str, name: str, url: str, dancers: Optional[list] = None, front_dancers: Optional[list] = None, mvp_dancers: Optional[list] = None, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             roles_list = roles or []
@@ -162,6 +162,7 @@ class BattleStateManager:
                 "mvp_dancers": mvp_dancers or [],
                 "roles": roles_list,
                 "knows_song": knows_song or [],
+                "exclusive_mvp_for": exclusive_mvp_for or "",
             }
             self._state.songs["library"] = lib
             self._persist_library(lib)
@@ -180,7 +181,7 @@ class BattleStateManager:
             self._persist_library(lib)
             return self._state.copy()
 
-    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None) -> Dict:
+    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             if song_id in lib:
@@ -197,6 +198,10 @@ class BattleStateManager:
                     lib[song_id]["knows_song"] = knows_song
                 else:
                     lib[song_id].setdefault("knows_song", [])
+                if exclusive_mvp_for is not None:
+                    lib[song_id]["exclusive_mvp_for"] = exclusive_mvp_for
+                else:
+                    lib[song_id].setdefault("exclusive_mvp_for", "")
                 self._state.songs["library"] = lib
                 self._persist_library(lib)
             return self._state.copy()

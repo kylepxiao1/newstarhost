@@ -140,7 +140,9 @@
       const baseFilter = (s) => {
         const hasRole = (s.roles || []).length > 0;
         const hasDancers = (s.dancers || []).length > 0;
-        return !hasRole && hasDancers;
+        const isExclusive = !!(s.exclusive_mvp_for || "");
+        // show normal dancer songs + exclusive MVP songs (even if role is set)
+        return (!hasRole && hasDancers) || isExclusive;
       };
       if (container) {
         container.innerHTML = "";
@@ -150,13 +152,16 @@
           .filter(s => {
             if (!dancerFilter) return true;
             const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
+            const exclusive = (s.exclusive_mvp_for || "").toLowerCase();
+            if (exclusive && exclusive.includes(dancerFilter)) return true;
             return all.some(n => (n||"").toLowerCase().includes(dancerFilter));
           })
           .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
           .forEach(song => {
             const card = document.createElement("div");
             card.className = "card";
-            card.innerHTML = `<h3>${song.name||"Unnamed"}</h3><div>Front: ${(song.front_dancers||[]).join(", ")||"-"}<br>Dancers: ${(song.dancers||[]).join(", ")||"-"}</div>`;
+            const badge = song.exclusive_mvp_for ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>` : "";
+            card.innerHTML = `<h3>${song.name||"Unnamed"} ${badge}</h3><div>Front: ${(song.front_dancers||[]).join(", ")||"-"}<br>Dancers: ${(song.dancers||[]).join(", ")||"-"}</div>`;
             const playBtn = document.createElement("button");
             playBtn.textContent = "Play Song";
             playBtn.onclick = () => playSongWithUrl(song.url);
@@ -207,9 +212,12 @@
           if (fronts) {
             label += ` (Front: ${fronts})`;
           }
+          if (song.exclusive_mvp_for) {
+            label += ` [MVP: ${song.exclusive_mvp_for}]`;
+          }
           opt.textContent = label;
           const dancerMatch = tabFilter
-            ? (song.dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
+            ? (song.dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter)) || (song.exclusive_mvp_for||"").toLowerCase().includes(tabFilter)
             : true;
           const matches = (!filter || label.toLowerCase().includes(filter)) && dancerMatch;
           if (matches) {
