@@ -482,9 +482,14 @@ async def dances_menu_page() -> FileResponse:
     return _static_file("menu_dances.html")
 
 
+@app.get("/app")
+async def spa_root() -> FileResponse:
+    return _static_file("app.html")
+
+
 @app.get("/")
 async def root_page() -> FileResponse:
-    return _static_file("intro_dances.html")
+    return _static_file("app.html")
 
 
 @app.post("/audio/process", response_model=AudioProcessResponse)

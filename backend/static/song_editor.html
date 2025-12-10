@@ -16,14 +16,6 @@
   </style>
 </head>
 <body>
-  <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;position:sticky;top:0;z-index:5;width:100%;">
-    <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
-    <a href="/battle/dances" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
-    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;">Dance Menu</a>
-    <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
-    <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;font-weight:700;">Songs</a>
-    <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
-  </nav>
   <header>
     <div style="display:flex;align-items:center;gap:10px;">
       <h1>Song Editor</h1>
@@ -36,16 +28,11 @@
         <input id="songSearch" placeholder="Search song name or dancer" style="flex:1;" oninput="renderSongsList()">
         <select id="songList" style="flex:2;" onchange="loadSong()"></select>
         <button class="secondary" onclick="loadSongs()">Refresh</button>
+        <button onclick="playSelected()">Play</button>
       </div>
       <div class="row">
         <input id="renameInput" placeholder="Rename song" style="flex:2;">
         <button onclick="renameSong()">Rename</button>
-      </div>
-      <div class="row">
-        <label style="width:100%;">Preview</label>
-      </div>
-      <div class="row">
-        <audio id="preview" controls style="width:100%;"></audio>
       </div>
     </section>
   </main>
@@ -162,7 +149,7 @@
       renderRoles();
     }
 
-    function save() {
+  function save() {
       const btns = document.querySelectorAll("button");
       btns.forEach(b=>b.disabled=true);
       if (!currentSongId) { btns.forEach(b=>b.disabled=false); return; }
@@ -204,12 +191,29 @@
         .finally(()=>btns.forEach(b=>b.disabled=false));
     }
 
-    function renderPreview() {
-      const audio = document.getElementById("preview");
-      const id = document.getElementById("songList").value;
-      const song = songs[id] || {};
-      audio.src = song.url || "";
+  function renderPreview() {
+    // Preview removed; no-op to keep compatibility
+  }
+
+  function getAudioPlayer() {
+    if (window.top && window.top !== window) {
+      const gp = window.top.document.getElementById("globalPlayer");
+      if (gp) return gp;
     }
+    if (!window._sharedAudio) window._sharedAudio = new Audio();
+    return window._sharedAudio;
+  }
+
+  function playSelected() {
+    const id = document.getElementById("songList").value;
+    if (!id) return;
+    const song = songs[id] || {};
+    if (!song.url) return;
+    const audio = getAudioPlayer();
+    audio.src = song.url;
+    audio.loop = false;
+    audio.play().catch(()=>{});
+  }
 
     function loadDancers() {
       api("/dancers").then(r=>r.json()).then(d => {

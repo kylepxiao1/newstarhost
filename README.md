@@ -6,6 +6,7 @@ Windows-first control stack for automated TikTok LIVE battles. FastAPI backend o
 - `backend/` - FastAPI app, state manager, static overlay/control UI.
 - `backend/static/overlay.html` - Browser overlay (connects to `/ws/state`, dotted black center line).
 - `backend/static/battle_dances.html` - Web control panel at `/battle/dances` (start/end battle, score bumps, overlay toggles, read slot names).
+- `backend/static/app.html` - Single-page shell that keeps audio alive while switching tabs. Open at `/app` (now default `/`).
 - `scripts/tiktok_listener.py` - TikTok LIVE automation listener.
 - `scripts/virtual_cam_compositor.py` - Lightweight virtual camera compositor (no OBS; overlays + camera into a virtual cam).
 - `scripts/run_all.py` - One-shot launcher for backend + virtual cam compositor.
@@ -93,7 +94,7 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 ## Running Everything
 - One-shot (no OBS): `python scripts/run_all.py` ? choose the virtual camera in TikTok LIVE Studio.
 - OBS path: start OBS, add Browser Source `/overlay`, start OBS Virtual Camera or RTMP, run backend, run listener.
-- Control UI: `http://localhost:8000/battle/dances`
+- Control UI: `http://localhost:8000/battle/dances` or use the SPA shell `http://localhost:8000/app` (default `/`).
 - Automation: `python scripts/tiktok_listener.py`.
 
 ## Installing FFmpeg (local)

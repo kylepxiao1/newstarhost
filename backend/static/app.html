@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>TikTok Control Suite</title>
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --border:#1f2937; --text:#e2e8f0; --nav:#0b1222; }
+    body { margin:0; font-family:"Segoe UI", Arial, sans-serif; background:var(--bg); color:var(--text); }
+    header { padding:16px 24px; background:#1e293b; box-shadow:0 2px 6px rgba(0,0,0,.3); display:flex; align-items:center; justify-content:space-between; }
+    h1 { margin:0; font-size:20px; }
+    .nav { display:flex; gap:12px; padding:10px 16px; background:#0b1222; border-bottom:1px solid #1f2937; position:sticky; top:0; z-index:5; flex-wrap:wrap; align-items:center; }
+    .nav a { color:var(--text); text-decoration:none; padding:6px 0; font-weight:600; border-bottom:2px solid transparent; }
+    .nav a.active { border-bottom-color:#2563eb; color:#fff; }
+    .shell { padding:0; }
+    .frames { position:relative; width:100%; height: calc(100vh - 190px); }
+    iframe { position:absolute; top:0; left:0; width:100%; height:100%; border:none; display:none; background:var(--bg); overflow:auto; }
+    iframe.active { display:block; }
+    .player { padding:10px 16px; background:var(--panel); border-top:1px solid var(--border); display:flex; align-items:center; gap:12px; }
+    .player span { font-weight:600; }
+    audio { width:100%; }
+  </style>
+</head>
+<body>
+  <div class="nav">
+    <a href="#intro" data-target="intro" class="active">Intro Group Dances</a>
+    <a href="#battle" data-target="battle">Battle Control</a>
+    <a href="#menu" data-target="menu">Dance Menu</a>
+    <a href="#dancers" data-target="dancers">Dancers</a>
+    <a href="#songs" data-target="songs">Songs</a>
+    <a href="#audio" data-target="audio">Audio Tools</a>
+  </div>
+  <div class="shell">
+    <div class="frames">
+      <iframe id="frame-intro" class="active" src="/group/dances"></iframe>
+      <iframe id="frame-battle" src="/battle/dances"></iframe>
+      <iframe id="frame-menu" src="/dances/menu"></iframe>
+      <iframe id="frame-dancers" src="/dancers/register"></iframe>
+      <iframe id="frame-songs" src="/songs/edit"></iframe>
+      <iframe id="frame-audio" src="/audio/tools"></iframe>
+    </div>
+  </div>
+  <div class="player">
+    <span>Global Audio</span>
+    <audio id="globalPlayer" controls></audio>
+  </div>
+  <script>
+    const tabs = Array.from(document.querySelectorAll(".nav a"));
+    const frames = {
+      intro: document.getElementById("frame-intro"),
+      battle: document.getElementById("frame-battle"),
+      menu: document.getElementById("frame-menu"),
+      dancers: document.getElementById("frame-dancers"),
+      songs: document.getElementById("frame-songs"),
+      audio: document.getElementById("frame-audio"),
+    };
+
+    function pauseAllAudio() {
+      try { globalPlayer.pause(); } catch (e) {}
+    }
+
+    function show(tab) {
+      tabs.forEach(b => b.classList.toggle("active", b.dataset.target === tab));
+      Object.entries(frames).forEach(([k, f]) => {
+        if (f) f.classList.toggle("active", k === tab);
+      });
+      history.replaceState(null, "", `/app#${tab}`);
+    }
+
+    tabs.forEach(a => a.onclick = (e) => { e.preventDefault(); show(a.dataset.target); });
+
+    const hash = (location.hash || "").replace("#","") || "intro";
+    if (frames[hash]) show(hash);
+
+    // Global audio: if any iframe posts a "play-audio" message, play it here.
+    const globalPlayer = document.getElementById("globalPlayer");
+    window.addEventListener("message", (evt) => {
+      const data = evt.data || {};
+      if (data.type === "play-audio" && data.url) {
+        pauseAllAudio();
+        if (globalPlayer.src !== data.url) {
+          globalPlayer.src = data.url;
+        }
+        globalPlayer.loop = !!data.loop;
+        globalPlayer.play().catch(()=>{});
+      }
+    });
+
+  </script>
+</body>
+</html>

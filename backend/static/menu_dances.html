@@ -19,14 +19,6 @@
   </style>
 </head>
 <body>
-  <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:10px;position:sticky;top:0;z-index:5;">
-    <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
-    <a href="/battle/dances" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
-    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;font-weight:700;">Dance Menu</a>
-    <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
-    <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
-    <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
-  </nav>
   <header>
     <div style="display:flex;align-items:center;gap:10px;">
       <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
@@ -80,7 +72,6 @@
       <span style="min-width:120px;">Current song:</span>
       <span id="currentSongLabel">None</span>
     </div>
-    <audio id="player" preload="auto" controls style="width:100%;"></audio>
   </section>
   </main>
 
@@ -94,6 +85,9 @@
     let dancersList = [];
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
+    function getSavedAudio() {
+      try { return JSON.parse(localStorage.getItem("globalAudioState") || "null"); } catch (e) { return null; }
+    }
 
     async function refreshState() {
       try {
@@ -112,6 +106,7 @@
       const songs = await api("/songs").then(r=>r.json());
       songsState = songs || {};
       library = songs.library || {};
+      restoreAudio(document.getElementById("player"));
       try {
         const dancersResp = await api("/dancers").then(r=>r.json());
         if (Array.isArray(dancersResp)) {
@@ -272,8 +267,35 @@
       refreshState();
     }
 
+    function persistAudio(player) {
+      if (!player) return;
+      const payload = {
+        src: player.src || "",
+        t: player.currentTime || 0,
+        paused: player.paused,
+        loop: player.loop,
+        volume: player.volume,
+      };
+      try { localStorage.setItem("globalAudioState", JSON.stringify(payload)); } catch (e) {}
+    }
+
+    function restoreAudio(player) {
+      if (!player) return;
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem("globalAudioState") || "null"); } catch (e) {}
+      if (!saved || !saved.src) return;
+      player.src = saved.src;
+      player.loop = !!saved.loop;
+      player.volume = typeof saved.volume === "number" ? saved.volume : 1;
+      player.currentTime = saved.t || 0;
+      if (!saved.paused) {
+        player.play().catch(()=>{});
+      }
+    }
+
     function startAudio(url, opts={}) {
-      const player = document.getElementById("player");
+      const player = getAudioPlayer();
+      if (!player) return;
       const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
       const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
       const doPlay = () => {
@@ -289,6 +311,7 @@
         if (!opts.isRole) {
           notePlay(url);
         }
+        persistAudio(player);
         if (fadeIn) {
           let vol = 0.0;
           player.volume = 0;
@@ -327,10 +350,24 @@
       } else {
         doPlay();
       }
+      player.onplay = () => persistAudio(player);
+      player.onpause = () => persistAudio(player);
+      player.ontimeupdate = () => persistAudio(player);
     }
 
     function getRoleUrl(role) {
       return Object.values(library).find(s => (s.roles||[]).includes(role))?.url || "";
+    }
+
+    function getAudioPlayer() {
+      if (window.top && window.top !== window) {
+        const gp = window.top.document.getElementById("globalPlayer");
+        if (gp) return gp;
+      }
+      if (!window._sharedAudio) {
+        window._sharedAudio = new Audio();
+      }
+      return window._sharedAudio;
     }
 
     function setCurrent(url) {
@@ -400,6 +437,10 @@
 
     function ensureBackground() {
       if (backgroundStarted) return;
+      const saved = getSavedAudio();
+      const player = document.getElementById("player");
+      // If we already have saved audio or current player has a source, don't auto-start background
+      if ((saved && saved.src) || (player && player.src)) return;
       const bg = getRoleUrl("background");
       if (!bg) return;
       backgroundStarted = true;
@@ -488,6 +529,7 @@
       ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
     }
     connectWs();
+    restoreAudio(document.getElementById("player"));
     highlightNav();
   </script>
 </body>

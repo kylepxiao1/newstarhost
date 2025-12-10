@@ -37,14 +37,6 @@
   </style>
 </head>
 <body>
-  <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:10px;position:sticky;top:0;z-index:5;">
-    <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
-    <a href="/battle/dances" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
-    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;">Dance Menu</a>
-    <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
-    <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
-    <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
-  </nav>
   <header>
     <div style="display:flex;align-items:center;gap:10px;">
       <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
@@ -144,8 +136,6 @@
       <div class="row">
         <span>Current song: <span id="currentSongLabel">-</span></span>
       </div>
-      <audio id="player" preload="auto" controls style="width:100%;" loop></audio>
-      <audio id="applause" preload="auto" src="https://actions.google.com/sounds/v1/crowds/applause_small_group.ogg"></audio>
     </section>
 
     <section>
@@ -577,8 +567,20 @@
       refreshState();
     }
 
+    function getAudioPlayer() {
+      if (window.top && window.top !== window) {
+        const gp = window.top.document.getElementById("globalPlayer");
+        if (gp) return gp;
+      }
+      if (!window._sharedAudio) {
+        window._sharedAudio = new Audio();
+      }
+      return window._sharedAudio;
+    }
+
     function startAudio(url, opts={}) {
-      const player = document.getElementById("player");
+      const player = getAudioPlayer();
+      if (!player) return;
       const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
       const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
       const doPlay = () => {

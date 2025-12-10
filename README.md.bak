@@ -7,6 +7,7 @@ Windows-first control stack for automated TikTok LIVE battles. FastAPI backend o
 - `backend/` – FastAPI app, OBS controller, state manager, static overlay/control UI.
 - `backend/static/overlay.html` – Browser-source overlay for OBS (connects to `/ws/state`, includes a dotted black vertical center line).
 - `backend/static/battle_dances.html` – Web control panel at `/battle/dances` (start/end battle, score bumps, overlay toggles, read slot names).
+- `backend/static/app.html` – SPA shell at `/app` (default `/`) that keeps audio alive while switching tabs.
 - `scripts/tiktok_listener.py` – TikTok LIVE automation listener.
 - `requirements.txt` – Python dependencies.
 
@@ -27,7 +28,7 @@ Run backend:
 & .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Open control panel: `http://localhost:8000/battle/dances`  
+Open control panel: `http://localhost:8000/battle/dances` or SPA `http://localhost:8000/app` (default `/`)  
 Add OBS Browser Source: `http://localhost:8000/overlay` (1920x1080, local file disabled).  
 Run TikTok listener:
 ```powershell
