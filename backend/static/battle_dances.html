@@ -102,8 +102,15 @@
     </section>
 
     <section>
-      <h2>Overlays</h2>
-      <div id="overlays"></div>
+      <h2>Virtual Cam Preview</h2>
+      <div class="row">
+        <select id="cameraSelect" style="flex:1;"></select>
+        <button class="secondary" onclick="refreshCameras()">Refresh Cameras</button>
+      </div>
+      <div class="row">
+        <button class="secondary" onclick="startPreview()">Start Preview</button>
+      </div>
+      <video id="preview" width="100%" autoplay playsinline style="background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
     </section>
 
     <section>
@@ -139,15 +146,8 @@
     </section>
 
     <section>
-      <h2>Virtual Cam Preview</h2>
-      <div class="row">
-        <select id="cameraSelect" style="flex:1;"></select>
-        <button class="secondary" onclick="refreshCameras()">Refresh Cameras</button>
-      </div>
-      <div class="row">
-        <button class="secondary" onclick="startPreview()">Start Preview</button>
-      </div>
-      <video id="preview" width="100%" autoplay playsinline style="background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
+      <h2>Overlays</h2>
+      <div id="overlays"></div>
     </section>
   </main>
 
