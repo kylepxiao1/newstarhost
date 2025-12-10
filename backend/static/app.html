@@ -29,6 +29,7 @@
     <a href="#dancers" data-target="dancers">Dancers</a>
     <a href="#songs" data-target="songs">Songs</a>
     <a href="#audio" data-target="audio">Audio Tools</a>
+    <a href="#camera" data-target="camera">Camera</a>
   </div>
   <div class="shell">
     <div class="frames">
@@ -38,6 +39,7 @@
       <iframe id="frame-dancers" src="/dancers/register"></iframe>
       <iframe id="frame-songs" src="/songs/edit"></iframe>
       <iframe id="frame-audio" src="/audio/tools"></iframe>
+      <iframe id="frame-camera" src="/camera/manage"></iframe>
     </div>
   </div>
   <div class="player">
@@ -53,6 +55,7 @@
       dancers: document.getElementById("frame-dancers"),
       songs: document.getElementById("frame-songs"),
       audio: document.getElementById("frame-audio"),
+      camera: document.getElementById("frame-camera"),
     };
 
     function pauseAllAudio() {

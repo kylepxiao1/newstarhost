@@ -23,6 +23,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger("virtual-cam")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+# Silence verbose OpenCV backend selection chatter (handle older OpenCVs)
+try:
+    if hasattr(cv2, "setLogLevel"):
+        level = getattr(cv2, "LOG_LEVEL_ERROR", None)
+        if level is None and hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
+            level = getattr(cv2.utils.logging, "LOG_LEVEL_ERROR", None)
+        if level is None and hasattr(cv2, "ERROR"):
+            level = cv2.ERROR  # fallback constant name
+        if level is None:
+            level = 3  # default error level
+        cv2.setLogLevel(level)
+    elif hasattr(cv2, "utils") and hasattr(cv2.utils, "logging"):
+        cv2.utils.logging.setLogLevel(getattr(cv2.utils.logging, "LOG_LEVEL_ERROR", 3))
+except Exception:
+    pass
 
 
 async def fetch_state(client: httpx.AsyncClient) -> Dict:

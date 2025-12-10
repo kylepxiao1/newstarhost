@@ -461,6 +461,11 @@ async def audio_tools_page() -> FileResponse:
     return _static_file("audio_tools.html")
 
 
+@app.get("/camera/manage")
+async def camera_page() -> FileResponse:
+    return _static_file("camera.html")
+
+
 @app.get("/songs/edit")
 async def songs_edit_page() -> FileResponse:
     return _static_file("song_editor.html")

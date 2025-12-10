@@ -68,6 +68,7 @@
       <span id="currentSongLabel">None</span>
     </div>
   </section>
+  
   </main>
 
   <script>
@@ -431,6 +432,24 @@
     };
     ws.onmessage = evt => { try { const data=JSON.parse(evt.data); if(data.type==="state"){ state=data.payload; renderState(); }} catch(e){} };
     highlightNav();
+    startPreview();
+
+    async function startPreview() {
+      const video = document.getElementById("preview");
+      if (!navigator.mediaDevices?.getUserMedia || !video) return;
+      try {
+        const refreshed = await navigator.mediaDevices.enumerateDevices();
+        const vcams = refreshed.filter(d => d.kind === "videoinput");
+        const target = vcams.find(c => /virtual/i.test(c.label || "")) || vcams[0];
+        if (!target) return;
+        const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
+        const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+        video.srcObject = stream;
+        await video.play();
+      } catch (e) {
+        // ignore preview errors
+      }
+    }
   </script>
 </body>
 </html>

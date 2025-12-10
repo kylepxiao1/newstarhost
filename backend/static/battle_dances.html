@@ -104,18 +104,6 @@
     </section>
 
     <section>
-      <h2>Virtual Cam Preview</h2>
-      <div class="row">
-        <select id="cameraSelect" style="flex:1;"></select>
-        <button class="secondary" onclick="refreshCameras()">Refresh Cameras</button>
-      </div>
-      <div class="row">
-        <button class="secondary" onclick="startPreview()">Start Preview</button>
-      </div>
-      <video id="preview" width="100%" autoplay playsinline style="background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
-    </section>
-
-    <section>
       <h2>Music Control</h2>
       <div class="row">
         <button class="secondary" id="tabGroup" onclick="selectTab('group')">Group</button>
@@ -146,11 +134,6 @@
         <span>Current song: <span id="currentSongLabel">-</span></span>
       </div>
     </section>
-
-    <section>
-      <h2>Overlays</h2>
-      <div id="overlays"></div>
-    </section>
   </main>
 
   <script>
@@ -164,7 +147,6 @@
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
     let nextPairOverride = null;
-    const CAM_KEY = "__globalCamStream";
 
     function highlightNav() {
       const here = location.pathname.replace(/\/+$/,"") || "/";
@@ -246,28 +228,7 @@
       if (rightLabel) rightLabel.textContent = b;
     }
 
-    function renderOverlays() {
-      const wrap = document.getElementById("overlays");
-      wrap.innerHTML = "";
-      // fallback defaults so buttons always render
-      if (!state.overlay_states || Object.keys(state.overlay_states).length === 0) {
-        state.overlay_states = {
-          CenterDottedLine: false,
-          BurstOverlay: false,
-        };
-      }
-      const overlays = state.overlay_states || {};
-      Object.keys(overlays).forEach(name => {
-        const row = document.createElement("div");
-        row.className = "overlay-toggle";
-        row.innerHTML = `<span>${name}</span>`;
-        const btn = document.createElement("button");
-        btn.textContent = overlays[name] ? "Hide" : "Show";
-        btn.onclick = () => toggleOverlay(name, !overlays[name]);
-        row.appendChild(btn);
-        wrap.appendChild(row);
-      });
-    }
+    function renderOverlays() {}
 
     function renderWinnerSelect() {
       const sel = document.getElementById("winnerSelect");
@@ -431,16 +392,7 @@
       // External automation should POST to /battle/slots/import; this button just refreshes state.
       refreshState();
     }
-    function toggleOverlay(name, show) {
-      // optimistic UI/state update so buttons reflect click even if OBS is down
-      if (!state.overlay_states) state.overlay_states = {};
-      state.overlay_states[name] = show;
-      if (name === CENTER_LINE) {
-        setCenterLine(show);
-      }
-      renderOverlays();
-      api(`/overlay/${name}/${show?"show":"hide"}`, {method:"POST"}).then(refreshState).catch(()=>{});
-    }
+    function toggleOverlay(name, show) {}
 
     function selectTab(tab) {
       // toggle off if clicking the active tab
@@ -1236,14 +1188,6 @@
       }
     }
 
-    async function getSharedCameraStream(constraints = { video: true }) {
-      const topWin = window.top || window;
-      if (topWin[CAM_KEY]) return topWin[CAM_KEY];
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      topWin[CAM_KEY] = stream;
-      return stream;
-    }
-
     async function startPreview() {
       const video = document.getElementById("preview");
       if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
@@ -1261,15 +1205,6 @@
       }
     }
 
-    function applyCamera() {
-      const select = document.getElementById("cameraSelect");
-      const idx = Number(select.selectedOptions[0]?.dataset.idx ?? 0);
-      const label = select.selectedOptions[0]?.dataset.label || "";
-      return api("/camera/select", {method:"POST", body:{index: idx, label}}).then(()=>refreshState());
-    }
-
-    // Initial camera list load
-    refreshCameras();
     highlightNav();
 
     // WebSocket live updates

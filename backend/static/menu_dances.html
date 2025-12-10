@@ -531,6 +531,24 @@
     connectWs();
     restoreAudio(document.getElementById("player"));
     highlightNav();
+
+    async function startPreview() {
+      const video = document.getElementById("preview");
+      if (!navigator.mediaDevices?.getUserMedia) return;
+      try {
+        const refreshed = await navigator.mediaDevices.enumerateDevices();
+        const vcams = refreshed.filter(d => d.kind === "videoinput");
+        const target = vcams.find(c => /virtual/i.test(c.label || "")) || vcams[0];
+        if (!target) return;
+        const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
+        const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+        video.srcObject = stream;
+        await video.play();
+      } catch (e) {
+        // ignore preview errors
+      }
+    }
+    startPreview();
   </script>
 </body>
 </html>

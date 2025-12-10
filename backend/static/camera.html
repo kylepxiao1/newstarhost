@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Camera Manager</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px; display: grid; grid-template-columns: 1fr; gap: 16px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
+    h2 { margin-top: 0; font-size: 16px; letter-spacing: 0.02em; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <h1>Virtual Camera Management</h1>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Cameras</h2>
+      <div class="row">
+        <select id="cameraSelect" style="flex:1;"></select>
+        <button class="secondary" onclick="refreshCameras()">Refresh Cameras</button>
+        <button class="secondary" onclick="window.open('/camera/manage','_blank')">Open in New Tab</button>
+      </div>
+      <div class="row">
+        <button class="secondary" onclick="applyCamera()">Use Camera</button>
+        <button class="secondary" onclick="startPreview()">Start Preview</button>
+      </div>
+      <video id="preview" width="100%" autoplay playsinline style="background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
+    </section>
+    <section>
+      <h2>Overlays</h2>
+      <div id="overlays"></div>
+    </section>
+  </main>
+
+  <script>
+    const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
+    let state = {};
+    let ws;
+
+    async function refreshCameras() {
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const cams = devices.filter(d => d.kind === "videoinput");
+        const select = document.getElementById("cameraSelect");
+        select.innerHTML = "";
+        cams.forEach((cam, idx) => {
+          const opt = document.createElement("option");
+          opt.value = cam.deviceId || "";
+          opt.dataset.idx = idx;
+          opt.dataset.label = cam.label || `Camera ${idx}`;
+          opt.textContent = cam.label || `Camera ${idx}`;
+          select.appendChild(opt);
+        });
+        if (!select.value && cams[0]) select.value = cams[0].deviceId;
+      } catch (e) {
+        console.warn("Camera enumeration failed", e);
+      }
+    }
+
+    function applyCamera() {
+      const select = document.getElementById("cameraSelect");
+      const idx = Number(select.selectedOptions[0]?.dataset.idx ?? 0);
+      const label = select.selectedOptions[0]?.dataset.label || "";
+      return api("/camera/select", {method:"POST", body:{index: idx, label}}).catch(()=>{});
+    }
+
+    async function startPreview() {
+      const video = document.getElementById("preview");
+      if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
+      try {
+        const refreshed = await navigator.mediaDevices.enumerateDevices();
+        const vcams = refreshed.filter(d => d.kind === "videoinput");
+        const target = vcams.find(c => /virtual/i.test(c.label || "")) || vcams[0];
+        if (!target) return alert("No camera found");
+        const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
+        const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+        video.srcObject = stream;
+        await video.play();
+      } catch (err) {
+        alert("Camera access denied or unavailable: " + err);
+      }
+    }
+
+    function renderOverlays() {
+      const wrap = document.getElementById("overlays");
+      wrap.innerHTML = "";
+      const overlays = state.overlay_states || {};
+      const fallback = Object.keys(overlays).length ? overlays : {CenterDottedLine:false, BurstOverlay:false, BattleScore:true};
+      Object.keys(fallback).forEach(name => {
+        const row = document.createElement("div");
+        row.className = "row";
+        const label = document.createElement("span");
+        label.textContent = name;
+        const btn = document.createElement("button");
+        btn.textContent = fallback[name] ? "Hide" : "Show";
+        btn.onclick = () => toggleOverlay(name, !fallback[name]);
+        row.appendChild(label);
+        row.appendChild(btn);
+        wrap.appendChild(row);
+      });
+    }
+
+    function toggleOverlay(name, show) {
+      if (!state.overlay_states) state.overlay_states = {};
+      state.overlay_states[name] = show;
+      renderOverlays();
+      api(`/overlay/${name}/${show ? "show" : "hide"}`, {method:"POST"}).catch(()=>{});
+    }
+
+    function refreshState() {
+      api("/state").then(r=>r.json()).then(s => { state = s; renderOverlays(); }).catch(()=>{});
+    }
+
+    function connectWs() {
+      try { if (ws) ws.close(); } catch (e) {}
+      ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
+      ws.onmessage = evt => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.type === "state") {
+            state = data.payload;
+            renderOverlays();
+          }
+        } catch (e) {}
+      };
+      ws.onclose = () => setTimeout(connectWs, 2000);
+      ws.onerror = () => {};
+    }
+
+    refreshState();
+    connectWs();
+    refreshCameras();
+  </script>
+</body>
+</html>
