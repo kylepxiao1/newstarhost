@@ -1,11 +1,11 @@
-# TikTok LIVE Battle Control Stack
+# TikTok LIVE Host Stack
 
 Windows-first control stack for automated TikTok LIVE battles. FastAPI backend orchestrates overlays/scoreboard, broadcasts realtime state via WebSockets, exposes a control panel, and listens to TikTok LIVE events through the unofficial `tiktoklive` library. Two output paths: (1) lightweight virtual camera compositor (no OBS), or (2) OBS browser overlay if you prefer OBS. Slots are neutral (`slot_one` / `slot_two`); no left/right or manual participant entry in the UI.
 
 ## Repository Layout
 - `backend/` - FastAPI app, state manager, static overlay/control UI.
 - `backend/static/overlay.html` - Browser overlay (connects to `/ws/state`, dotted black center line).
-- `backend/static/control.html` - Web control panel at `/battle/control` (start/end battle, score bumps, overlay toggles, read slot names).
+- `backend/static/battle_dances.html` - Web control panel at `/battle/dances` (start/end battle, score bumps, overlay toggles, read slot names).
 - `scripts/tiktok_listener.py` - TikTok LIVE automation listener.
 - `scripts/virtual_cam_compositor.py` - Lightweight virtual camera compositor (no OBS; overlays + camera into a virtual cam).
 - `scripts/run_all.py` - One-shot launcher for backend + virtual cam compositor.
@@ -27,7 +27,7 @@ $env:UVICORN_ACCESS_LOG="false"
 $env:INPUT_CAM_INDEX="-1"     # auto-pick first working camera (or set a specific index)
 & .\.venv\Scripts\python.exe scripts\run_all.py
 ```
-Then select the created virtual camera in TikTok LIVE Studio and open `http://localhost:8000/battle/control` to operate.
+Then select the created virtual camera in TikTok LIVE Studio and open `http://localhost:8000/battle/dances` to operate.
 
 Run TikTok listener (automation):
 ```powershell
@@ -47,7 +47,7 @@ Endpoints:
 - `POST /overlay/{name}/show|hide` - toggle overlay sources (OBS-only).
 - `POST /score/{slot_one|slot_two}/add` - increment score (`{"amount":1}`).
 - `GET /state` - current state.
-- `GET /battle/control` - control UI.
+- `GET /battle/dances` - control UI.
 - `GET /overlay` - overlay HTML (used by OBS path).
 - `WS /ws/state` - realtime state feed (overlays & control UI subscribe).
 
@@ -93,7 +93,7 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 ## Running Everything
 - One-shot (no OBS): `python scripts/run_all.py` ? choose the virtual camera in TikTok LIVE Studio.
 - OBS path: start OBS, add Browser Source `/overlay`, start OBS Virtual Camera or RTMP, run backend, run listener.
-- Control UI: `http://localhost:8000/battle/control`
+- Control UI: `http://localhost:8000/battle/dances`
 - Automation: `python scripts/tiktok_listener.py`.
 
 ## Installing FFmpeg (local)

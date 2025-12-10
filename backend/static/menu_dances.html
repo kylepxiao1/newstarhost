@@ -4,9 +4,11 @@
   <meta charset="UTF-8">
   <title>Dance Menu</title>
   <style>
-    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; padding: 20px; }
-    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; }
-    h1, h2 { margin: 0 0 10px 0; }
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
+    h2 { margin: 0 0 10px 0; font-size: 16px; letter-spacing: 0.02em; }
     .row { display: flex; gap: 8px; margin-bottom: 10px; }
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
@@ -18,14 +20,23 @@
 </head>
 <body>
   <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:10px;position:sticky;top:0;z-index:5;">
-    <a href="/battle/control" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
     <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
-    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;font-weight:700 !important;">Dance Menu</a>
+    <a href="/battle/dances" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
+    <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;font-weight:700;">Dance Menu</a>
     <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
     <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
     <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
   </nav>
-  <h1>Dance Menu</h1>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
+      <h1>TikTok Dance Menu Control</h1>
+    </div>
+    <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;">
+      <span id="statusText">Connecting</span>
+    </div>
+  </header>
+  <main style="padding:20px;">
   <section>
     <h2>Filters</h2>
     <div class="row">
@@ -41,6 +52,9 @@
 
   <section>
     <h2>Playback Controls</h2>
+    <div class="row">
+      <button class="secondary" onclick="playRole('mvp')">Play MVP Dance</button>
+    </div>
     <div class="row">
       <input id="randomDancerInput" placeholder="Registered dancer for random pick" list="registeredDancers" style="flex:1;">
       <datalist id="registeredDancers"></datalist>
@@ -68,6 +82,7 @@
     </div>
     <audio id="player" preload="auto" controls style="width:100%;"></audio>
   </section>
+  </main>
 
   <script>
     const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
@@ -79,6 +94,19 @@
     let dancersList = [];
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
+
+    async function refreshState() {
+      try {
+        state = await api("/state").then(r => r.json());
+        renderSongs();
+      } catch (e) {
+        console.warn("Failed to refresh state", e);
+      }
+    }
+
+    async function refreshSongs() {
+      await refreshData();
+    }
 
     async function refreshData() {
       const songs = await api("/songs").then(r=>r.json());
@@ -314,6 +342,16 @@
       if (label) label.textContent = name;
     }
 
+    function playRole(role) {
+      const url = getRoleUrl(role);
+      if (!url) {
+        alert(`No song with role: ${role}`);
+        return;
+      }
+      api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
+      startAudio(url, {loop:false});
+    }
+
     function playSequence(steps) {
       if (!steps || !steps.length) return;
       const [first, ...rest] = steps.filter(Boolean);
@@ -436,6 +474,20 @@
     refreshData();
     refreshState();
     refreshSongs();
+    function connectWs() {
+      const ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
+      ws.onopen = () => { const d=document.getElementById("wsDot"); const t=document.getElementById("statusText"); if(d){d.style.background="#22c55e"; d.style.boxShadow="0 0 8px #22c55e";} if(t) t.textContent="Live"; };
+      const markDown = () => {
+        const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");
+        if(d){d.style.background="#ef4444"; d.style.boxShadow="0 0 8px #ef4444";}
+        if(t) t.textContent="Disconnected";
+        setTimeout(connectWs, 2000);
+      };
+      ws.onerror = markDown;
+      ws.onclose = markDown;
+      ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
+    }
+    connectWs();
     highlightNav();
   </script>
 </body>

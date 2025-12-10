@@ -1,4 +1,4 @@
-# TikTok LIVE Battle Control Stack
+# TikTok LIVE Host Stack
 
 Windows-first control stack for automated TikTok LIVE battles. FastAPI backend orchestrates OBS (scenes/overlays/scoreboard), broadcasts realtime state to overlays via WebSockets, exposes a control panel, and listens to TikTok LIVE events through the unofficial `tiktoklive` library. All visuals live in OBS (browser sources + text sources). Slots are neutral (`slot_one` / `slot_two`); no left/right or manual participant entry in the UI.
 
@@ -6,7 +6,7 @@ Windows-first control stack for automated TikTok LIVE battles. FastAPI backend o
 
 - `backend/` – FastAPI app, OBS controller, state manager, static overlay/control UI.
 - `backend/static/overlay.html` – Browser-source overlay for OBS (connects to `/ws/state`, includes a dotted black vertical center line).
-- `backend/static/control.html` – Web control panel at `/battle/control` (start/end battle, score bumps, overlay toggles, read slot names).
+- `backend/static/battle_dances.html` – Web control panel at `/battle/dances` (start/end battle, score bumps, overlay toggles, read slot names).
 - `scripts/tiktok_listener.py` – TikTok LIVE automation listener.
 - `requirements.txt` – Python dependencies.
 
@@ -27,7 +27,7 @@ Run backend:
 & .\.venv\Scripts\python.exe -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Open control panel: `http://localhost:8000/battle/control`  
+Open control panel: `http://localhost:8000/battle/dances`  
 Add OBS Browser Source: `http://localhost:8000/overlay` (1920x1080, local file disabled).  
 Run TikTok listener:
 ```powershell
@@ -48,7 +48,7 @@ Endpoints:
 - `POST /overlay/{name}/show|hide` – toggle OBS overlay sources.
 - `POST /score/{slot_one|slot_two}/add` – increment score (`{"amount":1}`).
 - `GET /state` – current state.
-- `GET /battle/control` – control UI.
+- `GET /battle/dances` – control UI.
 - `GET /overlay` – OBS overlay HTML.
 - `WS /ws/state` – realtime state feed (overlays & control UI subscribe).
 
@@ -111,6 +111,6 @@ Pro (VoiceMeeter Banana):
 1) Start OBS (websocket enabled, virtual camera on, sources named).  
 2) Run FastAPI backend.  
 3) Add OBS Browser Source to `http://localhost:8000/overlay`.  
-4) Open `http://localhost:8000/battle/control` to operate manually (scores/overlays).  
+4) Open `http://localhost:8000/battle/dances` to operate manually (scores/overlays).  
 5) Run `python scripts/tiktok_listener.py` for automation.  
 6) In TikTok LIVE Studio, choose OBS Virtual Camera + routed audio.  

@@ -38,19 +38,22 @@
 </head>
 <body>
   <nav class="nav-bar" style="background:#0b1222;border-bottom:1px solid #1f2937;padding:10px 16px;display:flex;gap:10px;position:sticky;top:0;z-index:5;">
-    <a href="/battle/control" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
     <a href="/group/dances" style="color:#e2e8f0;text-decoration:none;">Group Dances</a>
+    <a href="/battle/dances" style="color:#e2e8f0;text-decoration:none;">Battle Control</a>
     <a href="/dances/menu" style="color:#e2e8f0;text-decoration:none;">Dance Menu</a>
     <a href="/dancers/register" style="color:#e2e8f0;text-decoration:none;">Dancers</a>
     <a href="/songs/edit" style="color:#e2e8f0;text-decoration:none;">Songs</a>
     <a href="/audio/tools" style="color:#e2e8f0;text-decoration:none;">Audio Tools</a>
   </nav>
   <header>
-    <div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
       <h1>TikTok Battle Control</h1>
-      <div class="status"><span class="dot" id="wsDot"></span><span id="statusText">Connecting</span></div>
     </div>
-    <div id="current"></div>
+    <div style="display:flex;align-items:center;gap:8px;">
+      <div class="status"><span id="statusText">Connecting</span></div>
+      <div id="current"></div>
+    </div>
   </header>
   <main>
     <section>
@@ -58,6 +61,9 @@
       <div class="row">
         <button class="secondary" onclick="startRoutine()">Simulate 2m Battle Routine</button>
         <button class="danger" onclick="cancelRoutine()">Cancel Routine</button>
+      </div>
+      <div class="row">
+        <button class="secondary" onclick="playRole('mvp')">Play MVP Dance</button>
       </div>
       <div class="row">
         <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
@@ -158,7 +164,7 @@
   <script>
     const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
     let state = {};
-    let currentTab = "group";
+    let currentTab = "";
     let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set() };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
@@ -1062,6 +1068,16 @@
       if (state.overlay_states) state.overlay_states[CENTER_LINE] = show;
     }
 
+    function playRole(role) {
+      const url = getRoleUrl(role);
+      if (!url) {
+        alert(`No song with role: ${role}`);
+        return;
+      }
+      api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
+      startAudio(url, {loop:false});
+    }
+
     function saveWinnerValue(name) {
       api("/battle/winner", {method:"POST", body:{name}});
       const sel = document.getElementById("winnerSelect");
@@ -1234,10 +1250,20 @@
     highlightNav();
 
     // WebSocket live updates
-    const ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
-    ws.onopen = () => { document.getElementById("wsDot").style.background = "#22c55e"; document.getElementById("statusText").textContent = "Live"; };
-    ws.onclose = () => { document.getElementById("wsDot").style.background = "#ef4444"; document.getElementById("statusText").textContent = "Disconnected"; setTimeout(()=>location.reload(), 2000); };
-    ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
+    function connectWs() {
+      const ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
+      ws.onopen = () => { const d=document.getElementById("wsDot"); const t=document.getElementById("statusText"); if(d){d.style.background="#22c55e"; d.style.boxShadow="0 0 8px #22c55e";} if(t) t.textContent="Live"; };
+      const markDown = () => {
+        const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");
+        if(d){d.style.background="#ef4444"; d.style.boxShadow="0 0 8px #ef4444";}
+        if(t) t.textContent="Disconnected";
+        setTimeout(connectWs, 2000);
+      };
+      ws.onerror = markDown;
+      ws.onclose = markDown;
+      ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
+    }
+    connectWs();
 
     refreshState();
     refreshSongs();

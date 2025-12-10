@@ -447,9 +447,9 @@ def _static_file(filename: str) -> FileResponse:
     return FileResponse(str(path))
 
 
-@app.get("/battle/control")
+@app.get("/battle/dances")
 async def control_panel() -> FileResponse:
-    return _static_file("control.html")
+    return _static_file("battle_dances.html")
 
 
 @app.get("/overlay")
@@ -480,6 +480,11 @@ async def group_dances_page() -> FileResponse:
 @app.get("/dances/menu")
 async def dances_menu_page() -> FileResponse:
     return _static_file("menu_dances.html")
+
+
+@app.get("/")
+async def root_page() -> FileResponse:
+    return _static_file("intro_dances.html")
 
 
 @app.post("/audio/process", response_model=AudioProcessResponse)
