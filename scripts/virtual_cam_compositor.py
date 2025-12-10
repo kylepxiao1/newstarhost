@@ -68,6 +68,9 @@ async def ws_state_listener(state_holder: Dict):
 
 
 def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
+    """
+    Render overlays with resolution-aware sizing so text stays crisp at any resolution.
+    """
     overlay = frame.copy()
     wins = state.get("win_counts") or {}
     enabled = set((state.get("enabled_dancers") or []))
@@ -75,31 +78,44 @@ def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
     display_dancers = dancers if not enabled else [d for d in dancers if (d.get("name") or "") in enabled]
     overlays = state.get("overlay_states") or {"CenterDottedLine": True, "BurstOverlay": True, "BattleScore": True}
     font = cv2.FONT_HERSHEY_SIMPLEX
-    scale = 0.8
-    thick = 2
+
+    # Scale elements based on frame height (smaller text)
+    base_h = max(1, frame.shape[0])
+    scale = max(0.7, (base_h / 720.0) * 0.9)
+    thick = max(1, int(scale * 2))
+    line_step = max(20, int(base_h / 38))
 
     if overlays.get("CenterDottedLine", True):
         center_x = frame.shape[1] // 2
-        for y in range(0, frame.shape[0], 20):
-            y2 = min(y + 10, frame.shape[0])
-            cv2.line(overlay, (center_x, y), (center_x, y2), (255, 255, 255), 4)
-            cv2.line(overlay, (center_x, y), (center_x, y2), (0, 0, 0), 2)
+        dash = max(18, int(line_step * 0.9))   # longer dashes
+        gap = max(14, int(line_step * 0.7))   # larger gaps
+        white_thick = max(3, int(scale * 3.2))  # thicker
+        black_thick = max(2, int(scale * 1.8))
+        y = 0
+        while y < frame.shape[0]:
+            y2 = min(y + dash, frame.shape[0])
+            cv2.line(overlay, (center_x, y), (center_x, y2), (255, 255, 255), white_thick)
+            cv2.line(overlay, (center_x, y), (center_x, y2), (0, 0, 0), black_thick)
+            y += dash + gap
 
     if overlays.get("BurstOverlay", True):
         mask = np.zeros_like(frame)
-        cv2.circle(mask, (int(frame.shape[1] * 0.25), int(frame.shape[0] * 0.25)), 220, (0, 128, 255), -1)
-        cv2.circle(mask, (int(frame.shape[1] * 0.75), int(frame.shape[0] * 0.75)), 220, (255, 64, 128), -1)
+        rad = int(min(frame.shape[0], frame.shape[1]) * 0.18)
+        cv2.circle(mask, (int(frame.shape[1] * 0.25), int(frame.shape[0] * 0.25)), rad, (0, 128, 255), -1)
+        cv2.circle(mask, (int(frame.shape[1] * 0.75), int(frame.shape[0] * 0.75)), rad, (255, 64, 128), -1)
         overlay = cv2.addWeighted(overlay, 0.9, mask, 0.1, 0)
 
     if overlays.get("BattleScore", True):
         def outlined_text(img, text, org):
-            cv2.putText(img, text, org, font, scale, (0, 0, 0), thick + 2, cv2.LINE_AA)
+            cv2.putText(img, text, org, font, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
             cv2.putText(img, text, org, font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-        y = 80
+
+        y = int(50 * scale)
+        step = int(36 * scale)
         for dancer in display_dancers:
             name = dancer.get("name") or "Waiting"
             outlined_text(overlay, f"{name}: {wins.get(name, 0)} wins", (40, y))
-            y += 40
+            y += step
     return overlay
 
 
