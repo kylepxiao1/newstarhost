@@ -19,8 +19,12 @@ class OBSController:
         self._password = config.OBS_PASSWORD
         self._client: Optional["obsws"] = None
         self._failed = False
+        # Standalone/headless mode: skip OBS entirely unless explicitly enabled
+        self.enabled = False
 
     def connect(self) -> None:
+        if not self.enabled:
+            return
         if obsws is None:
             logger.warning("obs-websocket-py not installed; OBS control disabled.")
             return
@@ -46,12 +50,14 @@ class OBSController:
         self._client = None
 
     def _ensure(self) -> bool:
+        if not self.enabled:
+            return False
         if self._client is None:
             self.connect()
         return self._client is not None
 
     def set_scene(self, scene_name: str) -> None:
-        if not self._ensure():
+        if not self.enabled or not self._ensure():
             return
         try:
             self._client.call(requests.SetCurrentProgramScene(scene_name))
@@ -59,7 +65,7 @@ class OBSController:
             logger.error("Failed to switch scene to %s: %s", scene_name, exc)
 
     def set_text(self, source_name: str, text: str) -> None:
-        if not self._ensure():
+        if not self.enabled or not self._ensure():
             return
         try:
             self._client.call(requests.SetInputSettings(source_name, {"text": text}, True))
@@ -67,7 +73,7 @@ class OBSController:
             logger.error("Failed to set text for %s: %s", source_name, exc)
 
     def set_visibility(self, scene_name: str, source_name: str, visible: bool) -> None:
-        if not self._ensure():
+        if not self.enabled or not self._ensure():
             return
         try:
             # obs-websocket-py 1.0: use keyword args

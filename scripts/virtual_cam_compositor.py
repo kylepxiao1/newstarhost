@@ -58,7 +58,7 @@ def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
     enabled = set((state.get("enabled_dancers") or []))
     dancers = state.get("dancers") or []
     display_dancers = dancers if not enabled else [d for d in dancers if (d.get("name") or "") in enabled]
-    overlays = state.get("overlay_states") or {}
+    overlays = state.get("overlay_states") or {"CenterDottedLine": True, "BurstOverlay": True, "BattleScore": True}
     font = cv2.FONT_HERSHEY_SIMPLEX
     scale = 0.8
     thick = 2

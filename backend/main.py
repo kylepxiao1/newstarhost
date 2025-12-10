@@ -36,16 +36,11 @@ RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "youtube-mp310.p.rapidapi.com")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    obs.connect()
-    try:
-        obs.ensure_capture_source_visible(config.SCENE_BATTLE, config.CACHE_CAMERA_SOURCE)
-        obs.ensure_capture_source_visible(config.SCENE_MAIN, config.CACHE_CAMERA_SOURCE)
-    except Exception:
-        logger.debug("Camera source ensure skipped")
-    logger.info("Service started. Overlay websocket at %s", config.WEBSOCKET_PATH)
+    # Standalone mode: skip OBS control
+    obs.enabled = False
+    logger.info("Service started (headless). Overlay websocket at %s", config.WEBSOCKET_PATH)
     _cleanup_unregistered_media(state_manager)
     yield
-    obs.disconnect()
 
 
 app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json", lifespan=lifespan)
@@ -223,10 +218,8 @@ def _broadcast_state(state: dict) -> None:
 
 
 def _sync_obs(state: dict) -> None:
-    slot_one_name = state.get("slot_one") or ""
-    slot_two_name = state.get("slot_two") or ""
-    scores = state.get("scores") or {"slot_one": 0, "slot_two": 0}
-    obs.refresh_scoreboard(slot_one_name, slot_two_name, scores.get("slot_one", 0), scores.get("slot_two", 0))
+    # OBS disabled in headless mode
+    return
 
 
 def _normalize_slot(raw: str) -> str:
@@ -241,7 +234,7 @@ def _normalize_slot(raw: str) -> str:
 @app.post("/battle/start")
 async def start_battle(body: BattleStartRequest) -> JSONResponse:
     state = state_manager.start_battle(body.mode)
-    obs.set_scene(config.SCENE_BATTLE)
+    # OBS scene switching skipped in headless mode
     _sync_obs(state)
     state_manager.set_scene(config.SCENE_BATTLE)
     _broadcast_state(state)
@@ -251,7 +244,7 @@ async def start_battle(body: BattleStartRequest) -> JSONResponse:
 @app.post("/battle/end")
 async def end_battle() -> JSONResponse:
     state = state_manager.end_battle()
-    obs.set_scene(config.SCENE_MAIN)
+    # OBS scene switching skipped in headless mode
     state_manager.set_scene(config.SCENE_MAIN)
     _broadcast_state(state)
     return JSONResponse(state)
@@ -444,6 +437,12 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
 def _static_file(filename: str) -> FileResponse:
     path = STATIC_DIR / filename
+    return FileResponse(str(path))
+
+
+@app.get("/favicon.ico")
+async def favicon() -> FileResponse:
+    path = STATIC_DIR / "favicon.ico"
     return FileResponse(str(path))
 
 

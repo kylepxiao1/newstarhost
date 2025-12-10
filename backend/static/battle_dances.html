@@ -3,6 +3,8 @@
 <head>
   <meta charset="UTF-8">
   <title>Battle Control</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
     header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
@@ -162,6 +164,7 @@
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
     let nextPairOverride = null;
+    const CAM_KEY = "__globalCamStream";
 
     function highlightNav() {
       const here = location.pathname.replace(/\/+$/,"") || "/";
@@ -246,11 +249,14 @@
     function renderOverlays() {
       const wrap = document.getElementById("overlays");
       wrap.innerHTML = "";
-      const overlays = state.overlay_states || {};
-      if (!routine.active && overlays[CENTER_LINE]) {
-        setCenterLine(false);
-        overlays[CENTER_LINE] = false;
+      // fallback defaults so buttons always render
+      if (!state.overlay_states || Object.keys(state.overlay_states).length === 0) {
+        state.overlay_states = {
+          CenterDottedLine: false,
+          BurstOverlay: false,
+        };
       }
+      const overlays = state.overlay_states || {};
       Object.keys(overlays).forEach(name => {
         const row = document.createElement("div");
         row.className = "overlay-toggle";
@@ -425,7 +431,16 @@
       // External automation should POST to /battle/slots/import; this button just refreshes state.
       refreshState();
     }
-    function toggleOverlay(name, show) { api(`/overlay/${name}/${show?"show":"hide"}`, {method:"POST"}).then(refreshState); }
+    function toggleOverlay(name, show) {
+      // optimistic UI/state update so buttons reflect click even if OBS is down
+      if (!state.overlay_states) state.overlay_states = {};
+      state.overlay_states[name] = show;
+      if (name === CENTER_LINE) {
+        setCenterLine(show);
+      }
+      renderOverlays();
+      api(`/overlay/${name}/${show?"show":"hide"}`, {method:"POST"}).then(refreshState).catch(()=>{});
+    }
 
     function selectTab(tab) {
       // toggle off if clicking the active tab
@@ -1221,18 +1236,24 @@
       }
     }
 
+    async function getSharedCameraStream(constraints = { video: true }) {
+      const topWin = window.top || window;
+      if (topWin[CAM_KEY]) return topWin[CAM_KEY];
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      topWin[CAM_KEY] = stream;
+      return stream;
+    }
+
     async function startPreview() {
       const video = document.getElementById("preview");
       if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
       try {
         await applyCamera();
-        // Always preview the virtual camera; fall back to first device
         const refreshed = await navigator.mediaDevices.enumerateDevices();
         const vcams = refreshed.filter(d => d.kind === "videoinput");
         const virtualTarget = vcams.find(c => /virtual/i.test(c.label || "")) || vcams[0];
-        if (!virtualTarget) return alert("No camera found");
-        const constraints = virtualTarget.deviceId ? { deviceId: { exact: virtualTarget.deviceId } } : true;
-        const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+        const constraints = virtualTarget?.deviceId ? { video: { deviceId: { exact: virtualTarget.deviceId } } } : { video: true };
+        const stream = await getSharedCameraStream(constraints);
         video.srcObject = stream;
         await video.play();
       } catch (err) {
