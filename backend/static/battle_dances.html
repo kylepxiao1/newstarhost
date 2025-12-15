@@ -632,7 +632,7 @@
       if (bg) {
         startAudio(bg, {loop:true});
       }
-    }
+  }
 
     function pickRandom(arr) {
       if (!arr?.length) return null;
@@ -742,7 +742,7 @@
           const challenger = others[Math.floor(Math.random() * others.length)];
           pair = [winner.name || "Dancer A", challenger.name || "Dancer B"];
         } else {
-          const shuffled = [...dancers].sort(() => Math.random() - 0.5);
+        const shuffled = [...dancers].sort(() => Math.random() - 0.5);
           pair = [shuffled[0].name || "Dancer A", shuffled[1].name || "Dancer B"];
         }
       }

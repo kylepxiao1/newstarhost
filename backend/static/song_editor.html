@@ -64,16 +64,6 @@
     <div id="frontList"></div>
 
     <div class="row" style="margin-top:10px;">
-      <label style="width:100%;">Add MVP dancer</label>
-    </div>
-    <div class="row">
-      <input id="mvpSearch" list="mvpSuggestions" placeholder="Search dancer name" style="flex:1;">
-      <datalist id="mvpSuggestions"></datalist>
-      <button onclick="addTo('mvp_dancers')">Add</button>
-    </div>
-    <div id="mvpList"></div>
-
-    <div class="row" style="margin-top:10px;">
       <label style="width:100%;">Add who knows this song</label>
     </div>
     <div class="row">
@@ -234,12 +224,11 @@
     }
 
     function addTo(field) {
-      const inputId = field === "dancers" ? "dancerSearch" : field === "front_dancers" ? "frontSearch" : field === "mvp_dancers" ? "mvpSearch" : "knowsSearch";
+      const inputId = field === "dancers" ? "dancerSearch" : field === "front_dancers" ? "frontSearch" : "knowsSearch";
       const val = document.getElementById(inputId).value.trim();
       if (!val) return;
       if (field === "dancers" && !dancersAssigned.includes(val)) dancersAssigned.push(val);
       if (field === "front_dancers" && !frontsAssigned.includes(val)) frontsAssigned.push(val);
-      if (field === "mvp_dancers" && !mvpsAssigned.includes(val)) mvpsAssigned.push(val);
       if (field === "knows_song" && !knowsAssigned.includes(val)) knowsAssigned.push(val);
       renderLists();
       save();
@@ -248,7 +237,6 @@
     function removeFrom(field, name) {
       if (field === "dancers") dancersAssigned = dancersAssigned.filter(x=>x!==name);
       if (field === "front_dancers") frontsAssigned = frontsAssigned.filter(x=>x!==name);
-      if (field === "mvp_dancers") mvpsAssigned = mvpsAssigned.filter(x=>x!==name);
       if (field === "knows_song") knowsAssigned = knowsAssigned.filter(x=>x!==name);
       renderLists();
       save();
@@ -257,7 +245,6 @@
     function renderLists() {
       populateList("dancersList", dancersAssigned, "dancers");
       populateList("frontList", frontsAssigned, "front_dancers");
-      populateList("mvpList", mvpsAssigned, "mvp_dancers");
       populateList("knowsList", knowsAssigned, "knows_song");
       populateSuggestions();
       renderRoles();
@@ -303,7 +290,7 @@
     }
 
     function populateSuggestions() {
-      ["dancerSuggestions","frontSuggestions","mvpSuggestions","knowsSuggestions"].forEach(id=>{
+      ["dancerSuggestions","frontSuggestions","knowsSuggestions"].forEach(id=>{
         const dl = document.getElementById(id);
         dl.innerHTML = "";
         dancers.forEach(d=>{
