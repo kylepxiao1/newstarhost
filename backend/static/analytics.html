@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Analytics</title>
+  <style>
+    body { margin:0; font-family:"Segoe UI", Arial, sans-serif; background:#0f172a; color:#e2e8f0; }
+    header { padding:16px 24px; background:#1e293b; box-shadow:0 2px 6px rgba(0,0,0,.3); display:flex; align-items:center; justify-content:space-between; }
+    h1 { margin:0; font-size:20px; }
+    main { padding:20px; }
+    table { width:100%; border-collapse:collapse; }
+    th, td { padding:8px 10px; border-bottom:1px solid #1f2937; text-align:left; }
+    th { background:#111827; }
+    button { cursor:pointer; background:#2563eb; color:#fff; border:none; border-radius:6px; padding:8px 12px; font-weight:600; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Analytics</h1>
+    <button onclick="loadData()">Refresh</button>
+  </header>
+  <main>
+    <table>
+      <thead>
+        <tr><th>Song</th><th>Plays</th><th>Points</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script>
+    let ws = null;
+    let lastState = null;
+
+    function renderFromState(state) {
+      if (!state) return;
+      const lib = (state.songs && state.songs.library) || {};
+      const plays = state.play_counts || {};
+      const points = state.points_counts || {};
+      const rows = document.getElementById("rows");
+      rows.innerHTML = "";
+      const allUrls = new Set([...Object.keys(plays || {}), ...Object.keys(points || {})]);
+      const items = [];
+      allUrls.forEach(url => {
+        let name = url;
+        Object.values(lib).forEach(meta => {
+          if (meta && meta.url === url) {
+            name = meta.name || url;
+          }
+        });
+        items.push({ name, plays: plays[url] || 0, points: points[url] || 0 });
+      });
+      items.sort((a, b) => (b.points || 0) - (a.points || 0));
+      items.forEach(item => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `<td>${item.name || "-"}</td><td>${item.plays}</td><td>${item.points}</td>`;
+        rows.appendChild(tr);
+      });
+    }
+
+    async function loadData() {
+      try {
+        const res = await fetch("/state");
+        lastState = await res.json();
+        renderFromState(lastState);
+      } catch (e) {
+        console.error("Failed to load analytics", e);
+      }
+    }
+
+    function connectWs() {
+      try { if (ws) ws.close(); } catch (e) {}
+      ws = new WebSocket((location.origin.replace(/^http/, "ws")) + "/ws/state");
+      ws.onmessage = evt => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.type === "state") {
+            lastState = data.payload;
+            renderFromState(lastState);
+          }
+        } catch (e) {
+          console.error("ws parse error", e);
+        }
+      };
+      ws.onclose = () => setTimeout(connectWs, 2000);
+    }
+
+    loadData();
+    connectWs();
+  </script>
+</body>
+</html>

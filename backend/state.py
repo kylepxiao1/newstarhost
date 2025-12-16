@@ -24,7 +24,6 @@ class BattleState:
     last_winner: str = ""
     group_name: str = ""
     enabled_dancers: List[str] = field(default_factory=list)
-    win_counts: Dict[str, int] = field(default_factory=dict)
     win_counts: Dict[str, int] = field(default_factory=lambda: {"slot_one": 0, "slot_two": 0})
     songs: Dict[str, str] = field(
         default_factory=lambda: {
@@ -38,20 +37,28 @@ class BattleState:
         }
     )
     dancers: List[Dict[str, str]] = field(default_factory=list)
+    play_counts: Dict[str, int] = field(default_factory=dict)
+    points_counts: Dict[str, int] = field(default_factory=dict)
 
     def copy(self) -> Dict:
         return asdict(self)
 
 
 class BattleStateManager:
-    def __init__(self, overlay_names, library_path: Optional[Path] = None, dancers_path: Optional[Path] = None) -> None:
+    def __init__(self, overlay_names, library_path: Optional[Path] = None, dancers_path: Optional[Path] = None, plays_path: Optional[Path] = None, points_path: Optional[Path] = None) -> None:
         self._library_path: Optional[Path] = Path(library_path) if library_path else None
         self._dancers_path: Optional[Path] = Path(dancers_path) if dancers_path else None
+        self._plays_path: Optional[Path] = Path(plays_path) if plays_path else None
+        self._points_path: Optional[Path] = Path(points_path) if points_path else None
         library = self._load_library()
         dancers = self._load_dancers()
+        plays = self._load_play_counts()
+        points = self._load_points_counts()
         self._state = BattleState(overlay_states={name: (name != "BurstOverlay") for name in overlay_names})
         self._state.songs["library"] = library
         self._state.dancers = dancers
+        self._state.play_counts = plays
+        self._state.points_counts = points
         if not self._state.enabled_dancers:
             enabled = []
             default_group = ""
@@ -314,6 +321,24 @@ class BattleStateManager:
         except Exception:
             pass
 
+    def _persist_counts(self, path: Optional[Path], data: Dict[str, int]) -> None:
+        if not path:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+    def _persist_play_counts(self, plays: Dict[str, int]) -> None:
+        if not getattr(self, "_plays_path", None):
+            return
+        try:
+            self._plays_path.parent.mkdir(parents=True, exist_ok=True)
+            self._plays_path.write_text(json.dumps(plays, ensure_ascii=False, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
     def _load_library(self) -> Dict[str, Any]:
         if not self._library_path or not self._library_path.exists():
             return {}
@@ -331,6 +356,34 @@ class BattleStateManager:
             return data
         except Exception:
             return {}
+
+    def _load_play_counts(self) -> Dict[str, int]:
+        return self._load_counts(self._plays_path)
+
+    def _load_points_counts(self) -> Dict[str, int]:
+        return self._load_counts(self._points_path)
+
+    def _load_counts(self, path: Optional[Path]) -> Dict[str, int]:
+        if not path or not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): int(v) for k, v in data.items()}
+        except Exception:
+            return {}
+        return {}
+
+    def _load_play_counts(self) -> Dict[str, int]:
+        if not getattr(self, "_plays_path", None) or not self._plays_path.exists():
+            return {}
+        try:
+            data = json.loads(self._plays_path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): int(v) for k, v in data.items()}
+        except Exception:
+            return {}
+        return {}
 
     def _clear_roles(self, roles: list, keep_song_id: str, lib: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Ensure each role is unique across songs."""
@@ -362,3 +415,22 @@ class BattleStateManager:
         except Exception:
             return []
 
+    def increment_play(self, url: str) -> Dict:
+        with self._lock:
+            if not url:
+                return self._state.copy()
+            plays = self._state.play_counts or {}
+            plays[url] = plays.get(url, 0) + 1
+            self._state.play_counts = plays
+            self._persist_counts(self._plays_path, plays)
+            return self._state.copy()
+
+    def increment_points(self, url: str, amount: int = 1) -> Dict:
+        with self._lock:
+            if not url or amount <= 0:
+                return self._state.copy()
+            points = self._state.points_counts or {}
+            points[url] = points.get(url, 0) + amount
+            self._state.points_counts = points
+            self._persist_counts(self._points_path, points)
+            return self._state.copy()

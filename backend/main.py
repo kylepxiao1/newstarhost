@@ -58,6 +58,8 @@ state_manager = BattleStateManager(
     config.OVERLAY_SOURCES,
     library_path=MEDIA_DIR / "songs.json",
     dancers_path=MEDIA_DIR / "dancers.json",
+    plays_path=MEDIA_DIR / "play_counts.json",
+    points_path=MEDIA_DIR / "points_counts.json",
 )
 ws_manager = WebsocketManager()
 
@@ -340,6 +342,8 @@ async def select_camera(body: CameraSelectRequest) -> JSONResponse:
 @app.post("/songs/play")
 async def play_song(body: SongRequest) -> JSONResponse:
     state = state_manager.set_current_song(body.target, body.url)
+    # increment play count for this url
+    state = state_manager.increment_play(body.url)
     _broadcast_state(state)
     return JSONResponse(state)
 
@@ -421,6 +425,53 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
     )
     _broadcast_state(state)
     return JSONResponse(state)
+
+
+@app.get("/analytics/data")
+async def analytics_data() -> JSONResponse:
+    state = state_manager.get_state()
+    lib = state.get("songs", {}).get("library", {}) or {}
+    plays = state.get("play_counts", {}) or {}
+    points = state.get("points_counts", {}) or {}
+    items = []
+    all_urls = set(plays.keys()) | set(points.keys())
+    for url in all_urls:
+        name = url
+        for meta in lib.values():
+            if meta.get("url") == url:
+                name = meta.get("name") or url
+                break
+        items.append(
+            {
+                "url": url,
+                "name": name,
+                "count": plays.get(url, 0),
+                "points": points.get(url, 0),
+            }
+        )
+    items.sort(key=lambda x: x["points"], reverse=True)
+    return JSONResponse({"plays": items})
+
+
+class PointsRequest(BaseModel):
+    url: Optional[str] = None
+    amount: int = 1
+
+
+@app.post("/analytics/points")
+async def add_points(req: PointsRequest) -> JSONResponse:
+    # if url not provided, use current song
+    target_url = req.url
+    if not target_url:
+        target_url = state_manager.get_state().get("songs", {}).get("current", "")
+    state = state_manager.increment_points(target_url or "", req.amount)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+
+@app.get("/analytics")
+async def analytics_page() -> FileResponse:
+    return _static_file("analytics.html")
 
 
 @app.post("/songs/delete")
