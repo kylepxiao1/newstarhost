@@ -434,3 +434,70 @@ class BattleStateManager:
             self._state.points_counts = points
             self._persist_counts(self._points_path, points)
             return self._state.copy()
+
+    def rename_media_files(self, media_dir: Path) -> None:
+        """
+        Rename mp3 files to match their song names and update URLs + counts.
+        """
+        def norm_filename(val: str) -> str:
+            import unicodedata, re
+            s = unicodedata.normalize("NFKD", val).encode("ascii", "ignore").decode("ascii")
+            s = re.sub(r'[\\/*?:"<>|]+', "", s)
+            s = re.sub(r"\s+", " ", s.strip())
+            return s[:200] or "untitled"
+
+        with self._lock:
+            lib = self._state.songs.get("library", {}) or {}
+            plays = self._state.play_counts or {}
+            points = self._state.points_counts or {}
+            songs_map = self._state.songs
+
+            def remap_count(d: Dict[str, int], old: str, new: str) -> Dict[str, int]:
+                if old in d:
+                    d[new] = d.pop(old)
+                return d
+
+            for song_id, meta in lib.items():
+                name = meta.get("name") or song_id
+                desired = f"{norm_filename(name)}.mp3"
+                old_url = meta.get("url") or ""
+                old_file = old_url.split("/")[-1] if old_url else ""
+                if not old_file.lower().endswith(".mp3"):
+                    continue
+                old_path = media_dir / old_file
+                new_path = media_dir / desired
+                if old_path == new_path and new_path.exists():
+                    continue
+                if not old_path.exists() and new_path.exists():
+                    # file already named correctly; just update url if needed
+                    meta["url"] = f"/media/{new_path.name}"
+                else:
+                    # ensure unique
+                    base = norm_filename(name)
+                    counter = 2
+                    while new_path.exists():
+                        new_path = media_dir / f"{base}_{counter}.mp3"
+                        counter += 1
+                    try:
+                        if old_path.exists():
+                            old_path.rename(new_path)
+                            meta["url"] = f"/media/{new_path.name}"
+                        else:
+                            continue
+                    except Exception:
+                        continue
+                new_url = meta.get("url", old_url)
+                # update song slots/current/background if matching
+                for key in ("slot_one", "slot_two", "group", "background", "current"):
+                    if songs_map.get(key) == old_url:
+                        songs_map[key] = new_url
+                plays = remap_count(plays, old_url, new_url)
+                points = remap_count(points, old_url, new_url)
+                lib[song_id] = meta
+
+            self._state.songs["library"] = lib
+            self._state.play_counts = plays
+            self._state.points_counts = points
+            self._persist_library(lib)
+            self._persist_counts(self._plays_path, plays)
+            self._persist_counts(self._points_path, points)

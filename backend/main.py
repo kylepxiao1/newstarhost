@@ -39,6 +39,10 @@ async def lifespan(app: FastAPI):
     # Standalone mode: skip OBS control
     obs.enabled = False
     logger.info("Service started (headless). Overlay websocket at %s", config.WEBSOCKET_PATH)
+    try:
+        state_manager.rename_media_files(MEDIA_DIR)
+    except Exception as exc:
+        logger.warning("Media rename on startup failed: %s", exc)
     _cleanup_unregistered_media(state_manager)
     yield
 
