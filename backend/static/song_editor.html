@@ -34,6 +34,11 @@
         <input id="renameInput" placeholder="Rename song" style="flex:2;">
         <button onclick="renameSong()">Rename</button>
       </div>
+      <div class="row">
+        <label style="min-width:140px;">Volume</label>
+        <input id="volumeInput" type="range" min="0" max="200" step="1" value="100" oninput="onVolumeInput()" onchange="onVolumeChange()" style="flex:2;">
+        <span id="volumeValue" style="min-width:64px;text-align:right;">100</span>
+      </div>
     </section>
   </main>
   <section>
@@ -96,6 +101,9 @@
   let rolesAssigned = [];
   let knowsAssigned = [];
   let exclusiveMvpFor = "";
+  let volumeValue = 100;
+  let volumeSaveInFlight = false;
+  let volumeQueued = null;
   const ROLE_OPTIONS = ["bell","applause","mvp","attention","background","win"];
 
     function renderSongsList() {
@@ -142,7 +150,11 @@
       rolesAssigned = [...(song.roles || [])];
       knowsAssigned = [...(song.knows_song || [])];
       exclusiveMvpFor = song.exclusive_mvp_for || "";
+      volumeValue = parseFloat(song.volume);
+      if (!Number.isFinite(volumeValue)) volumeValue = 100;
+      if (volumeValue <= 1) volumeValue = Math.round(volumeValue * 200);
       document.getElementById("renameInput").value = song.name || id || "";
+      setVolumeUi(volumeValue);
       const exSel = document.getElementById("exclusiveMvpSelect");
       if (exSel) exSel.value = exclusiveMvpFor || "";
       renderLists();
@@ -155,6 +167,7 @@
       btns.forEach(b=>b.disabled=true);
       if (!currentSongId) { btns.forEach(b=>b.disabled=false); return; }
       const newName = document.getElementById("renameInput").value.trim();
+      const volume = getVolumeValue();
       const doRename = newName && (!songs[currentSongId] || songs[currentSongId].name !== newName);
       const renamePromise = doRename
         ? api("/songs/rename", {method:"POST", body:{song_id: currentSongId, name: newName}}).then(r=>r.json())
@@ -164,7 +177,7 @@
           if (state && state.library) {
             songs = state.library;
           }
-          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, exclusive_mvp_for: exclusiveMvpFor}});
+          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, exclusive_mvp_for: exclusiveMvpFor, volume}});
         })
         .then(()=>loadSongs())
         .finally(()=>btns.forEach(b=>b.disabled=false));
@@ -212,8 +225,83 @@
     if (!song.url) return;
     const audio = getAudioPlayer();
     audio.src = song.url;
+    audio.volume = volumeToScalar(song.volume);
     audio.loop = false;
     audio.play().catch(()=>{});
+  }
+
+  function volumeToScalar(val) {
+    let v = parseFloat(val);
+    if (!Number.isFinite(v)) return 1;
+    if (v <= 1) return Math.max(0, Math.min(1, v));
+    return Math.max(0, Math.min(1, v / 200));
+  }
+
+  function getVolumeValue() {
+    const input = document.getElementById("volumeInput");
+    if (!input) return 100;
+    let val = parseFloat(input.value);
+    if (!Number.isFinite(val)) val = 100;
+    return Math.max(0, Math.min(200, Math.round(val)));
+  }
+
+  function setVolumeUi(val) {
+    const v = Math.max(0, Math.min(200, Math.round(val)));
+    const input = document.getElementById("volumeInput");
+    const label = document.getElementById("volumeValue");
+    if (input) input.value = String(v);
+    if (label) label.textContent = String(v);
+  }
+
+  function onVolumeInput() {
+    const v = getVolumeValue();
+    setVolumeUi(v);
+    volumeValue = v;
+    updateLocalVolume(v);
+    queueVolumeSave(v);
+  }
+
+  function onVolumeChange() {
+    volumeValue = getVolumeValue();
+    setVolumeUi(volumeValue);
+    updateLocalVolume(volumeValue);
+    queueVolumeSave(volumeValue);
+  }
+
+  function queueVolumeSave(volume) {
+    if (!currentSongId) return;
+    volumeQueued = volume;
+    if (!volumeSaveInFlight) flushVolumeSave();
+  }
+
+  function flushVolumeSave() {
+    if (!currentSongId || volumeQueued === null) return;
+    const volume = volumeQueued;
+    volumeQueued = null;
+    volumeSaveInFlight = true;
+    api("/songs/update_dancers", {method:"POST", body:{
+      song_id: currentSongId,
+      dancers: dancersAssigned,
+      front_dancers: frontsAssigned,
+      mvp_dancers: mvpsAssigned,
+      roles: rolesAssigned,
+      knows_song: knowsAssigned,
+      exclusive_mvp_for: exclusiveMvpFor,
+      volume,
+    }}).then(r=>r.json()).then(state => {
+      if (state && state.songs && state.songs.library) {
+        songs = state.songs.library;
+      }
+    }).catch(()=>{}).finally(() => {
+      volumeSaveInFlight = false;
+      if (volumeQueued !== null) flushVolumeSave();
+    });
+  }
+
+  function updateLocalVolume(volume) {
+    if (currentSongId && songs[currentSongId]) {
+      songs[currentSongId].volume = volume;
+    }
   }
 
     function loadDancers() {

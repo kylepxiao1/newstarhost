@@ -155,12 +155,26 @@ class BattleStateManager:
             self._state.songs["position"] = str(pos)
             return self._state.copy()
 
-    def register_song(self, song_id: str, name: str, url: str, dancers: Optional[list] = None, front_dancers: Optional[list] = None, mvp_dancers: Optional[list] = None, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None) -> Dict:
+    def register_song(self, song_id: str, name: str, url: str, dancers: Optional[list] = None, front_dancers: Optional[list] = None, mvp_dancers: Optional[list] = None, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             roles_list = roles or []
             if roles_list:
                 lib = self._clear_roles(roles_list, song_id, lib)
+            vol_value = 100
+            if volume is not None:
+                try:
+                    raw = float(volume)
+                    if raw <= 1:
+                        vol_value = int(round(raw * 200))
+                    else:
+                        vol_value = int(round(raw))
+                except Exception:
+                    vol_value = 100
+            if vol_value < 0:
+                vol_value = 0
+            if vol_value > 200:
+                vol_value = 200
             lib[song_id] = {
                 "name": name,
                 "url": url,
@@ -170,6 +184,7 @@ class BattleStateManager:
                 "roles": roles_list,
                 "knows_song": knows_song or [],
                 "exclusive_mvp_for": exclusive_mvp_for or "",
+                "volume": vol_value,
             }
             self._state.songs["library"] = lib
             self._persist_library(lib)
@@ -188,7 +203,7 @@ class BattleStateManager:
             self._persist_library(lib)
             return self._state.copy()
 
-    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None) -> Dict:
+    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             if song_id in lib:
@@ -209,6 +224,22 @@ class BattleStateManager:
                     lib[song_id]["exclusive_mvp_for"] = exclusive_mvp_for
                 else:
                     lib[song_id].setdefault("exclusive_mvp_for", "")
+                if volume is not None:
+                    try:
+                        raw = float(volume)
+                        if raw <= 1:
+                            vol_value = int(round(raw * 200))
+                        else:
+                            vol_value = int(round(raw))
+                    except Exception:
+                        vol_value = lib[song_id].get("volume", 100)
+                    if vol_value < 0:
+                        vol_value = 0
+                    if vol_value > 200:
+                        vol_value = 200
+                    lib[song_id]["volume"] = vol_value
+                else:
+                    lib[song_id].setdefault("volume", 100)
                 self._state.songs["library"] = lib
                 self._persist_library(lib)
             return self._state.copy()

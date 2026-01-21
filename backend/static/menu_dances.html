@@ -304,6 +304,7 @@
     function startAudio(url, opts={}) {
       const player = getAudioPlayer();
       if (!player) return;
+      const targetVolume = normalizeVolume((typeof opts.volume === "number") ? opts.volume : getSongVolume(url));
       const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
       const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
       const doPlay = () => {
@@ -326,16 +327,16 @@
           player.play().catch(()=>{});
           const steps = 10;
           const stepMs = 50;
-          const inc = 1/steps;
+          const inc = targetVolume / steps;
           let count = 0;
           const intv = setInterval(()=>{
             count += 1;
-            vol = Math.min(1, vol + inc);
+            vol = Math.min(targetVolume, vol + inc);
             player.volume = vol;
             if (count >= steps) clearInterval(intv);
           }, stepMs);
         } else {
-          player.volume = 1;
+          player.volume = targetVolume;
           player.play().catch(()=>{});
         }
       };
@@ -365,6 +366,20 @@
 
     function getRoleUrl(role) {
       return Object.values(library).find(s => (s.roles||[]).includes(role))?.url || "";
+    }
+
+    function normalizeVolume(val) {
+      let v = parseFloat(val);
+      if (!Number.isFinite(v)) return 1;
+      if (v <= 1) return Math.max(0, Math.min(1, v));
+      return Math.max(0, Math.min(1, v / 200));
+    }
+
+    function getSongVolume(url) {
+      const song = Object.values(library).find(s => s.url === url);
+      const v = song ? parseFloat(song.volume) : NaN;
+      if (Number.isFinite(v)) return normalizeVolume(v);
+      return 1;
     }
 
     function getAudioPlayer() {

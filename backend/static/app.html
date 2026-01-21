@@ -60,6 +60,7 @@
       camera: document.getElementById("frame-camera"),
       analytics: document.getElementById("frame-analytics"),
     };
+    let libraryCache = {};
 
     function pauseAllAudio() {
       try { globalPlayer.pause(); } catch (e) {}
@@ -80,6 +81,48 @@
 
     // Global audio: if any iframe posts a "play-audio" message, play it here.
     const globalPlayer = document.getElementById("globalPlayer");
+    function normalizeVolume(val) {
+      let v = parseFloat(val);
+      if (!Number.isFinite(v)) return 1;
+      if (v <= 1) return Math.max(0, Math.min(1, v));
+      return Math.max(0, Math.min(1, v / 200));
+    }
+
+    function getVolumeForUrl(url) {
+      const entries = Object.values(libraryCache || {});
+      for (const song of entries) {
+        if (song && song.url === url) {
+          return normalizeVolume(song.volume);
+        }
+      }
+      return 1;
+    }
+
+    async function refreshLibrary() {
+      try {
+        const res = await fetch("/state");
+        const data = await res.json();
+        libraryCache = (data.songs && data.songs.library) || {};
+      } catch (e) {}
+    }
+
+    function connectStateWs() {
+      let ws;
+      try { ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state"); } catch (e) { return; }
+      ws.onmessage = evt => {
+        try {
+          const data = JSON.parse(evt.data);
+          if (data.type === "state") {
+            libraryCache = (data.payload?.songs?.library) || libraryCache;
+          }
+        } catch (e) {}
+      };
+      ws.onclose = () => setTimeout(connectStateWs, 2000);
+    }
+
+    refreshLibrary();
+    connectStateWs();
+
     window.addEventListener("message", (evt) => {
       const data = evt.data || {};
       if (data.type === "play-audio" && data.url) {
@@ -87,6 +130,8 @@
         if (globalPlayer.src !== data.url) {
           globalPlayer.src = data.url;
         }
+        const vol = (typeof data.volume === "number") ? normalizeVolume(data.volume) : getVolumeForUrl(data.url);
+        globalPlayer.volume = vol;
         globalPlayer.loop = !!data.loop;
         globalPlayer.play().catch(()=>{});
       }

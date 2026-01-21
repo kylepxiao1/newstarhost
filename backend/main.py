@@ -111,6 +111,7 @@ class RegisterSongRequest(BaseModel):
     knows_song: Optional[List[str]] = None
     roles: Optional[List[str]] = None
     exclusive_mvp_for: Optional[str] = None
+    volume: Optional[float] = None
 
 
 class TagSongRequest(BaseModel):
@@ -126,6 +127,7 @@ class UpdateSongDancersRequest(BaseModel):
     knows_song: Optional[List[str]] = None
     roles: Optional[List[str]] = None
     exclusive_mvp_for: Optional[str] = None
+    volume: Optional[float] = None
 
 
 class RenameSongRequest(BaseModel):
@@ -376,6 +378,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
         body.roles,
         body.knows_song,
         body.exclusive_mvp_for,
+        body.volume,
     )
     _broadcast_state(state)
     return JSONResponse(state)
@@ -426,6 +429,7 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
         body.roles,
         body.knows_song,
         body.exclusive_mvp_for,
+        body.volume,
     )
     _broadcast_state(state)
     return JSONResponse(state)
