@@ -758,11 +758,17 @@
         }
       }
       if (!pair) {
+        const prevA = (state.slot_one || "").toLowerCase();
+        const prevB = (state.slot_two || "").toLowerCase();
+        const prevSet = new Set([prevA, prevB].filter(Boolean));
+        const fresh = dancers.filter(d => !prevSet.has((d.name || "").toLowerCase()));
         if (winner && others.length) {
-          const challenger = others[Math.floor(Math.random() * others.length)];
+          const pool = fresh.length ? fresh : others;
+          const challenger = pool[Math.floor(Math.random() * pool.length)];
           pair = [winner.name || "Dancer A", challenger.name || "Dancer B"];
         } else {
-        const shuffled = [...dancers].sort(() => Math.random() - 0.5);
+          const pool = fresh.length >= 2 ? fresh : dancers;
+          const shuffled = [...pool].sort(() => Math.random() - 0.5);
           pair = [shuffled[0].name || "Dancer A", shuffled[1].name || "Dancer B"];
         }
       }
