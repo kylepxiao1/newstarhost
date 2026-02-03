@@ -17,7 +17,11 @@
 <body>
   <header>
     <h1>Analytics</h1>
-    <button onclick="loadData()">Refresh</button>
+    <div style="display:flex; gap:10px; align-items:center;">
+      <button onclick="loadData()">Refresh</button>
+      <button onclick="window.open('/analytics/plays?limit=200','_blank')">View Plays JSON</button>
+      <button onclick="window.open('/analytics/plays.csv?limit=1000','_blank')">Download Plays CSV</button>
+    </div>
   </header>
   <main>
     <table>
@@ -31,23 +35,19 @@
     let ws = null;
     let lastState = null;
 
-    function renderFromState(state) {
-      if (!state) return;
-      const lib = (state.songs && state.songs.library) || {};
-      const plays = state.play_counts || {};
-      const points = state.points_counts || {};
+    function renderFromData(data, state) {
+      if (!data) return;
+      const lib = (state && state.songs && state.songs.library) || {};
       const rows = document.getElementById("rows");
       rows.innerHTML = "";
-      const allUrls = new Set([...Object.keys(plays || {}), ...Object.keys(points || {})]);
-      const items = [];
-      allUrls.forEach(url => {
-        let name = url;
+      const items = (data.plays || []).map(item => {
+        let name = item.name || item.url || "";
         Object.values(lib).forEach(meta => {
-          if (meta && meta.url === url) {
-            name = meta.name || url;
+          if (meta && meta.url === item.url) {
+            name = meta.name || name;
           }
         });
-        items.push({ name, plays: plays[url] || 0, points: points[url] || 0 });
+        return { name, plays: item.count || 0, points: item.points || 0 };
       });
       items.sort((a, b) => (b.points || 0) - (a.points || 0));
       items.forEach(item => {
@@ -59,9 +59,13 @@
 
     async function loadData() {
       try {
-        const res = await fetch("/state");
-        lastState = await res.json();
-        renderFromState(lastState);
+        const [stateRes, dataRes] = await Promise.all([
+          fetch("/state"),
+          fetch("/analytics/data"),
+        ]);
+        lastState = await stateRes.json();
+        const data = await dataRes.json();
+        renderFromData(data, lastState);
       } catch (e) {
         console.error("Failed to load analytics", e);
       }
@@ -75,7 +79,10 @@
           const data = JSON.parse(evt.data);
           if (data.type === "state") {
             lastState = data.payload;
-            renderFromState(lastState);
+            fetch("/analytics/data")
+              .then(res => res.json())
+              .then(payload => renderFromData(payload, lastState))
+              .catch(() => {});
           }
         } catch (e) {
           console.error("ws parse error", e);

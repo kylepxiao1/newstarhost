@@ -3,9 +3,12 @@ from __future__ import annotations
 import threading
 import time
 import json
+from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Optional, Any, List
+
+from backend.analytics_store import AnalyticsStore
 
 
 @dataclass
@@ -45,15 +48,22 @@ class BattleState:
 
 
 class BattleStateManager:
-    def __init__(self, overlay_names, library_path: Optional[Path] = None, dancers_path: Optional[Path] = None, plays_path: Optional[Path] = None, points_path: Optional[Path] = None) -> None:
+    def __init__(self, overlay_names, library_path: Optional[Path] = None, dancers_path: Optional[Path] = None, plays_path: Optional[Path] = None, points_path: Optional[Path] = None, analytics_path: Optional[Path] = None) -> None:
         self._library_path: Optional[Path] = Path(library_path) if library_path else None
         self._dancers_path: Optional[Path] = Path(dancers_path) if dancers_path else None
         self._plays_path: Optional[Path] = Path(plays_path) if plays_path else None
         self._points_path: Optional[Path] = Path(points_path) if points_path else None
+        self._analytics: Optional[AnalyticsStore] = AnalyticsStore(analytics_path) if analytics_path else None
         library = self._load_library()
         dancers = self._load_dancers()
-        plays = self._load_play_counts()
-        points = self._load_points_counts()
+        if self._analytics:
+            self._analytics.migrate_from_json(self._plays_path, self._points_path, cleanup=True)
+            stats = self._analytics.load_stats()
+            plays = {k: v.get("play_count", 0) for k, v in stats.items()}
+            points = {k: v.get("points_count", 0) for k, v in stats.items()}
+        else:
+            plays = self._load_play_counts()
+            points = self._load_points_counts()
         self._state = BattleState(overlay_states={name: (name != "BurstOverlay") for name in overlay_names})
         self._state.songs["library"] = library
         self._state.dancers = dancers
@@ -76,6 +86,21 @@ class BattleStateManager:
             if default_group:
                 self._state.group_name = default_group
         self._lock = threading.RLock()
+
+    def get_play_events(self, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
+        if not self._analytics:
+            return []
+        return self._analytics.get_play_events(limit=limit, offset=offset)
+
+    def get_play_events_csv(self, limit: int = 1000, offset: int = 0) -> List[List[Any]]:
+        if not self._analytics:
+            return []
+        return self._analytics.get_play_events_csv(limit=limit, offset=offset)
+
+    def get_analytics_stats(self) -> Dict[str, Dict[str, int]]:
+        if not self._analytics:
+            return {}
+        return self._analytics.load_stats()
 
     def get_state(self) -> Dict:
         with self._lock:
@@ -389,27 +414,21 @@ class BattleStateManager:
             return {}
 
     def _load_play_counts(self) -> Dict[str, int]:
-        return self._load_counts(self._plays_path)
-
-    def _load_points_counts(self) -> Dict[str, int]:
-        return self._load_counts(self._points_path)
-
-    def _load_counts(self, path: Optional[Path]) -> Dict[str, int]:
-        if not path or not path.exists():
+        if not getattr(self, "_plays_path", None) or not self._plays_path.exists():
             return {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            data = json.loads(self._plays_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return {str(k): int(v) for k, v in data.items()}
         except Exception:
             return {}
         return {}
 
-    def _load_play_counts(self) -> Dict[str, int]:
-        if not getattr(self, "_plays_path", None) or not self._plays_path.exists():
+    def _load_points_counts(self) -> Dict[str, int]:
+        if not getattr(self, "_points_path", None) or not self._points_path.exists():
             return {}
         try:
-            data = json.loads(self._plays_path.read_text(encoding="utf-8"))
+            data = json.loads(self._points_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
                 return {str(k): int(v) for k, v in data.items()}
         except Exception:
@@ -453,7 +472,39 @@ class BattleStateManager:
             plays = self._state.play_counts or {}
             plays[url] = plays.get(url, 0) + 1
             self._state.play_counts = plays
-            self._persist_counts(self._plays_path, plays)
+            if self._analytics:
+                lib = self._state.songs.get("library", {}) or {}
+                song_name = url
+                assigned = []
+                for meta in lib.values():
+                    if meta.get("url") == url:
+                        song_name = meta.get("name") or url
+                        assigned = meta.get("dancers") or []
+                        break
+                now = datetime.now().astimezone()
+                unix_ts = int(now.timestamp())
+                iso_ts = now.isoformat()
+                date = now.date().isoformat()
+                time_of_day = now.strftime("%H:%M:%S")
+                slot_one = self._state.slot_one or ""
+                slot_two = self._state.slot_two or ""
+                score_one = int(self._state.scores.get("slot_one", 0))
+                score_two = int(self._state.scores.get("slot_two", 0))
+                self._analytics.increment_play(
+                    url,
+                    song_name,
+                    unix_ts,
+                    iso_ts,
+                    date,
+                    time_of_day,
+                    json.dumps(assigned, ensure_ascii=False),
+                    slot_one,
+                    slot_two,
+                    score_one,
+                    score_two,
+                    bool(self._state.active),
+                    self._state.battle_mode,
+                )
             return self._state.copy()
 
     def increment_points(self, url: str, amount: int = 1) -> Dict:
@@ -463,7 +514,9 @@ class BattleStateManager:
             points = self._state.points_counts or {}
             points[url] = points.get(url, 0) + amount
             self._state.points_counts = points
-            self._persist_counts(self._points_path, points)
+            if self._analytics:
+                now = datetime.now().astimezone()
+                self._analytics.increment_points(url, int(amount), int(now.timestamp()), now.isoformat())
             return self._state.copy()
 
     def rename_media_files(self, media_dir: Path) -> None:
@@ -524,11 +577,18 @@ class BattleStateManager:
                         songs_map[key] = new_url
                 plays = remap_count(plays, old_url, new_url)
                 points = remap_count(points, old_url, new_url)
+                if self._analytics:
+                    self._analytics.remap_song_url(old_url, new_url)
                 lib[song_id] = meta
 
             self._state.songs["library"] = lib
-            self._state.play_counts = plays
-            self._state.points_counts = points
+            if self._analytics:
+                stats = self._analytics.load_stats()
+                self._state.play_counts = {k: v.get("play_count", 0) for k, v in stats.items()}
+                self._state.points_counts = {k: v.get("points_count", 0) for k, v in stats.items()}
+            else:
+                self._state.play_counts = plays
+                self._state.points_counts = points
+                self._persist_counts(self._plays_path, plays)
+                self._persist_counts(self._points_path, points)
             self._persist_library(lib)
-            self._persist_counts(self._plays_path, plays)
-            self._persist_counts(self._points_path, points)

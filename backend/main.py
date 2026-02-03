@@ -14,7 +14,7 @@ import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -64,6 +64,7 @@ state_manager = BattleStateManager(
     dancers_path=MEDIA_DIR / "dancers.json",
     plays_path=MEDIA_DIR / "play_counts.json",
     points_path=MEDIA_DIR / "points_counts.json",
+    analytics_path=MEDIA_DIR / "analytics.sqlite",
 )
 ws_manager = WebsocketManager()
 
@@ -439,11 +440,9 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
 async def analytics_data() -> JSONResponse:
     state = state_manager.get_state()
     lib = state.get("songs", {}).get("library", {}) or {}
-    plays = state.get("play_counts", {}) or {}
-    points = state.get("points_counts", {}) or {}
+    stats = state_manager.get_analytics_stats() or {}
     items = []
-    all_urls = set(plays.keys()) | set(points.keys())
-    for url in all_urls:
+    for url, vals in stats.items():
         name = url
         for meta in lib.values():
             if meta.get("url") == url:
@@ -453,8 +452,8 @@ async def analytics_data() -> JSONResponse:
             {
                 "url": url,
                 "name": name,
-                "count": plays.get(url, 0),
-                "points": points.get(url, 0),
+                "count": int(vals.get("play_count", 0)),
+                "points": int(vals.get("points_count", 0)),
             }
         )
     items.sort(key=lambda x: x["points"], reverse=True)
@@ -480,6 +479,22 @@ async def add_points(req: PointsRequest) -> JSONResponse:
 @app.get("/analytics")
 async def analytics_page() -> FileResponse:
     return _static_file("analytics.html")
+
+
+@app.get("/analytics/plays")
+async def analytics_plays(limit: int = 200, offset: int = 0) -> JSONResponse:
+    items = state_manager.get_play_events(limit=limit, offset=offset)
+    return JSONResponse({"events": items})
+
+
+@app.get("/analytics/plays.csv")
+async def analytics_plays_csv(limit: int = 1000, offset: int = 0) -> PlainTextResponse:
+    rows = state_manager.get_play_events_csv(limit=limit, offset=offset)
+    output = io.StringIO()
+    writer = csv.writer(output)
+    for row in rows:
+        writer.writerow(row)
+    return PlainTextResponse(output.getvalue(), media_type="text/csv")
 
 
 @app.post("/songs/delete")
