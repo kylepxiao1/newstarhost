@@ -82,9 +82,9 @@
     <div id="progress" style="margin-top:10px; height:8px; width:100%; background:#1f2937; border-radius:4px; overflow:hidden; display:none;">
       <div id="progressFill" style="height:100%; width:0%; background:#22c55e;"></div>
     </div>
-    <div class="row">
+      <div class="row">
       <label>Preview</label>
-      <audio id="preview" controls></audio>
+      <audio id="preview" controls preload="metadata"></audio>
     </div>
   </section>
   </main>
@@ -133,8 +133,21 @@
       if (data.output) {
         div.innerHTML = `Preview ready: <a href="${data.output}" target="_blank">${data.output}</a><br>${data.note||""}`;
         const audio = document.getElementById("preview");
-        audio.src = data.output;
-        audio.load();
+        audio.pause();
+        // Use a blob URL for reliable seeking; fallback to direct URL if fetch fails
+        fetch(data.output)
+          .then(r => r.blob())
+          .then(blob => {
+            if (audio._blobUrl) URL.revokeObjectURL(audio._blobUrl);
+            const blobUrl = URL.createObjectURL(blob);
+            audio._blobUrl = blobUrl;
+            audio.src = blobUrl;
+            audio.load();
+          })
+          .catch(() => {
+            audio.src = data.output;
+            audio.load();
+          });
         lastPreview = {
           url: data.output,
           title: data.title || (file ? file.name : nameInput),
