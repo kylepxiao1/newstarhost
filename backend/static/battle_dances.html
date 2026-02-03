@@ -147,6 +147,48 @@
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
     let nextPairOverride = null;
+    let audioUnlocked = false;
+
+    let _randSeed = (Date.now() % 2147483647) || 1;
+    function rand() {
+      if (window.crypto && window.crypto.getRandomValues) {
+        const buf = new Uint32Array(1);
+        window.crypto.getRandomValues(buf);
+        return buf[0] / 4294967296;
+      }
+      // time-seeded LCG fallback
+      const t = Date.now() ^ (performance && performance.now ? Math.floor(performance.now()*1000) : 0);
+      _randSeed = (_randSeed + t) % 2147483647;
+      _randSeed = (_randSeed * 48271) % 2147483647;
+      return _randSeed / 2147483647;
+    }
+
+    function debugLog(...args) {
+      if (!location.hostname.includes("fly.dev")) return;
+      try { console.log("[battle-debug]", ...args); } catch (e) {}
+    }
+
+    async function unlockAudio() {
+      if (audioUnlocked) return true;
+      const player = getAudioPlayer();
+      if (!player) return false;
+      try {
+        if (!player.paused) {
+          audioUnlocked = true;
+          return true;
+        }
+        const prevSrc = player.src;
+        player.muted = true;
+        await player.play();
+        player.pause();
+        player.muted = false;
+        if (prevSrc) player.src = prevSrc;
+        audioUnlocked = true;
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
 
     function highlightNav() {
       const here = location.pathname.replace(/\/+$/,"") || "/";
@@ -517,6 +559,10 @@
         if (fromSelect) return;
         return alert("Enter a song URL");
       }
+      if (!audioUnlocked) {
+        const ok = await unlockAudio();
+        if (!ok) return alert("Click anywhere on the page once to enable audio.");
+      }
       // cancel routine if user manually picks music
       cancelRoutine();
       await api("/songs/play", {method:"POST", body:{target: currentTab, url}});
@@ -548,6 +594,17 @@
     function startAudio(url, opts={}) {
       const player = getAudioPlayer();
       if (!player) return;
+      if (!audioUnlocked) {
+        unlockAudio().then(ok => {
+          if (!ok) return;
+          startAudio(url, opts);
+        });
+        return;
+      }
+      try {
+        console.log("[battle-debug] startAudio", {url, opts});
+        console.trace("[battle-debug] startAudio trace");
+      } catch (e) {}
       const targetVolume = normalizeVolume((typeof opts.volume === "number") ? opts.volume : getSongVolume(url));
       const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
       const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
@@ -668,11 +725,40 @@
       }
       const weights = candidates.map(p => p.key ? 1 / (1 + p.count) : 1);
       const total = weights.reduce((a,b)=>a+b,0);
-      let r = Math.random() * total;
+      debugLog("pickRandom candidates", {
+        total,
+        lastSongUrl,
+        candidates: candidates.map(c => ({key: c.key, count: c.count, w: c.key ? 1 / (1 + c.count) : 1}))
+      });
+      const allEqual = weights.every(w => w === weights[0]);
+      if (allEqual && candidates.length > 1) {
+        const allZeroCounts = candidates.every(c => (c.count || 0) === 0);
+        let idx;
+        if (allZeroCounts && !lastSongUrl) {
+          const t = Date.now() + Math.floor((performance && performance.now ? performance.now() : 0) * 1000);
+          idx = Math.abs(t) % candidates.length;
+          debugLog("pickRandom uniform time-seed", {idx, len: candidates.length});
+        } else {
+          idx = Math.floor(rand() * candidates.length);
+          debugLog("pickRandom uniform", {idx, len: candidates.length});
+        }
+        return candidates[idx].item;
+      }
+      if (!Number.isFinite(total) || total <= 0) {
+        const idx = Math.floor(rand() * candidates.length);
+        debugLog("pickRandom fallback", {len: candidates.length, idx});
+        return candidates[idx].item;
+      }
+      let r = rand() * total;
+      debugLog("pickRandom roll", {r});
       for (let i=0;i<candidates.length;i++) {
         r -= weights[i];
-        if (r <= 0) return candidates[i].item;
+        if (r <= 0) {
+          debugLog("pickRandom chosen", {idx:i, key:candidates[i].key});
+          return candidates[i].item;
+        }
       }
+      debugLog("pickRandom chosen", {idx:candidates.length-1, key:candidates[candidates.length-1]?.key});
       return candidates[candidates.length-1].item;
     }
 
@@ -948,6 +1034,13 @@
     }
 
     function startRoutine() {
+      if (!audioUnlocked) {
+        unlockAudio().then(ok => {
+          if (ok) startRoutine();
+          else alert("Click anywhere on the page once to enable audio.");
+        });
+        return;
+      }
       clearRoutineTimers();
       routine.active = true;
       routine.startTime = Date.now();
@@ -1248,6 +1341,8 @@
       ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
     }
     connectWs();
+
+    document.addEventListener("pointerdown", () => { unlockAudio(); }, { once: true });
 
     refreshState();
     refreshSongs();
