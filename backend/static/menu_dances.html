@@ -147,6 +147,10 @@
       if (container) {
         container.innerHTML = "";
         const dancerFilter = (document.getElementById("dancerFilter")?.value || "").toLowerCase();
+        const durationLabel = (song) => {
+          const d = parseInt(song.duration_sec, 10);
+          return Number.isFinite(d) && d > 0 ? ` (${d}s)` : "";
+        };
         Object.values(library)
           .filter(baseFilter)
           .filter(s => {
@@ -161,7 +165,7 @@
             const card = document.createElement("div");
             card.className = "card";
             const badge = song.exclusive_mvp_for ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>` : "";
-            card.innerHTML = `<h3>${song.name||"Unnamed"} ${badge}</h3><div>Front: ${(song.front_dancers||[]).join(", ")||"-"}<br>Dancers: ${(song.dancers||[]).join(", ")||"-"}</div>`;
+            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3><div>Front: ${(song.front_dancers||[]).join(", ")||"-"}<br>Dancers: ${(song.dancers||[]).join(", ")||"-"}</div>`;
             const playBtn = document.createElement("button");
             playBtn.textContent = "Play Song";
             playBtn.onclick = () => playSongWithUrl(song.url);

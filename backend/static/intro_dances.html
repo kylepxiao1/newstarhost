@@ -114,6 +114,10 @@
       if (container) {
         container.innerHTML = "";
         const selectedFront = (document.getElementById("frontSelect")?.value || "").toLowerCase();
+        const durationLabel = (song) => {
+          const d = parseInt(song.duration_sec, 10);
+          return Number.isFinite(d) && d > 0 ? ` (${d}s)` : "";
+        };
         Object.values(library)
           .filter(s => {
             if (!selectedFront) return true;
@@ -130,7 +134,7 @@
           .forEach(song => {
             const card = document.createElement("div");
             card.className = "card";
-            card.innerHTML = `<h3>${song.name||"Unnamed"}</h3><div>${(song.front_dancers||[]).join(", ")||"Front: -"}<br>${(song.dancers||[]).join(", ")||""}</div>`;
+            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3><div>${(song.front_dancers||[]).join(", ")||"Front: -"}<br>${(song.dancers||[]).join(", ")||""}</div>`;
             const playBtn = document.createElement("button");
             playBtn.textContent = "Play Song";
             playBtn.onclick = () => playSongWithUrl(song.url);
