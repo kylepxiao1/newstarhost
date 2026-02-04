@@ -35,6 +35,17 @@
       <input id="dancerFilter" placeholder="Filter by dancer" oninput="renderSongs()">
       <button onclick="refreshData()">Refresh</button>
     </div>
+    <div class="row" style="align-items:center;gap:16px;">
+      <label style="display:flex;gap:6px;align-items:center;">
+        <input type="checkbox" id="filterAssigned" checked onchange="renderSongs()"> Assigned dancers
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;">
+        <input type="checkbox" id="filterFronts" checked onchange="renderSongs()"> Front dancers
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;">
+        <input type="checkbox" id="filterKnows" onchange="renderSongs()"> Knows dance
+      </label>
+    </div>
   </section>
 
   <section>
@@ -144,9 +155,18 @@
         // show normal dancer songs + exclusive MVP songs (even if role is set)
         return (!hasRole && hasDancers) || isExclusive;
       };
+      const hasFilterToggle = () => {
+        const a = document.getElementById("filterAssigned")?.checked !== false;
+        const f = document.getElementById("filterFronts")?.checked !== false;
+        const k = document.getElementById("filterKnows")?.checked === true;
+        return a || f || k;
+      };
       if (container) {
         container.innerHTML = "";
         const dancerFilter = (document.getElementById("dancerFilter")?.value || "").toLowerCase();
+        const includeAssigned = document.getElementById("filterAssigned")?.checked !== false;
+        const includeFronts = document.getElementById("filterFronts")?.checked !== false;
+        const includeKnows = document.getElementById("filterKnows")?.checked === true;
         const durationLabel = (song) => {
           const d = parseInt(song.duration_sec, 10);
           return Number.isFinite(d) && d > 0 ? ` (${d}s)` : "";
@@ -155,10 +175,24 @@
           .filter(baseFilter)
           .filter(s => {
             if (!dancerFilter) return true;
-            const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
+            const assigned = [];
+            if (includeAssigned) assigned.push(...(s.dancers||[]));
+            if (includeFronts) assigned.push(...(s.front_dancers||[]));
+            if (includeKnows) assigned.push(...(s.knows_song||[]));
             const exclusive = (s.exclusive_mvp_for || "").toLowerCase();
             if (exclusive && exclusive.includes(dancerFilter)) return true;
-            return all.some(n => (n||"").toLowerCase().includes(dancerFilter));
+            return assigned.some(n => (n||"").toLowerCase().includes(dancerFilter));
+          })
+          .filter(s => {
+            if (hasFilterToggle()) return true;
+            const target = (dancerFilter || "").trim();
+            if (!target) return true;
+            const pool = [
+              ...(s.dancers || []),
+              ...(s.front_dancers || []),
+              ...(s.knows_song || []),
+            ];
+            return pool.some(n => (n||"").toLowerCase().includes(target));
           })
           .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
           .forEach(song => {
@@ -206,6 +240,9 @@
       const select = document.getElementById("songSelect");
       if (select) {
         select.innerHTML = "";
+        const includeAssigned = document.getElementById("filterAssigned")?.checked !== false;
+        const includeFronts = document.getElementById("filterFronts")?.checked !== false;
+        const includeKnows = document.getElementById("filterKnows")?.checked === true;
         Object.keys(lib).forEach(key => {
           const song = lib[key];
           if (!baseFilter(song)) return;
@@ -220,10 +257,21 @@
             label += ` [MVP: ${song.exclusive_mvp_for}]`;
           }
           opt.textContent = label;
+          const assignedList = [];
+          if (includeAssigned) assignedList.push(...(song.dancers || []));
+          if (includeFronts) assignedList.push(...(song.front_dancers || []));
+          if (includeKnows) assignedList.push(...(song.knows_song || []));
           const dancerMatch = tabFilter
-            ? (song.dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter)) || (song.exclusive_mvp_for||"").toLowerCase().includes(tabFilter)
+            ? assignedList.some(d => (d || "").toLowerCase().includes(tabFilter)) || (song.exclusive_mvp_for||"").toLowerCase().includes(tabFilter)
             : true;
-          const matches = (!filter || label.toLowerCase().includes(filter)) && dancerMatch;
+          const toggleOn = includeAssigned || includeFronts || includeKnows;
+          const fallbackPool = [
+            ...(song.dancers || []),
+            ...(song.front_dancers || []),
+            ...(song.knows_song || []),
+          ];
+          const fallbackMatch = !filter || fallbackPool.some(d => (d || "").toLowerCase().includes(filter));
+          const matches = ((!filter || label.toLowerCase().includes(filter)) && dancerMatch) || (!toggleOn && fallbackMatch);
           if (matches) {
             select.appendChild(opt);
           }
