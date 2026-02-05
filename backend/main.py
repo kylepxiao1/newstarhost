@@ -43,6 +43,10 @@ async def lifespan(app: FastAPI):
         state_manager.rename_media_files(MEDIA_DIR)
     except Exception as exc:
         logger.warning("Media rename on startup failed: %s", exc)
+    try:
+        state_manager.ensure_song_durations(MEDIA_DIR)
+    except Exception as exc:
+        logger.warning("Song duration scan failed: %s", exc)
     _cleanup_unregistered_media(state_manager)
     yield
 
@@ -495,6 +499,17 @@ async def analytics_plays_csv(limit: int = 1000, offset: int = 0) -> PlainTextRe
     for row in rows:
         writer.writerow(row)
     return PlainTextResponse(output.getvalue(), media_type="text/csv")
+
+
+@app.post("/songs/scan_durations")
+async def scan_song_durations() -> JSONResponse:
+    try:
+        state_manager.ensure_song_durations(MEDIA_DIR)
+    except Exception as exc:
+        logger.warning("Song duration scan failed: %s", exc)
+    state = state_manager.get_state()
+    _broadcast_state(state)
+    return JSONResponse(state)
 
 
 @app.post("/songs/delete")

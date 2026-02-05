@@ -10,6 +10,11 @@ from typing import Dict, Optional, Any, List
 
 from backend.analytics_store import AnalyticsStore
 
+try:
+    from mutagen import File as MutagenFile
+except Exception:
+    MutagenFile = None
+
 
 @dataclass
 class BattleState:
@@ -210,7 +215,12 @@ class BattleStateManager:
                 "knows_song": knows_song or [],
                 "exclusive_mvp_for": exclusive_mvp_for or "",
                 "volume": vol_value,
+                "duration_sec": lib.get(song_id, {}).get("duration_sec"),
             }
+            if self._library_path and not lib[song_id].get("duration_sec"):
+                duration = self._get_duration_for_url(url, self._library_path.parent)
+                if duration:
+                    lib[song_id]["duration_sec"] = int(duration)
             self._state.songs["library"] = lib
             self._persist_library(lib)
             return self._state.copy()
@@ -409,6 +419,7 @@ class BattleStateManager:
                 v.setdefault("mvp_dancers", [])
                 v.setdefault("roles", [])
                 v.setdefault("knows_song", [])
+                v.setdefault("duration_sec", None)
             return data
         except Exception:
             return {}
@@ -464,6 +475,43 @@ class BattleStateManager:
             return json.loads(self._dancers_path.read_text(encoding="utf-8"))
         except Exception:
             return []
+
+    def _get_duration_for_url(self, url: str, media_dir: Path) -> Optional[int]:
+        if not url or not MutagenFile:
+            return None
+        try:
+            name = url.split("/")[-1]
+            path = media_dir / name
+            if not path.exists():
+                return None
+            audio = MutagenFile(str(path))
+            if not audio or not getattr(audio, "info", None):
+                return None
+            length = getattr(audio.info, "length", None)
+            if length is None:
+                return None
+            return int(round(float(length)))
+        except Exception:
+            return None
+
+    def ensure_song_durations(self, media_dir: Path) -> None:
+        if not MutagenFile:
+            return
+        with self._lock:
+            lib = self._state.songs.get("library", {}) or {}
+            changed = False
+            for sid, meta in lib.items():
+                if meta.get("duration_sec"):
+                    continue
+                url = meta.get("url") or ""
+                duration = self._get_duration_for_url(url, media_dir)
+                if duration:
+                    meta["duration_sec"] = int(duration)
+                    lib[sid] = meta
+                    changed = True
+            if changed:
+                self._state.songs["library"] = lib
+                self._persist_library(lib)
 
     def increment_play(self, url: str) -> Dict:
         with self._lock:

@@ -13,8 +13,11 @@
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
     .songs { display: flex; gap: 8px; flex-wrap: wrap; }
-    .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; min-width: 180px; }
-    .card h3 { margin: 0 0 6px 0; font-size: 14px; }
+    .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
+    .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
+    .card .duration { color: #94a3b8; font-weight: 600; }
+    .card div { word-break: break-word; }
+    .card button { margin-top: auto; }
   </style>
 </head>
 <body>
@@ -116,7 +119,7 @@
         const selectedFront = (document.getElementById("frontSelect")?.value || "").toLowerCase();
         const durationLabel = (song) => {
           const d = parseInt(song.duration_sec, 10);
-          return Number.isFinite(d) && d > 0 ? ` (${d}s)` : "";
+          return Number.isFinite(d) && d > 0 ? ` <span class="duration">(${d}s)</span>` : "";
         };
         Object.values(library)
           .filter(s => {
@@ -134,7 +137,12 @@
           .forEach(song => {
             const card = document.createElement("div");
             card.className = "card";
-            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3><div>${(song.front_dancers||[]).join(", ")||"Front: -"}<br>${(song.dancers||[]).join(", ")||""}</div>`;
+            const frontList = (song.front_dancers || []).filter(Boolean);
+            const dancerList = (song.dancers || []).filter(Boolean);
+            const frontLine = frontList.length ? `Front: ${frontList.join(", ")}` : "";
+            const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
+            const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
+            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${details ? `<div>${details}</div>` : ""}`;
             const playBtn = document.createElement("button");
             playBtn.textContent = "Play Song";
             playBtn.onclick = () => playSongWithUrl(song.url);
