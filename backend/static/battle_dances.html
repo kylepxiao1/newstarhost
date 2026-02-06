@@ -53,8 +53,9 @@
     <section>
       <h2>Battle</h2>
       <div class="row">
-        <button class="secondary" onclick="startRoutine()">Simulate 2m Battle Routine</button>
-        <button class="danger" onclick="cancelRoutine()">Cancel Routine</button>
+        <button class="secondary" onclick="startRoutine(120000)">Simulate 2m Battle</button>
+        <button class="secondary" onclick="startRoutine(60000)">Simulate 1m Battle</button>
+        <button class="danger" onclick="cancelRoutine()">Cancel Battle</button>
       </div>
       <div class="row">
         <button class="secondary" onclick="playRole('mvp')">Play MVP Song</button>
@@ -1033,10 +1034,10 @@
       }
     }
 
-    function startRoutine() {
+    function startRoutine(durationMs=120000) {
       if (!audioUnlocked) {
         unlockAudio().then(ok => {
-          if (ok) startRoutine();
+          if (ok) startRoutine(durationMs);
           else alert("Click anywhere on the page once to enable audio.");
         });
         return;
@@ -1044,7 +1045,7 @@
       clearRoutineTimers();
       routine.active = true;
       routine.startTime = Date.now();
-      routine.endTime = routine.startTime + 120000; // 2 minutes
+      routine.endTime = routine.startTime + durationMs;
       routine.dancers = chooseTwoDancers();
       routine.firstSongPlayed = false;
       routine.warned = false;

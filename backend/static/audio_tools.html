@@ -45,12 +45,12 @@
       </div>
       <div class="row">
         <div>
-          <label>Start (sec)</label>
-          <input id="start" type="number" step="0.1" value="0">
+          <label>Start (sec or m:ss)</label>
+          <input id="start" type="text" value="0">
         </div>
         <div>
-          <label>End (sec)</label>
-          <input id="end" type="number" step="0.1" value="">
+          <label>End (sec or m:ss)</label>
+          <input id="end" type="text" value="">
         </div>
       </div>
     </div>
@@ -63,12 +63,12 @@
       </div>
       <div class="row">
         <div>
-          <label>Start (sec)</label>
-          <input id="startUpload" type="number" step="0.1" value="0">
+          <label>Start (sec or m:ss)</label>
+          <input id="startUpload" type="text" value="0">
         </div>
         <div>
-          <label>End (sec)</label>
-          <input id="endUpload" type="number" step="0.1" value="">
+          <label>End (sec or m:ss)</label>
+          <input id="endUpload" type="text" value="">
         </div>
       </div>
     </div>
@@ -108,13 +108,33 @@
     }
 
     let lastPreview = null;
+    function parseTimestamp(val) {
+      const raw = (val || "").trim();
+      if (!raw) return "";
+      if (/^\d+(\.\d+)?$/.test(raw)) return raw;
+      const parts = raw.split(":").map(p => p.trim());
+      if (parts.length === 2 || parts.length === 3) {
+        const nums = parts.map(p => parseFloat(p));
+        if (nums.some(n => Number.isNaN(n))) return "";
+        let sec = 0;
+        if (parts.length === 2) {
+          sec = nums[0] * 60 + nums[1];
+        } else {
+          sec = nums[0] * 3600 + nums[1] * 60 + nums[2];
+        }
+        return String(sec);
+      }
+      return "";
+    }
 
     async function processAudio() {
       const nameInput = document.getElementById("songName").value.trim();
       const src = document.getElementById("sourceUrl").value.trim();
       const file = document.getElementById("fileInput").files[0];
-      const start = mode === "youtube" ? document.getElementById("start").value : document.getElementById("startUpload").value;
-      const end = mode === "youtube" ? document.getElementById("end").value : document.getElementById("endUpload").value;
+      const startRaw = mode === "youtube" ? document.getElementById("start").value : document.getElementById("startUpload").value;
+      const endRaw = mode === "youtube" ? document.getElementById("end").value : document.getElementById("endUpload").value;
+      const start = parseTimestamp(startRaw);
+      const end = parseTimestamp(endRaw);
       const form = new FormData();
       if (mode === "youtube" && src) form.append("source_url", src);
       if (mode === "upload" && file) form.append("file", file);
