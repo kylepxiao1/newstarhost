@@ -17,7 +17,12 @@
     .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
     .card .duration { color: #94a3b8; font-weight: 600; }
     .card div { word-break: break-word; }
-    .card button { margin-top: auto; }
+    .card button { margin-top: 6px; }
+    .card button:first-of-type { margin-top: auto; }
+    .formation-wrap { display: grid; grid-template-columns: 1fr 260px; gap: 12px; align-items: start; }
+    .formation-canvas { background:#0b1222; border:1px solid #1f2937; border-radius:8px; }
+    .formation-list { font-size: 13px; line-height: 1.5; }
+    .formation-enabled { display:flex; flex-wrap:wrap; gap:10px 14px; }
   </style>
 </head>
 <body>
@@ -42,6 +47,18 @@
   <section>
     <h2>Group Songs</h2>
     <div id="songsContainer" class="songs"></div>
+  </section>
+
+  <section>
+    <h2>Formations</h2>
+    <div class="formation-wrap">
+      <div>
+        <div id="formationTitle" style="font-weight:700;margin-bottom:8px;">Select a song to view formation</div>
+        <div id="formationEnabled" class="formation-enabled" style="margin-bottom:8px;"></div>
+        <div id="formationList" class="formation-list"></div>
+      </div>
+      <canvas id="formationCanvas" class="formation-canvas" width="240" height="200"></canvas>
+    </div>
   </section>
 
   <section>
@@ -84,6 +101,8 @@
     let backgroundStarted = false;
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
+    let formationEnabledMap = {};
+    let lastFormationSong = null;
 
     async function refreshData() {
       const songs = await api("/songs").then(r=>r.json());
@@ -139,14 +158,18 @@
             card.className = "card";
             const frontList = (song.front_dancers || []).filter(Boolean);
             const dancerList = (song.dancers || []).filter(Boolean);
-            const frontLine = frontList.length ? `Front: ${frontList.join(", ")}` : "";
+            const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
             const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
             const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
             card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${details ? `<div>${details}</div>` : ""}`;
             const playBtn = document.createElement("button");
             playBtn.textContent = "Play Song";
             playBtn.onclick = () => playSongWithUrl(song.url);
+            const formBtn = document.createElement("button");
+            formBtn.textContent = "View Formation";
+            formBtn.onclick = () => showFormation(song);
             card.appendChild(playBtn);
+            card.appendChild(formBtn);
             container.appendChild(card);
           });
       }
@@ -229,8 +252,131 @@
       renderSongs();
     }
 
+    function showFormation(song) {
+      const list = document.getElementById("formationList");
+      const title = document.getElementById("formationTitle");
+      const enabledWrap = document.getElementById("formationEnabled");
+      if (!song) {
+        if (list) list.textContent = "";
+        if (title) title.textContent = "Select a song to view formation";
+        if (enabledWrap) enabledWrap.innerHTML = "";
+        drawFormation([]);
+        return;
+      }
+      const names = (song.front_dancers || []).filter(Boolean);
+      lastFormationSong = song;
+      if (title) title.textContent = `${song.name || "Formation"}`;
+      renderFormationEnabled();
+      const enabledNames = names.filter(n => formationEnabledMap[n] !== false);
+      if (list) {
+        if (!enabledNames.length) {
+          list.textContent = "No front dancer list set.";
+        } else {
+          list.innerHTML = enabledNames.map((n, i) => `${i + 1}. ${n}`).join("<br>");
+        }
+      }
+      drawFormation(enabledNames);
+    }
+
+    function renderFormationEnabled() {
+      const enabledWrap = document.getElementById("formationEnabled");
+      if (!enabledWrap) return;
+      enabledWrap.innerHTML = "";
+      const dancers = state.dancers || [];
+      dancers.forEach(d => {
+        const name = d.name || "";
+        if (!name) return;
+        const low = name.toLowerCase();
+        if (low.includes("boys") || low.includes("girls")) return;
+        const label = document.createElement("label");
+        label.style.display = "flex";
+        label.style.gap = "6px";
+        label.style.alignItems = "center";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = formationEnabledMap[name] !== false;
+        cb.dataset.name = name;
+        cb.onchange = () => {
+          formationEnabledMap[name] = cb.checked;
+          if (lastFormationSong) showFormation(lastFormationSong);
+        };
+        label.appendChild(cb);
+        const span = document.createElement("span");
+        span.textContent = name;
+        label.appendChild(span);
+        enabledWrap.appendChild(label);
+      });
+    }
+
+    function drawFormation(names) {
+      const canvas = document.getElementById("formationCanvas");
+      if (!canvas) return;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!names || !names.length) return;
+      const radius = 8;
+      const rows = [];
+      if (names.length % 2 === 0 && names.length >= 2) {
+        rows.push(names.slice(0, 2));
+      } else {
+        rows.push([names[0]]);
+      }
+      let idx = rows[0].length;
+      while (idx < names.length) {
+        rows.push(names.slice(idx, idx + 2));
+        idx += 2;
+      }
+      const rowCount = rows.length;
+      const vGap = (canvas.height - radius * 2) / Math.max(1, rowCount);
+      const font = "bold 12px Segoe UI, Arial, sans-serif";
+      const padX = 8;
+      const padY = 6;
+
+      function roundRect(x, y, w, h, r) {
+        const rr = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + rr, y);
+        ctx.lineTo(x + w - rr, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + rr);
+        ctx.lineTo(x + w, y + h - rr);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - rr, y + h);
+        ctx.lineTo(x + rr, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - rr);
+        ctx.lineTo(x, y + rr);
+        ctx.quadraticCurveTo(x, y, x + rr, y);
+        ctx.closePath();
+      }
+
+      rows.forEach((row, rowIdx) => {
+        const y = vGap * rowIdx + radius + 16;
+        const colCount = row.length;
+        const hGap = canvas.width / (colCount + 1);
+        row.forEach((_, colIdx) => {
+          const x = hGap * (colIdx + 1);
+          const name = row[colIdx] || "";
+          const label = name.length > 14 ? name.slice(0, 14) + "…" : name;
+          ctx.font = font;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          const textWidth = ctx.measureText(label).width;
+          const rectW = textWidth + padX * 2;
+          const rectH = 18 + padY;
+          const rectX = x - rectW / 2;
+          const rectY = y - rectH / 2;
+          ctx.fillStyle = "#1e293b";
+          ctx.strokeStyle = "#94a3b8";
+          ctx.lineWidth = 2;
+          roundRect(rectX, rectY, rectW, rectH, 8);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = "#fbbf24";
+          ctx.fillText(label, x, y);
+        });
+      });
+    }
+
     function refreshState() {
-      api("/state").then(r=>r.json()).then(s => { state = s; renderState(); ensureBackground(); });
+      api("/state").then(r=>r.json()).then(s => { state = s; renderState(); renderFormationEnabled(); ensureBackground(); });
     }
 
     function refreshSongs() {
@@ -457,7 +603,7 @@
       if(d){d.style.background="#ef4444"; d.style.boxShadow="0 0 8px #ef4444";}
       if(t) t.textContent="Disconnected";
     };
-    ws.onmessage = evt => { try { const data=JSON.parse(evt.data); if(data.type==="state"){ state=data.payload; renderState(); }} catch(e){} };
+    ws.onmessage = evt => { try { const data=JSON.parse(evt.data); if(data.type==="state"){ state=data.payload; renderState(); renderFormationEnabled(); }} catch(e){} };
     highlightNav();
     startPreview();
 

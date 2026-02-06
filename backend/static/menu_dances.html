@@ -180,7 +180,7 @@
             if (!dancerFilter) return true;
             const assigned = [];
             if (includeAssigned) assigned.push(...(s.dancers||[]));
-            if (includeFronts) assigned.push(...(s.front_dancers||[]));
+            if (includeFronts) assigned.push(...(s.front_dancers||[]).slice(0, 1));
             if (includeKnows) assigned.push(...(s.knows_song||[]));
             const exclusive = (s.exclusive_mvp_for || "").toLowerCase();
             if (exclusive && exclusive.includes(dancerFilter)) return true;
@@ -204,7 +204,7 @@
             const badge = song.exclusive_mvp_for ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>` : "";
             const frontList = (song.front_dancers || []).filter(Boolean);
             const dancerList = (song.dancers || []).filter(Boolean);
-            const frontLine = frontList.length ? `Front: ${frontList.join(", ")}` : "";
+            const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
             const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
             const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
             card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${details ? `<div>${details}</div>` : ""}`;
@@ -267,7 +267,7 @@
           opt.textContent = label;
           const assignedList = [];
           if (includeAssigned) assignedList.push(...(song.dancers || []));
-          if (includeFronts) assignedList.push(...(song.front_dancers || []));
+          if (includeFronts) assignedList.push(...(song.front_dancers || []).slice(0, 1));
           if (includeKnows) assignedList.push(...(song.knows_song || []));
           const dancerMatch = tabFilter
             ? assignedList.some(d => (d || "").toLowerCase().includes(tabFilter)) || (song.exclusive_mvp_for||"").toLowerCase().includes(tabFilter)
