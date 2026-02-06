@@ -14,6 +14,8 @@
     select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
     .songs { display: flex; gap: 8px; flex-wrap: wrap; }
     .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
+    .card.easy { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.35); }
+    .card.hard { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.35); }
     .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
     .card .duration { color: #94a3b8; font-weight: 600; }
     .card div { word-break: break-word; }
@@ -201,6 +203,9 @@
           .forEach(song => {
             const card = document.createElement("div");
             card.className = "card";
+            const diff = (song.difficulty || "medium").toLowerCase();
+            if (diff === "easy") card.classList.add("easy");
+            if (diff === "hard") card.classList.add("hard");
             const badge = song.exclusive_mvp_for ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>` : "";
             const frontList = (song.front_dancers || []).filter(Boolean);
             const dancerList = (song.dancers || []).filter(Boolean);

@@ -86,6 +86,17 @@
     </div>
 
     <div class="row" style="margin-top:10px;">
+      <label style="width:100%;">Difficulty</label>
+    </div>
+    <div class="row">
+      <select id="difficultySelect" style="flex:1;" onchange="difficultyValue=this.value; save();">
+        <option value="easy">Easy</option>
+        <option value="medium" selected>Medium</option>
+        <option value="hard">Hard</option>
+      </select>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
       <button class="danger" onclick="removeSong()">Delete Song</button>
     </div>
   </section>
@@ -102,6 +113,7 @@
   let knowsAssigned = [];
   let exclusiveMvpFor = "";
   let volumeValue = 100;
+  let difficultyValue = "medium";
   let volumeSaveInFlight = false;
   let volumeQueued = null;
   const ROLE_OPTIONS = ["bell","applause","mvp","attention","background","win"];
@@ -152,8 +164,11 @@
         knowsAssigned = [];
         exclusiveMvpFor = "";
         volumeValue = 100;
+        difficultyValue = "medium";
         document.getElementById("renameInput").value = "";
         setVolumeUi(volumeValue);
+        const diffSel = document.getElementById("difficultySelect");
+        if (diffSel) diffSel.value = difficultyValue;
         renderLists();
         renderPreview();
         renderRoles();
@@ -170,10 +185,13 @@
       volumeValue = parseFloat(song.volume);
       if (!Number.isFinite(volumeValue)) volumeValue = 100;
       if (volumeValue <= 1) volumeValue = Math.round(volumeValue * 200);
+      difficultyValue = song.difficulty || "medium";
       document.getElementById("renameInput").value = song.name || id || "";
       setVolumeUi(volumeValue);
       const exSel = document.getElementById("exclusiveMvpSelect");
       if (exSel) exSel.value = exclusiveMvpFor || "";
+      const diffSel = document.getElementById("difficultySelect");
+      if (diffSel) diffSel.value = difficultyValue;
       renderLists();
       renderPreview();
       renderRoles();
@@ -185,6 +203,7 @@
       if (!currentSongId) { btns.forEach(b=>b.disabled=false); return; }
       const newName = document.getElementById("renameInput").value.trim();
       const volume = getVolumeValue();
+      const difficulty = document.getElementById("difficultySelect")?.value || "medium";
       const doRename = newName && (!songs[currentSongId] || songs[currentSongId].name !== newName);
       const renamePromise = doRename
         ? api("/songs/rename", {method:"POST", body:{song_id: currentSongId, name: newName}}).then(r=>r.json())
@@ -194,7 +213,7 @@
           if (state && state.library) {
             songs = state.library;
           }
-          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, exclusive_mvp_for: exclusiveMvpFor, volume}});
+          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty}});
         })
         .then(()=>loadSongs())
         .finally(()=>btns.forEach(b=>b.disabled=false));
@@ -304,6 +323,7 @@
       roles: rolesAssigned,
       knows_song: knowsAssigned,
       exclusive_mvp_for: exclusiveMvpFor,
+      difficulty: difficultyValue || "medium",
       volume,
     }}).then(r=>r.json()).then(state => {
       if (state && state.songs && state.songs.library) {
