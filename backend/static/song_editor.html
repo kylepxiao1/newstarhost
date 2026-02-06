@@ -139,10 +139,17 @@
       if (currentSongId) {
         const idx = Array.from(list.options).findIndex(o => o.value === currentSongId);
         list.selectedIndex = idx >= 0 ? idx : 0;
+      } else if (search && list.options.length > 1) {
+        // If filtering, auto-select first matching song (skip "None")
+        list.selectedIndex = 1;
       } else {
         list.selectedIndex = 0;
       }
-      loadSong();
+      if (list.value) {
+        loadSong();
+      } else {
+        loadSong();
+      }
     }
 
     function loadSongs() {
