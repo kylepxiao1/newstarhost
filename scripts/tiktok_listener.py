@@ -36,7 +36,7 @@ except Exception:
     WebDefaults = None
 
 API_BASE = os.environ.get("BATTLE_API", "http://127.0.0.1:8000")
-TIKTOK_USERNAMES = os.environ.get("TIKTOK_USERNAMES", "wildcard_boys")
+TIKTOK_USERNAMES = os.environ.get("TIKTOK_USERNAMES", "wildcard_boys, valentinaaaa")
 LOG_FILE = os.environ.get("LOG_FILE", "tiktok_events.log")
 EULERSTREAM_API_KEY = os.environ.get("EULERSTREAM_API_KEY", "euler_NGU3N2ZjMWI3YWMwNzFjYTY1NDRkNzhiN2E4N2I4YmM1Yzk2ZjM0Y2MwYTkxZWRkNjk4NWQ1")
 EULERSTREAM_SIGN_URL = os.environ.get("EULERSTREAM_SIGN_URL", "")
