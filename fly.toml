@@ -11,6 +11,8 @@ primary_region = 'lax'
 
 [env]
   PORT = '8080'
+  TIKTOK_USERNAMES = 'wildcard_boys valentinaaaa cardin_v_'
+  BATTLE_API = 'http://127.0.0.1:8080'
 
 [[mounts]]
   source = 'media'
@@ -23,6 +25,10 @@ primary_region = 'lax'
   auto_start_machines = true
   min_machines_running = 0
   processes = ['app']
+
+[processes]
+  app = 'python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080'
+  listener = 'python scripts/tiktok_listener.py'
 
 [[vm]]
   memory = '1gb'

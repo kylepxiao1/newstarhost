@@ -32,10 +32,8 @@ Then select the created virtual camera in TikTok LIVE Studio and open `http://lo
 
 Run TikTok listener (automation):
 ```powershell
-$env:TIKTOK_USERNAME="zerokomodo"
+$env:TIKTOK_USERNAMES="wildcard_boys afterdark_ns"
 $env:BATTLE_API="http://127.0.0.1:8000"
-$env:SLOT_ONE_NAME="Performer One"
-$env:SLOT_TWO_NAME="Performer Two"
 python scripts/tiktok_listener.py
 ```
 
