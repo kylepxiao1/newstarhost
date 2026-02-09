@@ -289,6 +289,24 @@ class SupabaseEventStore:
             "payload_json": _safe_json(payload),
             "tiktok_username": tiktok_username,
         }
+        if not row.get("from_user_id") or not row.get("from_username") or not row.get("from_nickname"):
+            user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+            event_user = _get_attr_any(event, "user", "user_info", "userInfo")
+            if not row.get("from_user_id"):
+                row["from_user_id"] = (
+                    _get_any(user_payload, "id", "user_id", "userId")
+                    or _get_attr_any(event_user, "id", "user_id", "userId")
+                )
+            if not row.get("from_username"):
+                row["from_username"] = (
+                    _get_any(user_payload, "unique_id", "display_id", "username")
+                    or _extract_handle(event_user)
+                )
+            if not row.get("from_nickname"):
+                row["from_nickname"] = (
+                    _get_any(user_payload, "nickname", "nick_name", "nickName")
+                    or _get_attr_any(event_user, "nickname", "nick_name", "nickName")
+                )
         values = [_normalize_db_value(v) for v in row.values()]
         async with self._lock:
             try:
