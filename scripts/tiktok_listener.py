@@ -218,7 +218,14 @@ class SupabaseEventStore:
     def _next_row_id(self) -> int:
         return self._next_raw_id()
 
-    async def log_gift(self, payload: dict, event, tiktok_username: str, gift_value: int) -> None:
+    async def log_gift(
+        self,
+        payload: dict,
+        event,
+        tiktok_username: str,
+        gift_value_raw: Optional[int],
+        gift_value_delta: Optional[int],
+    ) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
@@ -252,7 +259,7 @@ class SupabaseEventStore:
             "diamond_count": diamond_count,
             "repeat_count": repeat_count,
             "combo_count": _get_any(payload, "combo_count", "comboCount"),
-            "amount_value": gift_value or _get_any(payload, "amount", "total_value"),
+            "amount_value": gift_value_raw if gift_value_raw is not None else _get_any(payload, "amount", "total_value"),
             "fan_ticket_count": _get_any(payload, "fan_ticket_count"),
             "room_fan_ticket_count": _get_any(payload, "room_fan_ticket_count"),
             "group_count": _get_any(payload, "group_count"),
@@ -632,6 +639,25 @@ def _is_placeholder_obj(val: str) -> bool:
     return val.startswith("<object object") and "object at" in val
 
 
+def _coerce_int(value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return int(value)
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    if not text or _is_placeholder_obj(text):
+        return None
+    try:
+        return int(float(text))
+    except Exception:
+        return None
+
+
 _HOST_TOKENS = {"host", "the host", "creator", "streamer"}
 
 
@@ -738,11 +764,15 @@ class TikTokLiveListener:
         self._last_parse_error_log = datetime.min.replace(tzinfo=timezone.utc)
         # dedupe cache (type,id) -> timestamp
         self._seen = {}
+        # combo tracking: key -> (last_combo_count, last_seen_ts)
+        self._combo_state: dict[tuple, tuple[int, float]] = {}
+        self._combo_ttl = timedelta(minutes=10)
         self._cookies = _gather_tiktok_cookies()
         self._device_id = _load_device_id()
 
         # Apply signer defaults if available
         if WebDefaults:
+            WebDefaults.tiktok_webcast_url = "https://webcast.us.tiktok.com/webcast"
             if EULERSTREAM_API_KEY:
                 try:
                     WebDefaults.tiktok_sign_api_key = EULERSTREAM_API_KEY
@@ -868,6 +898,51 @@ class TikTokLiveListener:
         self._seen[key] = now
         return False
 
+    async def _check_live_status(self) -> Optional[bool]:
+        try:
+            return await self.client.is_live()
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "rate_limit" in msg or "too many connections" in msg:
+                now = datetime.now(timezone.utc)
+                if not self._rate_limit_logged or (now - self._last_rate_limit_log) > timedelta(minutes=10):
+                    logger.warning(
+                        "TikTok rate limit during live status check. Backing off for %s seconds.",
+                        self._rate_limit_backoff,
+                    )
+                    self._rate_limit_logged = True
+                    self._last_rate_limit_log = now
+            return None
+
+    def _combo_key(self, payload: dict) -> Optional[tuple]:
+        gid = _get_any(payload, "group_id", "groupId")
+        if gid:
+            gid_str = str(gid)
+            if not _is_placeholder_obj(gid_str):
+                return ("group", gid_str)
+        msg_id = _get_any(payload, "msg_id", "message_id", "event_id")
+        if msg_id:
+            return ("msg", str(msg_id))
+        return None
+
+    def _combo_delta(self, payload: dict, combo_count: Optional[int]) -> int:
+        count = combo_count if combo_count is not None else 1
+        key = self._combo_key(payload)
+        if not key:
+            return count
+        now = datetime.now(timezone.utc).timestamp()
+        drop_before = now - self._combo_ttl.total_seconds()
+        for k, (_, ts) in list(self._combo_state.items()):
+            if ts < drop_before:
+                self._combo_state.pop(k, None)
+        prev_count, _ = self._combo_state.get(key, (0, now))
+        if count < prev_count:
+            delta = count
+        else:
+            delta = count - prev_count
+        self._combo_state[key] = (count, now)
+        return max(0, delta)
+
     def _wire_events(self) -> None:
         try:
             self.client.remove_all_listeners()
@@ -991,6 +1066,14 @@ class TikTokLiveListener:
             gift_from_handle = ""
             gift_to_handle = ""
             gift_value = 0
+            gift_value_raw = None
+            gift_value_log_total = None
+            combo_delta_computed = False
+            repeat_count = None
+            combo_count = None
+            diamond_count = None
+            gift_streakable = False
+            gift_streaking = False
             try:
                 if isinstance(payload, dict):
                     gift = payload.get("gift") or {}
@@ -1034,29 +1117,63 @@ class TikTokLiveListener:
                         if tu_handle:
                             gift_to = gift_to or tu_handle
                             gift_to_handle = gift_to_handle or tu_handle
-                    repeat_count = (
+                    repeat_count_raw = (
                         payload.get("repeat_count")
+                        or payload.get("repeatCount")
                         or payload.get("repeatEnd")
                         or payload.get("repeat_end")
                         or gift.get("repeat_count")
                     )
-                    diamond_count = (
+                    combo_count_raw = payload.get("combo_count") or payload.get("comboCount")
+                    diamond_count_raw = (
                         payload.get("diamond_count")
                         or gift.get("diamond_count")
                         or gift.get("diamonds")
                         or gift.get("diamond_cost")
                     )
-                    if repeat_count and diamond_count:
+                    repeat_count = _coerce_int(repeat_count_raw)
+                    combo_count = _coerce_int(combo_count_raw)
+                    diamond_count = _coerce_int(diamond_count_raw)
+                    if repeat_count is not None and diamond_count is not None:
                         gift_amount = f"{repeat_count} x {diamond_count}"
-                        gift_value = int(repeat_count) * int(diamond_count)
-                    elif diamond_count:
+                    elif diamond_count is not None:
                         gift_amount = str(diamond_count)
-                        gift_value = int(diamond_count)
+                    if diamond_count is not None:
+                        combo_total = combo_count if combo_count is not None else repeat_count
+                        raw_count = combo_total if combo_total is not None else 1
+                        gift_value_raw = int(diamond_count) * int(raw_count)
+                        delta_count = self._combo_delta(payload, combo_total)
+                        gift_value = int(diamond_count) * int(delta_count)
+                        combo_delta_computed = True
+                if hasattr(event, "gift") and hasattr(event.gift, "streakable"):
+                    gift_streakable = bool(getattr(event.gift, "streakable", False))
+                if hasattr(event, "streaking"):
+                    gift_streaking = bool(getattr(event, "streaking", False))
                 if hasattr(event, "gift") and hasattr(event.gift, "name"):
                     gift_name = gift_name or event.gift.name
                 if hasattr(event, "gift") and hasattr(event.gift, "diamond_count"):
-                    gift_amount = gift_amount or str(getattr(event.gift, "diamond_count"))
-                    gift_value = gift_value or int(getattr(event.gift, "diamond_count"))
+                    event_diamond = _coerce_int(getattr(event.gift, "diamond_count"))
+                    if event_diamond is not None:
+                        gift_amount = gift_amount or str(event_diamond)
+                        if diamond_count is None:
+                            diamond_count = event_diamond
+                        if gift_value_raw is None:
+                            gift_value_raw = int(event_diamond)
+                event_repeat = _coerce_int(getattr(event, "repeat_count", None))
+                if repeat_count is None and event_repeat is not None:
+                    repeat_count = event_repeat
+                event_combo = _coerce_int(getattr(event, "combo_count", None))
+                if combo_count is None and event_combo is not None:
+                    combo_count = event_combo
+                if diamond_count is not None:
+                    combo_total = combo_count if combo_count is not None else repeat_count
+                    raw_count = combo_total if combo_total is not None else 1
+                    if gift_value_raw is None:
+                        gift_value_raw = int(diamond_count) * int(raw_count)
+                    if not combo_delta_computed:
+                        delta_count = self._combo_delta(payload, combo_total)
+                        gift_value = int(diamond_count) * int(delta_count)
+                        combo_delta_computed = True
                 if hasattr(event, "gift") and hasattr(event.gift, "id") and not gift_name:
                     gift_name = str(getattr(event.gift, "id"))
                 if hasattr(event, "user") and event.user:
@@ -1098,6 +1215,15 @@ class TikTokLiveListener:
                         gift_to_handle = gift_to_handle or _normalize_user_id(parsed_recipient)
             except Exception:
                 pass
+            should_log = True
+            if gift_streakable:
+                should_log = not gift_streaking
+            if should_log and gift_value_raw is not None:
+                gift_value_log_total = gift_value_raw
+            elif should_log and diamond_count is not None:
+                gift_value_log_total = int(diamond_count)
+            if should_log and gift_value_log_total is not None and gift_value_raw is None:
+                gift_value_raw = gift_value_log_total
             display_to = _clean_recipient(gift_to, gift_to_handle) or (self.username or "host")
             logger.info(
                 "Gift event: %s %s from %s to %s",
@@ -1113,7 +1239,14 @@ class TikTokLiveListener:
                 if not recipient:
                     recipient = self.username or ""
                 await self._score_gift(gift_value, recipient)
-            await self._event_store.log_gift(payload, event, self.username, gift_value)
+            if should_log:
+                await self._event_store.log_gift(
+                    payload,
+                    event,
+                    self.username,
+                    gift_value_raw,
+                    gift_value_log_total,
+                )
             logger.info("Current battle score: %s", self._score_by_id)
 
         @self.client.on(ttevents.CommentEvent)
@@ -1273,6 +1406,19 @@ class TikTokLiveListener:
     async def run(self) -> None:
         backoff = self._base_backoff
         while True:
+            live_status = await self._check_live_status()
+            if live_status is False:
+                now = datetime.now(timezone.utc)
+                if not self._offline_logged:
+                    logger.info("TikTok user '@%s' is offline. Will retry.", self.username)
+                    self._offline_logged = True
+                    self._last_offline_log = now
+                try:
+                    await asyncio.sleep(self._offline_backoff)
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    logger.info("Sleep cancelled; shutting down.")
+                    break
+                continue
             try:
                 await self.client.connect()
                 backoff = self._base_backoff
@@ -1288,6 +1434,7 @@ class TikTokLiveListener:
                 break
             except Exception as exc:
                 msg = str(exc).lower()
+                print(msg)
                 if (
                     "rate_limit" in msg
                     or "too many connections" in msg
