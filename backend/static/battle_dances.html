@@ -36,6 +36,15 @@
     .hint-text { position:absolute; top:-28px; left:0; background:#111827; border:1px solid #1f2937; padding:4px 8px; border-radius:6px; font-size:12px; white-space:nowrap; opacity:0; visibility:hidden; transition:opacity .1s; z-index:10; }
     .hint:hover .hint-text { opacity:1; visibility:visible; }
     .nav-bar a.active { font-weight:700; }
+    .songs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+    .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
+    .card.easy { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.35); }
+    .card.hard { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.35); }
+    .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
+    .card .duration { color: #94a3b8; font-weight: 600; }
+    .card div { word-break: break-word; }
+    .card button { margin-top: auto; }
+    .songs-empty { color: #94a3b8; font-style: italic; margin-top: 8px; }
   </style>
 </head>
 <body>
@@ -65,22 +74,18 @@
       <div class="row">
         <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
       </div>
-      <div class="row" style="align-items:center;">
-        <select id="nextPairSelect" style="flex:1;">
-          <option value="">(choose next dancer or leave random)</option>
-        </select>
-      </div>
-      <div class="row" style="align-items:center;">
-        <span id="nextPairLabel" style="font-weight:700;">Next pair: -</span>
+      <div class="grid-2" style="margin-bottom:10px; align-items:center;">
+        <label style="display:flex;gap:6px;align-items:center;">
+          <span style="white-space:nowrap;">Dancer 1:</span>
+          <select id="slotOneSelect" style="flex:1;" onchange="saveSlotSelects()"></select>
+        </label>
+        <label style="display:flex;gap:6px;align-items:center;">
+          <span style="white-space:nowrap;">Dancer 2:</span>
+          <select id="slotTwoSelect" style="flex:1;" onchange="saveSlotSelects()"></select>
+        </label>
       </div>
       <div class="row">
         <span>Timer: <strong id="timerDisplay">-</strong></span>
-      </div>
-      <div class="row">
-        <label style="display:flex;gap:6px;align-items:center; width:100%;">
-          <span style="white-space:nowrap;">Last winner:</span>
-          <select id="winnerSelect" style="flex:1;" onchange="saveWinnerSelect()"></select>
-        </label>
       </div>
       <div class="row">
         <label style="display:flex;gap:6px;align-items:center; width:100%;">
@@ -115,15 +120,7 @@
         <button class="secondary" id="tabIntersect" onclick="selectTab('intersect')">Intersect</button>
       </div>
       <div class="row">
-        <div class="hint">
-          <span class="hint-text">Type to filter; select to play</span>
-          <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
-        </div>
-        <datalist id="songSuggestions"></datalist>
-      </div>
-      <div class="row">
-        <select id="songSelect" style="flex:1;"></select>
-        <button onclick="playSong()">Play Song</button>
+        <span>Current song: <span id="currentSongLabel">-</span></span>
       </div>
       <div class="row" style="align-items:center;">
         <label style="display:flex;gap:6px;align-items:center;">
@@ -133,9 +130,9 @@
           <input type="checkbox" id="fadeOutToggle" checked> Fade out 0.5s
         </label>
       </div>
-      <div class="row">
-        <span>Current song: <span id="currentSongLabel">-</span></span>
-      </div>
+      
+      <div id="songsEmpty" class="songs-empty"></div>
+      <div id="songsContainer" class="songs"></div>
     </section>
   </main>
 
@@ -149,7 +146,6 @@
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
-    let nextPairOverride = null;
     let audioUnlocked = false;
 
     let _randSeed = (Date.now() % 2147483647) || 1;
@@ -247,8 +243,8 @@
         slotTwoCell.classList.add("leader2");
       }
       renderPointsBar();
-      renderWinnerSelect();
       renderGroupSelect();
+      renderSlotSelects();
       renderEnabledDancers();
       renderWinsEditor();
       renderOverlays();
@@ -275,32 +271,43 @@
 
     function renderOverlays() {}
 
-    function renderWinnerSelect() {
-      const sel = document.getElementById("winnerSelect");
-      if (!sel) return;
-      sel.innerHTML = "";
-      const current = (state.last_winner || "").toLowerCase();
-      const opts = [];
-      const enabled = state.enabled_dancers || [];
-      const enabledSet = new Set(enabled.map(x=>x.toLowerCase()));
-      (state.dancers || []).forEach(d => {
-        const name = d.name || "";
-        if (!name) return;
-        if (enabled.length && !enabledSet.has(name.toLowerCase())) return;
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
-        if (name.toLowerCase() === current) opt.selected = true;
-        opts.push(opt);
-      });
-      // add empty option
-      const empty = document.createElement("option");
-      empty.value = "";
-      empty.textContent = "(none)";
-      sel.appendChild(empty);
-      opts.forEach(o => sel.appendChild(o));
-      if (current && !sel.value) sel.value = current;
-      renderNextPairOptions();
+    function renderSlotSelects() {
+      const selOne = document.getElementById("slotOneSelect");
+      const selTwo = document.getElementById("slotTwoSelect");
+      if (!selOne || !selTwo) return;
+      const dancers = getEnabledDancers();
+      const names = dancers.map(d => d.name || "").filter(Boolean);
+      const currentOne = state.slot_one || "";
+      const currentTwo = state.slot_two || "";
+
+      const fill = (sel, current) => {
+        sel.innerHTML = "";
+        const empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = "(none)";
+        sel.appendChild(empty);
+        names.forEach(name => {
+          const opt = document.createElement("option");
+          opt.value = name;
+          opt.textContent = name;
+          sel.appendChild(opt);
+        });
+        if (current && !names.some(n => n.toLowerCase() === current.toLowerCase())) {
+          const opt = document.createElement("option");
+          opt.value = current;
+          opt.textContent = current;
+          sel.appendChild(opt);
+        }
+        if (current) {
+          const match = Array.from(sel.options).find(o => (o.value || "").toLowerCase() === current.toLowerCase());
+          if (match) sel.value = match.value;
+        } else {
+          sel.value = "";
+        }
+      };
+
+      fill(selOne, currentOne);
+      fill(selTwo, currentTwo);
     }
 
     function renderGroupSelect() {
@@ -326,7 +333,6 @@
       sel.appendChild(empty);
       opts.forEach(o => sel.appendChild(o));
       if (current && !sel.value) sel.value = current;
-      renderNextPairOptions();
     }
 
     function renderEnabledDancers() {
@@ -351,35 +357,6 @@
         wrap.appendChild(span);
         container.appendChild(wrap);
       });
-      renderNextPairOptions();
-    }
-
-    function renderNextPairOptions() {
-      const sel = document.getElementById("nextPairSelect");
-      if (!sel) return;
-      const currentVal = sel.value;
-      const enabled = state.enabled_dancers || [];
-      const dancers = state.dancers || [];
-      sel.innerHTML = "";
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "(choose next dancer or leave random)";
-      sel.appendChild(placeholder);
-      const enabledSet = new Set(enabled.map(x => (x||"").toLowerCase()));
-      dancers.forEach(d => {
-        const name = d.name || "";
-        if (!name) return;
-        if (enabled.length && !enabledSet.has(name.toLowerCase())) return;
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
-        sel.appendChild(opt);
-      });
-      if (currentVal) {
-        const match = Array.from(sel.options).find(o => (o.value || "").toLowerCase() === currentVal.toLowerCase());
-        if (match) sel.value = match.value;
-      }
-      sel.onchange = () => pickNextPair();
     }
 
     function renderWinsEditor() {
@@ -414,11 +391,10 @@
         wrap.appendChild(btn);
         container.appendChild(wrap);
       });
-      renderNextPairOptions();
     }
 
     function refreshState() {
-      api("/state").then(r => r.json()).then(s => { state = s; renderState(); renderGroupSelect(); renderWinnerSelect(); });
+      api("/state").then(r => r.json()).then(s => { state = s; renderState(); });
     }
 
     function startBattle() {
@@ -467,15 +443,67 @@
       const lib = songs.library || {};
       const currentUrl = songs.current || "";
       const backgroundUrl = songs.background || "";
-      const filter = (document.getElementById("songFilter").value || "").toLowerCase();
-      const tabFilter = currentTab === "slot_one" ? (state.slot_one || "").toLowerCase()
-                     : currentTab === "slot_two" ? (state.slot_two || "").toLowerCase()
-                     : currentTab === "group" ? (state.group_name || "").toLowerCase()
-                     : currentTab === "intersect" ? "intersect"
-                     : "";
-      const datalist = document.getElementById("songSuggestions");
-      const filterFocused = document.activeElement && document.activeElement.id === "songFilter";
-      if (!filterFocused) datalist.innerHTML = "";
+
+      const container = document.getElementById("songsContainer");
+      const empty = document.getElementById("songsEmpty");
+      if (container) container.innerHTML = "";
+      if (empty) empty.textContent = "";
+      if (container && empty) {
+        const missing = (msg) => {
+          empty.textContent = msg;
+          return [];
+        };
+        let list = [];
+        if (!currentTab) {
+          list = missing("Select Group, Dancer 1, Dancer 2, or Intersect to view songs.");
+        } else if (currentTab === "group") {
+          const groupName = (state.group_name || "").trim();
+          list = groupName ? groupSongs() : missing("Set Current group to view songs.");
+        } else if (currentTab === "slot_one") {
+          const name = (state.slot_one || "").trim();
+          list = name ? songsForDancer(name) : missing("Select Dancer 1 to view songs.");
+        } else if (currentTab === "slot_two") {
+          const name = (state.slot_two || "").trim();
+          list = name ? songsForDancer(name) : missing("Select Dancer 2 to view songs.");
+        } else if (currentTab === "intersect") {
+          const a = (state.slot_one || "").trim();
+          const b = (state.slot_two || "").trim();
+          list = (a && b) ? intersectSongsFor(a, b) : missing("Select Dancer 1 and Dancer 2 to view intersect songs.");
+        }
+
+        const durationLabel = (song) => {
+          const d = parseInt(song.duration_sec, 10);
+          return Number.isFinite(d) && d > 0 ? ` <span class="duration">(${d}s)</span>` : "";
+        };
+
+        if (!list.length && !empty.textContent) {
+          empty.textContent = "No songs found for this selection.";
+        }
+
+        list
+          .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
+          .forEach(song => {
+            const card = document.createElement("div");
+            card.className = "card";
+            const diff = (song.difficulty || "medium").toLowerCase();
+            if (diff === "easy") card.classList.add("easy");
+            if (diff === "hard") card.classList.add("hard");
+            const badge = song.exclusive_mvp_for
+              ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>`
+              : "";
+            const frontList = (song.front_dancers || []).filter(Boolean);
+            const dancerList = (song.dancers || []).filter(Boolean);
+            const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
+            const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
+            const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
+            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${details ? `<div>${details}</div>` : ""}`;
+            const playBtn = document.createElement("button");
+            playBtn.textContent = "Play Song";
+            playBtn.onclick = () => playSongUrl(song.url);
+            card.appendChild(playBtn);
+            container.appendChild(card);
+          });
+      }
       let currentName = "-";
       const tryResolve = (url) => {
         let name = "-";
@@ -496,52 +524,6 @@
         currentName = tryResolve(backgroundUrl);
       }
       document.getElementById("currentSongLabel").textContent = currentName;
-      const select = document.getElementById("songSelect");
-      select.innerHTML = "";
-      Object.keys(lib).forEach(key => {
-        const opt = document.createElement("option");
-        opt.value = lib[key].url;
-        let label = lib[key].name || key;
-        const fronts = (lib[key].front_dancers || []).join(", ");
-        if (fronts) {
-          label += ` (Front: ${fronts})`;
-        }
-        opt.textContent = label;
-        let matches = (!filter || label.toLowerCase().includes(filter));
-        if (tabFilter && tabFilter !== "intersect") {
-          matches = matches && (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter));
-        }
-        if (tabFilter === "intersect") {
-          if (state.slot_one && state.slot_two) {
-            const both = intersectSongsFor(state.slot_one, state.slot_two).map(s => s.url);
-            matches = matches && both.includes(lib[key].url);
-          } else {
-            matches = false;
-          }
-        }
-        if (matches) {
-          select.appendChild(opt);
-          if (!filterFocused) {
-            const dOpt = document.createElement("option");
-            dOpt.value = label;
-            datalist.appendChild(dOpt);
-          }
-        }
-      });
-      if (!select.value && select.options.length) select.selectedIndex = 0;
-      select.onchange = () => playSong(true);
-    }
-
-    function filterSelected() {
-      const filterVal = document.getElementById("songFilter").value.toLowerCase();
-      const select = document.getElementById("songSelect");
-      for (let i = 0; i < select.options.length; i++) {
-        if (select.options[i].textContent.toLowerCase() === filterVal) {
-          select.selectedIndex = i;
-          playSong(true);
-          break;
-        }
-      }
     }
 
     function refreshSongs() {
@@ -555,13 +537,7 @@
       });
     }
 
-    async function playSong(fromSelect=false) {
-      const select = document.getElementById("songSelect");
-      const url = select.value;
-      if (!url) {
-        if (fromSelect) return;
-        return alert("Enter a song URL");
-      }
+    async function playSongUrl(url) {
       if (!audioUnlocked) {
         const ok = await unlockAudio();
         if (!ok) return alert("Click anywhere on the page once to enable audio.");
@@ -800,11 +776,24 @@
     function chooseTwoDancers() {
       const dancers = getEnabledDancers();
       if (dancers.length < 2) return ["Dancer A", "Dancer B"];
-      if (nextPairOverride && nextPairOverride.length === 2) {
-        const pair = nextPairOverride;
-        nextPairOverride = null;
-        setNextPairLabel("-");
-        return pair;
+      const names = dancers.map(d => d.name || "").filter(Boolean);
+      const nameSet = new Set(names.map(n => n.toLowerCase()));
+      const slotOne = (state.slot_one || "").trim();
+      const slotTwo = (state.slot_two || "").trim();
+      const hasOne = slotOne && nameSet.has(slotOne.toLowerCase());
+      const hasTwo = slotTwo && nameSet.has(slotTwo.toLowerCase());
+      if (hasOne && hasTwo && slotOne.toLowerCase() !== slotTwo.toLowerCase()) {
+        return [slotOne, slotTwo];
+      }
+      if (hasOne || hasTwo) {
+        const fixed = hasOne ? slotOne : slotTwo;
+        const pool = dancers.filter(d => (d.name || "").toLowerCase() !== fixed.toLowerCase());
+        if (pool.length) {
+          const partner = pool[Math.floor(Math.random() * pool.length)];
+          return hasOne
+            ? [slotOne, partner.name || "Dancer B"]
+            : [partner.name || "Dancer A", slotTwo];
+        }
       }
       const last = (state.last_winner || "").toLowerCase();
       const match = dancers.find(d => (d.name||"").toLowerCase() === last);
@@ -815,54 +804,6 @@
       }
       const shuffled = [...dancers].sort(()=>Math.random()-0.5);
       return [shuffled[0].name || "Dancer A", shuffled[1].name || "Dancer B"];
-    }
-
-    function setNextPairLabel(text) {
-      const el = document.getElementById("nextPairLabel");
-      if (el) el.textContent = `Next pair: ${text || "-"}`;
-    }
-
-    function pickNextPair() {
-      const dancers = getEnabledDancers();
-      if (dancers.length < 2) {
-        alert("Need at least two enabled dancers");
-        return;
-      }
-      const sel = document.getElementById("nextPairSelect");
-      const desired = (sel?.value || "").trim();
-      const last = (state.last_winner || "").toLowerCase();
-      const winner = dancers.find(d => (d.name || "").toLowerCase() === last);
-      const others = winner ? dancers.filter(d => d !== winner) : dancers;
-      let pair;
-      if (desired) {
-        const target = dancers.find(d => (d.name || "").toLowerCase() === desired.toLowerCase());
-        if (target) {
-          if (winner && winner !== target) {
-            pair = [winner.name || "Dancer A", target.name || "Dancer B"];
-          } else {
-            const pool = dancers.filter(d => d !== target);
-            const partner = pool.length ? pool[Math.floor(Math.random()*pool.length)] : null;
-            if (partner) pair = [target.name || "Dancer A", partner.name || "Dancer B"];
-          }
-        }
-      }
-      if (!pair) {
-        const prevA = (state.slot_one || "").toLowerCase();
-        const prevB = (state.slot_two || "").toLowerCase();
-        const prevSet = new Set([prevA, prevB].filter(Boolean));
-        const fresh = dancers.filter(d => !prevSet.has((d.name || "").toLowerCase()));
-        if (winner && others.length) {
-          const pool = fresh.length ? fresh : others;
-          const challenger = pool[Math.floor(Math.random() * pool.length)];
-          pair = [winner.name || "Dancer A", challenger.name || "Dancer B"];
-        } else {
-          const pool = fresh.length >= 2 ? fresh : dancers;
-          const shuffled = [...pool].sort(() => Math.random() - 0.5);
-          pair = [shuffled[0].name || "Dancer A", shuffled[1].name || "Dancer B"];
-        }
-      }
-      nextPairOverride = pair;
-      setNextPairLabel(pair.join(" vs "));
     }
 
     function songsForDancer(name) {
@@ -1061,7 +1002,6 @@
       });
       playRoutineSong(null);
       renderTimer(true);
-      renderWinnerSelect();
     }
 
    function skipSong() {
@@ -1171,14 +1111,15 @@
 
     function saveWinnerValue(name) {
       api("/battle/winner", {method:"POST", body:{name}});
-      const sel = document.getElementById("winnerSelect");
-      if (sel) sel.value = name;
     }
 
-    function saveWinnerSelect() {
-      const sel = document.getElementById("winnerSelect");
-      if (!sel) return;
-      saveWinnerValue(sel.value);
+    function saveSlotSelects() {
+      const selOne = document.getElementById("slotOneSelect");
+      const selTwo = document.getElementById("slotTwoSelect");
+      if (!selOne || !selTwo) return;
+      const slot_one = selOne.value || "";
+      const slot_two = selTwo.value || "";
+      api("/battle/slots/import", {method:"POST", body:{slot_one, slot_two}}).then(refreshState);
     }
 
     function saveGroupValue(name) {
@@ -1200,9 +1141,7 @@
       const arr = Array.from(list);
       api("/dancers/enabled", {method:"POST", body:{names: arr}});
       state.enabled_dancers = arr;
-      renderWinnerSelect();
-      renderGroupSelect();
-      renderSongs();
+      renderState();
     }
 
     function evaluateWinner() {
