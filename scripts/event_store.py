@@ -183,6 +183,29 @@ class SupabaseEventStore:
             "send_gift_send_message_success_ms", "sendGiftSendMessageSuccessMs"
         )
         gift_monitor_to_user_id = _gift_monitor_val("to_user_id", "toUserId")
+        send_type = _get_any(payload, "send_type", "sendType")
+        if not _is_valid_value(send_type):
+            send_type = _get_attr_any(event, "send_type", "sendType")
+        if not _is_valid_value(send_type):
+            send_type = _get_any(gift, "send_type", "sendType") or _get_attr_any(gift_obj, "send_type", "sendType")
+        order_id = _get_any(payload, "order_id", "orderId")
+        if not _is_valid_value(order_id):
+            order_id = _get_attr_any(event, "order_id", "orderId")
+        fan_ticket_count = _get_any(payload, "fan_ticket_count")
+        if not _is_valid_value(fan_ticket_count):
+            if _is_valid_value(gift_value_raw):
+                fan_ticket_count = gift_value_raw
+            elif _is_valid_value(gift_value_delta):
+                fan_ticket_count = gift_value_delta
+            elif _is_valid_value(diamond_count):
+                fan_ticket_count = diamond_count
+        if not _is_valid_value(fan_ticket_count):
+            fan_ticket_count = None
+        room_fan_ticket_count = _get_any(payload, "room_fan_ticket_count")
+        if not _is_valid_value(room_fan_ticket_count):
+            room_fan_ticket_count = fan_ticket_count
+        if not _is_valid_value(room_fan_ticket_count):
+            room_fan_ticket_count = None
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
@@ -201,8 +224,8 @@ class SupabaseEventStore:
             "repeat_count": repeat_count,
             "combo_count": _get_any(payload, "combo_count", "comboCount"),
             "amount_value": gift_value_raw if gift_value_raw is not None else _get_any(payload, "amount", "total_value"),
-            "fan_ticket_count": _get_any(payload, "fan_ticket_count"),
-            "room_fan_ticket_count": _get_any(payload, "room_fan_ticket_count"),
+            "fan_ticket_count": fan_ticket_count,
+            "room_fan_ticket_count": room_fan_ticket_count,
             "group_count": _get_any(payload, "group_count"),
             "repeat_end": _get_any(payload, "repeat_end", "repeatEnd"),
             "from_user_id": _get_any(payload, "user_id", "userId"),
@@ -214,8 +237,8 @@ class SupabaseEventStore:
             "to_member_id_int": _get_any(payload, "to_member_id_int", "toMemberIdInt"),
             "to_member_nickname": _get_any(payload, "to_member_nickname", "toMemberNickname"),
             "anchor_id": anchor_id,
-            "send_type": _get_any(payload, "send_type", "sendType"),
-            "order_id": _get_any(payload, "order_id", "orderId"),
+            "send_type": send_type,
+            "order_id": order_id,
             "group_id": _get_any(payload, "group_id", "groupId"),
             "describe": describe_val,
             "is_gift_giver_of_anchor": _get_any(payload, "is_gift_giver_of_anchor")
@@ -325,6 +348,23 @@ class SupabaseEventStore:
                     anchor_candidate = row.get("anchor_id")
                     if _is_valid_value(anchor_candidate):
                         row["to_user_id"] = anchor_candidate
+        to_member_id_int = row.get("to_member_id_int")
+        if not _is_valid_value(to_member_id_int):
+            to_member_id_int = _get_any(payload, "to_member_id", "toMemberId")
+        if not _is_valid_value(to_member_id_int):
+            to_member_id_int = row.get("to_user_id") or gift_monitor_to_user_id or row.get("anchor_id")
+        row["to_member_id_int"] = to_member_id_int if _is_valid_value(to_member_id_int) else None
+        to_member_nickname = row.get("to_member_nickname")
+        if not _is_valid_value(to_member_nickname):
+            to_member_nickname = row.get("to_nickname") or row.get("to_username")
+        if not _is_valid_value(to_member_nickname) and describe_val:
+            parsed_recipient = _extract_recipient_from_describe(str(describe_val))
+            if parsed_recipient:
+                to_member_nickname = parsed_recipient
+        if not _is_valid_value(to_member_nickname) and describe_val:
+            if "gifted the host" in str(describe_val).lower():
+                to_member_nickname = tiktok_username
+        row["to_member_nickname"] = to_member_nickname if _is_valid_value(to_member_nickname) else None
         if not (row.get("to_user_id") or row.get("to_username") or row.get("to_nickname")):
             debug = {}
             try:
