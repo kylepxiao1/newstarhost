@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -73,6 +75,7 @@ TIKTOK_USERNAMES = _env("TIKTOK_USERNAMES")
 LOG_FILE = _env("LOG_FILE")
 EULERSTREAM_API_KEY = _env("EULERSTREAM_API_KEY")
 EULERSTREAM_SIGN_URL = _env("EULERSTREAM_SIGN_URL")
+WHITELIST_AUTHENTICATED_SESSION_ID_HOST = _env("WHITELIST_AUTHENTICATED_SESSION_ID_HOST")
 TIKTOK_COOKIES_FILE = _env("TIKTOK_COOKIES_FILE")
 TIKTOK_DEVICE_ID_FILE = _env("TIKTOK_DEVICE_ID_FILE")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID")
@@ -81,6 +84,12 @@ SUPABASE_DEBUG = _env_flag("SUPABASE_DEBUG", False)
 DEFAULT_SLOT_ONE = "Performer One"
 DEFAULT_SLOT_TWO = "Performer Two"
 ENABLE_SCORE_UPDATES = _env_flag("ENABLE_SCORE_UPDATES", False)
+
+if WHITELIST_AUTHENTICATED_SESSION_ID_HOST:
+    os.environ.setdefault(
+        "WHITELIST_AUTHENTICATED_SESSION_ID_HOST",
+        WHITELIST_AUTHENTICATED_SESSION_ID_HOST,
+    )
 
 _log_handlers = [logging.StreamHandler()]
 if LOG_FILE:
@@ -305,7 +314,7 @@ class TikTokLiveListener:
         self._slots = {"slot_one": DEFAULT_SLOT_ONE, "slot_two": DEFAULT_SLOT_TWO}
         self._score_by_id: dict[str, int] = {}
         self._base_backoff = 5
-        self._max_backoff = 60
+        self._max_backoff = 300
         self._rate_limit_backoff = 300  # 5 minutes
         self._offline_backoff = 60
         self._not_found_backoff = 900
@@ -321,6 +330,10 @@ class TikTokLiveListener:
         # combo tracking: key -> (last_combo_count, last_seen_ts)
         self._combo_state: dict[tuple, tuple[int, float]] = {}
         self._combo_ttl = timedelta(minutes=10)
+        self._live_check_interval_min = 60
+        self._live_check_interval_max = 120
+        self._next_live_check_at = 0.0
+        self._last_live_status: Optional[bool] = None
         self._cookies = _gather_tiktok_cookies()
         self._device_id = _load_device_id()
 
@@ -337,6 +350,7 @@ class TikTokLiveListener:
                     WebDefaults.tiktok_sign_url = EULERSTREAM_SIGN_URL
                 except Exception:
                     pass
+
             if self._cookies:
                 try:
                     WebDefaults.web_client_cookies = {**WebDefaults.web_client_cookies, **self._cookies}
@@ -362,9 +376,53 @@ class TikTokLiveListener:
             _persist_device_id(pinned)
         self._wire_events()
 
+    def _cookie_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        try:
+            jar = getattr(self.client.web.cookies, "jar", None)
+            iterable = jar if jar is not None else self.client.web.cookies
+            for cookie in iterable:
+                try:
+                    counts[cookie.name] = counts.get(cookie.name, 0) + 1
+                except Exception:
+                    continue
+        except Exception:
+            return counts
+        return counts
+
+    def _log_cookie_snapshot(self, label: str) -> None:
+        try:
+            counts = self._cookie_counts()
+            if not counts:
+                logger.debug("Cookie jar snapshot (%s): empty or unavailable", label)
+                return
+            dups = {k: v for k, v in counts.items() if v > 1}
+            if dups:
+                logger.warning("Cookie jar duplicates (%s): %s", label, dups)
+                if logger.isEnabledFor(logging.DEBUG):
+                    jar = getattr(self.client.web.cookies, "jar", None)
+                    iterable = jar if jar is not None else self.client.web.cookies
+                    for name in dups:
+                        details = [
+                            f"{getattr(c, 'domain', '')}{getattr(c, 'path', '')}"
+                            for c in iterable
+                            if getattr(c, "name", None) == name
+                        ]
+                        logger.debug("Cookie '%s' entries: %s", name, ", ".join(details))
+            else:
+                logger.debug("Cookie jar snapshot (%s): %s", label, counts)
+        except Exception as exc:
+            logger.debug("Failed cookie snapshot (%s): %s", label, exc)
+
     def _apply_client_cookies(self) -> None:
         if not self._cookies:
             return
+        self._log_cookie_snapshot("before_apply")
+        # Reset cookie jar to avoid duplicated defaults from WebDefaults
+        try:
+            self.client.web.cookies = httpx.Cookies()
+        except Exception:
+            pass
         session_id = self._cookies.get("sessionid") or self._cookies.get("sid_tt")
         tt_target_idc = self._cookies.get("tt-target-idc")
         try:
@@ -376,7 +434,7 @@ class TikTokLiveListener:
             if key in ("sessionid", "sessionid_ss", "sid_tt", "tt-target-idc"):
                 continue
             try:
-                self.client.web.cookies.set(key, val, domain=".tiktok.com")
+                self.client.web.cookies.set(key, val, domain=".tiktok.com", path="/")
             except Exception:
                 try:
                     self.client.web.cookies.set(key, val)
@@ -387,6 +445,7 @@ class TikTokLiveListener:
                 self.client.web.params["msToken"] = self._cookies["msToken"]
             except Exception:
                 pass
+        self._log_cookie_snapshot("after_apply")
 
     def _make_event_key(self, evt, etype: str) -> Optional[str]:
         payload = _payload(evt)
@@ -452,9 +511,21 @@ class TikTokLiveListener:
         self._seen[key] = now
         return False
 
+    def _schedule_next_live_check(self, delay: Optional[float] = None) -> float:
+        if delay is None:
+            delay = random.uniform(self._live_check_interval_min, self._live_check_interval_max)
+        self._next_live_check_at = time.monotonic() + max(1.0, float(delay))
+        return delay
+
     async def _check_live_status(self) -> Optional[bool]:
+        now = time.monotonic()
+        if now < self._next_live_check_at:
+            return self._last_live_status
         try:
-            return await self.client.is_live()
+            status = await self.client.is_live()
+            self._last_live_status = bool(status)
+            self._schedule_next_live_check()
+            return self._last_live_status
         except Exception as exc:
             msg = str(exc).lower()
             if "rate_limit" in msg or "too many connections" in msg:
@@ -466,7 +537,18 @@ class TikTokLiveListener:
                     )
                     self._rate_limit_logged = True
                     self._last_rate_limit_log = now
+                self._schedule_next_live_check(self._rate_limit_backoff)
+            else:
+                self._schedule_next_live_check(self._live_check_interval_max)
+            self._last_live_status = None
             return None
+
+    async def _sleep_with_jitter(self, seconds: float) -> None:
+        if seconds <= 0:
+            return
+        jitter = random.uniform(0.8, 1.2)
+        delay = max(1.0, seconds * jitter)
+        await asyncio.sleep(delay)
 
     def _combo_key(self, payload: dict) -> Optional[tuple]:
         gid = _get_any(payload, "group_id", "groupId")
@@ -970,7 +1052,16 @@ class TikTokLiveListener:
                     self._offline_logged = True
                     self._last_offline_log = now
                 try:
-                    await asyncio.sleep(self._offline_backoff)
+                    sleep_for = max(1.0, self._next_live_check_at - time.monotonic())
+                    await self._sleep_with_jitter(sleep_for)
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    logger.info("Sleep cancelled; shutting down.")
+                    break
+                continue
+            if live_status is None:
+                try:
+                    sleep_for = max(1.0, self._next_live_check_at - time.monotonic())
+                    await self._sleep_with_jitter(sleep_for)
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     logger.info("Sleep cancelled; shutting down.")
                     break
@@ -1007,7 +1098,6 @@ class TikTokLiveListener:
                         self._rate_limit_logged = True
                         self._last_rate_limit_log = now
                     backoff = self._rate_limit_backoff
-                    continue
                 if "usernotfound" in msg or "user not found" in msg:
                     now = datetime.now(timezone.utc)
                     if not self._not_found_logged or (now - self._last_not_found_log) > timedelta(hours=1):
@@ -1015,37 +1105,34 @@ class TikTokLiveListener:
                         self._not_found_logged = True
                         self._last_not_found_log = now
                     backoff = self._not_found_backoff
-                    continue
                 if "expecting value" in msg and "line 1 column 1" in msg:
                     now = datetime.now(timezone.utc)
                     if (now - self._last_parse_error_log) > timedelta(minutes=5):
                         logger.warning("TikTok listener received an invalid response. Retrying...")
                         self._last_parse_error_log = now
                     backoff = min(self._max_backoff, max(self._base_backoff, backoff))
-                    continue
                 if "offline" in msg or "not live" in msg:
                     if not self._offline_logged:
                         logger.info("TikTok user '@%s' is offline. Will retry.", self.username)
                         self._offline_logged = True
                         self._last_offline_log = datetime.now(timezone.utc)
                     backoff = self._offline_backoff
-                    continue
                 logger.error("TikTok listener error: %s", exc)
                 if "device_blocked" in msg:
                     backoff = self._rate_limit_backoff
                 elif "rate_limit" in msg or "too many connections" in msg:
-                    backoff = max(self._max_backoff, self._rate_limit_backoff)
+                    backoff = max(self._rate_limit_backoff, backoff)
             finally:
                 try:
                     await self.client.disconnect()
                 except Exception:
                     pass
             try:
-                await asyncio.sleep(backoff)
+                await self._sleep_with_jitter(backoff)
             except (asyncio.CancelledError, KeyboardInterrupt):
                 logger.info("Sleep cancelled; shutting down.")
                 break
-            backoff = min(self._max_backoff, backoff * 2)
+            backoff = min(self._max_backoff, max(self._base_backoff, backoff * 2))
 
     async def _safe_post(self, url: str, payload: dict) -> bool:
         try:
