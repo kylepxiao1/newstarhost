@@ -230,6 +230,10 @@ class SupabaseEventStore:
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
         base_message = _get_attr_any(event, "base_message", "baseMessage")
+        gift_monitor_payload = None
+        if isinstance(payload, dict):
+            gift_monitor_payload = payload.get("gift_monitor_info") or payload.get("giftMonitorInfo")
+        gift_monitor_event = _get_attr_any(event, "gift_monitor_info", "giftMonitorInfo")
         gift = payload.get("gift") if isinstance(payload, dict) else {}
         if not isinstance(gift, dict):
             gift = {}
@@ -242,6 +246,14 @@ class SupabaseEventStore:
         repeat_count = _get_any(payload, "repeat_count", "repeatCount", default=_get_any(gift, "repeat_count"))
         if repeat_count is None:
             repeat_count = _get_attr_any(gift_obj, "repeat_count", "repeatCount")
+        anchor_id = _get_any(payload, "anchor_id", "anchorId")
+        if not anchor_id and gift_monitor_payload is not None:
+            if isinstance(gift_monitor_payload, dict):
+                anchor_id = _get_any(gift_monitor_payload, "anchor_id", "anchorId")
+            else:
+                anchor_id = _get_attr_any(gift_monitor_payload, "anchor_id", "anchorId")
+        if not anchor_id:
+            anchor_id = _get_attr_any(gift_monitor_event, "anchor_id", "anchorId")
         row = {
             "id": self._next_row_id(),
             "iso_ts": ts,
@@ -272,7 +284,7 @@ class SupabaseEventStore:
             "to_nickname": _get_any(payload, "to_user_nickname", "toNickname"),
             "to_member_id_int": _get_any(payload, "to_member_id_int", "toMemberIdInt"),
             "to_member_nickname": _get_any(payload, "to_member_nickname", "toMemberNickname"),
-            "anchor_id": _get_any(payload, "anchor_id", "anchorId"),
+            "anchor_id": anchor_id,
             "send_type": _get_any(payload, "send_type", "sendType"),
             "order_id": _get_any(payload, "order_id", "orderId"),
             "group_id": _get_any(payload, "group_id", "groupId"),
@@ -289,6 +301,8 @@ class SupabaseEventStore:
             "payload_json": _safe_json(payload),
             "tiktok_username": tiktok_username,
         }
+        if row.get("to_user_id") is not None and not _is_valid_value(row.get("to_user_id")):
+            row["to_user_id"] = None
         if not row.get("from_user_id") or not row.get("from_username") or not row.get("from_nickname"):
             user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else {}
             event_user = _get_attr_any(event, "user", "user_info", "userInfo")
@@ -307,6 +321,105 @@ class SupabaseEventStore:
                     _get_any(user_payload, "nickname", "nick_name", "nickName")
                     or _get_attr_any(event_user, "nickname", "nick_name", "nickName")
                 )
+        if not row.get("to_user_id") or not row.get("to_username") or not row.get("to_nickname"):
+            receiver_payload = payload.get("receiver") if isinstance(payload.get("receiver"), dict) else {}
+            to_user_payload = payload.get("to_user") if isinstance(payload.get("to_user"), dict) else {}
+            event_to_user = _get_attr_any(event, "to_user", "receiver", "toUser")
+            to_member_id = _get_any(payload, "to_member_id", "toMemberId")
+            to_member_id_int = _get_any(payload, "to_member_id_int", "toMemberIdInt")
+            to_member_nickname = _get_any(payload, "to_member_nickname", "toMemberNickname")
+            describe = str(row.get("describe") or "")
+            parsed_recipient = _extract_recipient_from_describe(describe)
+
+            def pick_value(*values):
+                for value in values:
+                    if _is_valid_value(value):
+                        return value
+                return None
+
+            if not row.get("to_user_id"):
+                row["to_user_id"] = pick_value(
+                    _get_any(payload, "to_user_id", "toUserId"),
+                    _get_any(receiver_payload, "id", "user_id"),
+                    _get_any(to_user_payload, "id", "user_id"),
+                    _get_attr_any(event_to_user, "id", "user_id"),
+                    row.get("anchor_id"),
+                    to_member_id_int,
+                    to_member_id,
+                )
+            if not row.get("to_username"):
+                row["to_username"] = pick_value(
+                    _get_any(payload, "to_user_name", "toUserName"),
+                    _get_any(receiver_payload, "unique_id", "display_id", "username"),
+                    _get_any(to_user_payload, "unique_id", "display_id", "username"),
+                    _extract_handle(event_to_user),
+                )
+                if not row.get("to_username") and "gifted the host" in describe.lower():
+                    row["to_username"] = tiktok_username
+                if not row.get("to_username") and parsed_recipient:
+                    candidate = parsed_recipient.lstrip("@")
+                    if re.fullmatch(r"[A-Za-z0-9._]{2,}", candidate):
+                        row["to_username"] = candidate
+            if not row.get("to_nickname"):
+                row["to_nickname"] = pick_value(
+                    _get_any(payload, "to_user_nickname", "toNickname"),
+                    _get_any(receiver_payload, "nickname", "nick_name", "nickName"),
+                    _get_any(to_user_payload, "nickname", "nick_name", "nickName"),
+                    _get_attr_any(event_to_user, "nickname", "nick_name", "nickName"),
+                    to_member_nickname,
+                )
+                if not row.get("to_nickname") and parsed_recipient:
+                    row["to_nickname"] = parsed_recipient
+            if not row.get("to_user_id") and row.get("to_username") and tiktok_username:
+                if row["to_username"].lstrip("@").lower() == tiktok_username.lstrip("@").lower():
+                    anchor_candidate = row.get("anchor_id")
+                    if _is_valid_value(anchor_candidate):
+                        row["to_user_id"] = anchor_candidate
+            if tiktok_username:
+                host_name = tiktok_username.lstrip("@")
+                if not row.get("to_username"):
+                    row["to_username"] = host_name
+                if not row.get("to_nickname"):
+                    row["to_nickname"] = host_name
+            if not row.get("to_user_id") and tiktok_username and row.get("to_username"):
+                if row["to_username"].lstrip("@").lower() == tiktok_username.lstrip("@").lower():
+                    anchor_candidate = row.get("anchor_id")
+                    if _is_valid_value(anchor_candidate):
+                        row["to_user_id"] = anchor_candidate
+        if not (row.get("to_user_id") or row.get("to_username") or row.get("to_nickname")):
+            debug = {}
+            try:
+                if isinstance(payload, dict):
+                    debug["payload_to_user_id"] = _get_any(payload, "to_user_id", "toUserId")
+                    debug["payload_to_user_name"] = _get_any(payload, "to_user_name", "toUserName")
+                    debug["payload_to_nickname"] = _get_any(payload, "to_user_nickname", "toNickname")
+                    debug["payload_to_member_id"] = _get_any(payload, "to_member_id", "toMemberId")
+                    debug["payload_to_member_id_int"] = _get_any(payload, "to_member_id_int", "toMemberIdInt")
+                    debug["payload_to_member_nickname"] = _get_any(payload, "to_member_nickname", "toMemberNickname")
+                if event_to_user:
+                    debug["event_to_user"] = {
+                        "id": _get_attr_any(event_to_user, "id", "user_id"),
+                        "unique_id": _extract_handle(event_to_user),
+                        "nickname": _get_attr_any(event_to_user, "nickname", "nick_name", "nickName"),
+                    }
+                if base_message:
+                    debug["base_message_id"] = _get_attr_any(base_message, "message_id", "messageId")
+                    debug["base_message_room_id"] = _get_attr_any(base_message, "room_id", "roomId")
+            except Exception:
+                pass
+            logger.info(
+                "Gift still missing to_user fields after fallback: to_user_id=%s to_username=%s to_nickname=%s debug=%s",
+                row.get("to_user_id"),
+                row.get("to_username"),
+                row.get("to_nickname"),
+                _safe_json(debug),
+            )
+        elif not row.get("to_user_id"):
+            logger.debug(
+                "Gift missing to_user_id after fallback: to_username=%s to_nickname=%s",
+                row.get("to_username"),
+                row.get("to_nickname"),
+            )
         values = [_normalize_db_value(v) for v in row.values()]
         async with self._lock:
             try:
@@ -655,6 +768,24 @@ def _normalize_user_id(val: str) -> str:
 
 def _is_placeholder_obj(val: str) -> bool:
     return val.startswith("<object object") and "object at" in val
+
+
+def _is_valid_value(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)) and value == 0:
+        return False
+    try:
+        text = str(value).strip()
+    except Exception:
+        return False
+    if not text:
+        return False
+    if text in {"0", "0.0", "0.00"}:
+        return False
+    return not _is_placeholder_obj(text)
 
 
 def _coerce_int(value) -> Optional[int]:
