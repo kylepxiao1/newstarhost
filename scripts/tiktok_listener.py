@@ -157,14 +157,22 @@ class SupabaseEventStore:
         self._client = httpx.AsyncClient(base_url=self._rest_url, headers=headers, timeout=30.0)
         logger.info("Supabase REST client initialized for %s", self._rest_url)
 
-    async def _post_row(self, table: str, row_data: dict, on_conflict: Optional[str] = None) -> Optional[httpx.Response]:
+    async def _post_row(
+        self,
+        table: str,
+        row_data: dict,
+        on_conflict: Optional[str] = None,
+        prefer: Optional[str] = None,
+    ) -> Optional[httpx.Response]:
         if not self._client:
             return None
         params = {}
-        prefer = "return=minimal"
+        prefer_header = "return=minimal"
         if on_conflict:
             params["on_conflict"] = on_conflict
-            prefer = "resolution=merge-duplicates,return=minimal"
+            prefer_header = "resolution=merge-duplicates,return=minimal"
+        if prefer:
+            prefer_header = prefer
         if SUPABASE_DEBUG:
             logger.debug(
                 "Supabase POST %s on_conflict=%s id=%s message_id=%s",
@@ -177,7 +185,7 @@ class SupabaseEventStore:
             f"/{table}",
             params=params,
             json=row_data,
-            headers={"Prefer": prefer},
+            headers={"Prefer": prefer_header},
         )
 
     def _log_result(self, table: str, action: str, resp: Optional[httpx.Response]) -> None:
@@ -507,11 +515,31 @@ class SupabaseEventStore:
             nickname = nickname or _get_any(user_payload, "nickname", "nick_name")
             user_id = user_id or _get_any(user_payload, "id", "user_id")
             user_sec_uid = _get_any(user_payload, "sec_uid", "user_sec_uid")
+        follow_role = _get_any(payload, "follow_role", "followRole")
+        if isinstance(payload, dict):
+            user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+            follow_info = user_payload.get("follow_info") if isinstance(user_payload.get("follow_info"), dict) else None
+            if follow_info is None and isinstance(user_payload.get("followInfo"), dict):
+                follow_info = user_payload.get("followInfo")
+            follow_role = follow_role or _get_any(
+                user_payload, "follow_role", "followRole", "follow_status", "followStatus", "follow_state", "followState"
+            )
+            if follow_info:
+                follow_role = follow_role or _get_any(
+                    follow_info, "follow_role", "followRole", "follow_status", "followStatus", "follow_state", "followState"
+                )
         if user_info:
             username = username or _extract_handle(user_info)
             nickname = nickname or _get_attr_any(user_info, "nickname", "nick_name", "nickName")
             user_id = user_id or _get_attr_any(user_info, "id", "user_id")
             user_sec_uid = user_sec_uid or _get_attr_any(user_info, "sec_uid", "user_sec_uid")
+            follow_role = follow_role or _get_attr_any(user_info, "follow_role", "followRole", "follow_status", "followStatus")
+            follow_info_obj = _get_attr_any(user_info, "follow_info", "followInfo")
+            follow_role = follow_role or _get_attr_any(
+                follow_info_obj, "follow_role", "followRole", "follow_status", "followStatus"
+            )
+        if not _is_valid_value(follow_role):
+            follow_role = None
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
@@ -529,7 +557,7 @@ class SupabaseEventStore:
             "username": username,
             "nickname": nickname,
             "user_sec_uid": user_sec_uid or _get_any(payload, "user_sec_uid", "sec_uid"),
-            "follow_role": _get_any(payload, "follow_role"),
+            "follow_role": follow_role,
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
@@ -539,7 +567,7 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping comment_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                on_conflict = "message_id" if row_data.get("message_id") else None
                 action = "upsert" if on_conflict else "insert"
                 resp = await self._post_row("comment_events", row_data, on_conflict=on_conflict)
                 if on_conflict and self._response_missing_unique(resp):
@@ -613,7 +641,7 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping like_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                on_conflict = "message_id" if row_data.get("message_id") else None
                 action = "upsert" if on_conflict else "insert"
                 resp = await self._post_row("like_events", row_data, on_conflict=on_conflict)
                 if on_conflict and self._response_missing_unique(resp):
