@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 from datetime import datetime, timedelta, timezone
@@ -13,50 +12,74 @@ import httpx
 from TikTokLive import TikTokLiveClient
 from TikTokLive import events as ttevents
 from TikTokLive.client.errors import WebcastBlocked200Error
-from supabase import create_client
-# Patch CompetitionEvent to avoid read-only 'type' property crash in some builds
-try:
-    from TikTokLive.events import proto_events  # type: ignore
+from TikTokLive.events import proto_events
+from TikTokLive.client.web.web_settings import WebDefaults
 
-    if hasattr(proto_events, "CompetitionEvent"):
-        def _get_type(self):  # type: ignore
-            return getattr(self, "__type_value", None)
+def _load_env_file(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    data = path.read_text(encoding="utf-8")
+    for raw_line in data.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value and ((value[0] == value[-1]) and value[0] in {"'", '"'}):
+            value = value[1:-1]
+        env.setdefault(key, value)
+    return env
 
-        def _set_type(self, val):  # type: ignore
-            self.__dict__["__type_value"] = val
 
-        proto_events.CompetitionEvent.type = property(_get_type, _set_type)  # type: ignore
-except Exception:
-    pass
+def _load_env_from_config() -> dict[str, str]:
+    repo_root = Path(__file__).resolve().parent.parent
+    for name in ("tiktok_listener.env", ".env.tiktok", ".env"):
+        candidate = repo_root / name
+        if candidate.exists():
+            return _load_env_file(candidate)
+    return {}
 
-# Configure signer defaults if using EulerStream
-try:
-    from TikTokLive.client.web.web_settings import WebDefaults
-except Exception:
-    WebDefaults = None
 
-API_BASE = os.environ.get("BATTLE_API", "http://127.0.0.1:8000")
-TIKTOK_USERNAMES = os.environ.get("TIKTOK_USERNAMES", "wildcard_boys, valentinaaaa")
-LOG_FILE = os.environ.get("LOG_FILE", "tiktok_events.log")
-EULERSTREAM_API_KEY = os.environ.get("EULERSTREAM_API_KEY", "euler_NGU3N2ZjMWI3YWMwNzFjYTY1NDRkNzhiN2E4N2I4YmM1Yzk2ZjM0Y2MwYTkxZWRkNjk4NWQ1")
-EULERSTREAM_SIGN_URL = os.environ.get("EULERSTREAM_SIGN_URL", "")
-TIKTOK_COOKIES_FILE = os.environ.get("TIKTOK_COOKIES_FILE", "")
-TIKTOK_DEVICE_ID_FILE = os.environ.get("TIKTOK_DEVICE_ID_FILE", "")
-SUPABASE_PROJECT_ID = os.environ.get("SUPABASE_PROJECT_ID", "sxssunxbskeimrdwyjzg")
-SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
-SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
-SUPABASE_PUBLISHABLE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY", "")
-SUPABASE_SECRET_KEY = os.environ.get("SUPABASE_SECRET_KEY", "")
-SUPABASE_DEBUG = os.environ.get("SUPABASE_DEBUG", "").strip().lower() in {"1", "true", "yes", "y"}
+ENV = _load_env_from_config()
+
+
+def _env(key: str, default: str = "") -> str:
+    return ENV.get(key, default)
+
+
+def _env_flag(key: str, default: bool = False) -> bool:
+    value = _env(key, "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "y", "on"}
+
+API_BASE = _env("BATTLE_API")
+TIKTOK_USERNAMES = _env("TIKTOK_USERNAMES")
+LOG_FILE = _env("LOG_FILE")
+EULERSTREAM_API_KEY = _env("EULERSTREAM_API_KEY")
+EULERSTREAM_SIGN_URL = _env("EULERSTREAM_SIGN_URL")
+TIKTOK_COOKIES_FILE = _env("TIKTOK_COOKIES_FILE")
+TIKTOK_DEVICE_ID_FILE = _env("TIKTOK_DEVICE_ID_FILE")
+SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID")
+SUPABASE_SECRET_KEY = _env("SUPABASE_SECRET_KEY")
+SUPABASE_DEBUG = _env_flag("SUPABASE_DEBUG", False)
 DEFAULT_SLOT_ONE = "Performer One"
 DEFAULT_SLOT_TWO = "Performer Two"
-ENABLE_SCORE_UPDATES = os.environ.get("ENABLE_SCORE_UPDATES", "").strip().lower() in {"1", "true", "yes", "y"}
+ENABLE_SCORE_UPDATES = _env_flag("ENABLE_SCORE_UPDATES", False)
 
+_log_handlers = [logging.StreamHandler()]
+if LOG_FILE:
+    _log_handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(), logging.FileHandler(LOG_FILE, encoding="utf-8")],
+    handlers=_log_handlers,
 )
 logger = logging.getLogger("tiktok-listener")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -117,37 +140,74 @@ def _normalize_db_value(value):
 class SupabaseEventStore:
     def __init__(self, url: str, key: str) -> None:
         self._lock = asyncio.Lock()
-        self._client = None
+        self._client: Optional[httpx.AsyncClient] = None
+        self._rest_url = ""
         self._raw_id_seq = int(time.time() * 1000) % 1000
-        if not create_client:
-            logger.error("Supabase client not installed. Add 'supabase' to requirements.txt.")
-            return
         if not url or not key:
             logger.error(
                 "Supabase credentials missing. Set SUPABASE_URL and SUPABASE_SECRET_KEY (or SERVICE_ROLE_KEY)."
             )
             return
-        try:
-            self._client = create_client(url, key)
-            logger.info("Supabase client initialized for %s", url)
-        except Exception as exc:
-            logger.error("Failed to create Supabase client: %s", exc)
-            self._client = None
+        self._rest_url = url.rstrip("/") + "/rest/v1"
+        headers = {
+            "apikey": key,
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+        }
+        self._client = httpx.AsyncClient(base_url=self._rest_url, headers=headers, timeout=30.0)
+        logger.info("Supabase REST client initialized for %s", self._rest_url)
 
-    def _log_result(self, table: str, action: str, result) -> None:
-        if result is None:
-            logger.debug("Supabase %s %s returned None", table, action)
+    async def _post_row(self, table: str, row_data: dict, on_conflict: Optional[str] = None) -> Optional[httpx.Response]:
+        if not self._client:
+            return None
+        params = {}
+        prefer = "return=minimal"
+        if on_conflict:
+            params["on_conflict"] = on_conflict
+            prefer = "resolution=merge-duplicates,return=minimal"
+        if SUPABASE_DEBUG:
+            logger.debug(
+                "Supabase POST %s on_conflict=%s id=%s message_id=%s",
+                table,
+                on_conflict or "none",
+                row_data.get("id"),
+                row_data.get("message_id"),
+            )
+        return await self._client.post(
+            f"/{table}",
+            params=params,
+            json=row_data,
+            headers={"Prefer": prefer},
+        )
+
+    def _log_result(self, table: str, action: str, resp: Optional[httpx.Response]) -> None:
+        if resp is None:
+            logger.debug("Supabase %s %s skipped (client unavailable)", table, action)
             return
-        err = getattr(result, "error", None)
-        data = getattr(result, "data", None)
-        if err:
-            logger.error("Supabase %s %s error: %s", table, action, err)
-        else:
-            logger.debug("Supabase %s %s ok (rows=%s)", table, action, len(data) if data is not None else "n/a")
+        if resp.is_success:
+            logger.debug("Supabase %s %s ok (status=%s)", table, action, resp.status_code)
+            return
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = (resp.text or "").strip()
+        logger.error("Supabase %s %s failed (status=%s): %s", table, action, resp.status_code, payload)
 
-    def _is_missing_unique_constraint(self, exc: Exception) -> bool:
-        msg = str(exc).lower()
-        return "no unique or exclusion constraint" in msg or "42p10" in msg
+    def _response_missing_unique(self, resp: Optional[httpx.Response]) -> bool:
+        if resp is None:
+            return False
+        msg = ""
+        code = ""
+        try:
+            payload = resp.json()
+            if isinstance(payload, dict):
+                msg = str(payload.get("message", "")).lower()
+                code = str(payload.get("code", "")).lower()
+            else:
+                msg = str(payload).lower()
+        except Exception:
+            msg = (resp.text or "").lower()
+        return "no unique or exclusion constraint" in msg or "42p10" in msg or code == "42p10"
 
     def _next_raw_id(self) -> int:
         # millisecond timestamp * 1000 + sequence to avoid collisions within the same ms
@@ -176,6 +236,7 @@ class SupabaseEventStore:
         if repeat_count is None:
             repeat_count = _get_attr_any(gift_obj, "repeat_count", "repeatCount")
         row = {
+            "id": self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
             "event_type": "gift",
@@ -228,23 +289,14 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping gift_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                row_data.setdefault("id", self._next_row_id())
-                if row_data.get("message_id"):
-                    try:
-                        result = self._client.table("gift_events").upsert(
-                            row_data, on_conflict="message_id,tiktok_username"
-                        ).execute()
-                        self._log_result("gift_events", "upsert", result)
-                    except Exception as exc:
-                        if self._is_missing_unique_constraint(exc):
-                            result = self._client.table("gift_events").insert(row_data).execute()
-                            self._log_result("gift_events", "insert-fallback", result)
-                        else:
-                            raise
-                else:
-                    result = self._client.table("gift_events").insert(row_data).execute()
-                    self._log_result("gift_events", "insert", result)
-            except Exception as exc:
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("gift_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("gift_events", row_data)
+                    action = "insert-fallback"
+                self._log_result("gift_events", action, resp)
+            except Exception:
                 logger.exception("Failed to log gift event")
 
     async def log_comment(self, payload: dict, event, tiktok_username: str) -> None:
@@ -277,6 +329,7 @@ class SupabaseEventStore:
             user_id = user_id or _get_attr_any(user_info, "id", "user_id")
             user_sec_uid = user_sec_uid or _get_attr_any(user_info, "sec_uid", "user_sec_uid")
         row = {
+            "id": self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
             "event_type": "comment",
@@ -303,23 +356,14 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping comment_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                row_data.setdefault("id", self._next_row_id())
-                if row_data.get("message_id"):
-                    try:
-                        result = self._client.table("comment_events").upsert(
-                            row_data, on_conflict="message_id,tiktok_username"
-                        ).execute()
-                        self._log_result("comment_events", "upsert", result)
-                    except Exception as exc:
-                        if self._is_missing_unique_constraint(exc):
-                            result = self._client.table("comment_events").insert(row_data).execute()
-                            self._log_result("comment_events", "insert-fallback", result)
-                        else:
-                            raise
-                else:
-                    result = self._client.table("comment_events").insert(row_data).execute()
-                    self._log_result("comment_events", "insert", result)
-            except Exception as exc:
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("comment_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("comment_events", row_data)
+                    action = "insert-fallback"
+                self._log_result("comment_events", action, resp)
+            except Exception:
                 logger.exception("Failed to log comment event")
 
     async def log_like(self, payload: dict, event, tiktok_username: str) -> None:
@@ -363,6 +407,7 @@ class SupabaseEventStore:
                 user_sec_uid = user_sec_uid or _get_attr_any(user_info, "sec_uid", "user_sec_uid")
                 follow_role = follow_role or _get_attr_any(user_info, "follow_role", "followRole")
         row = {
+            "id": self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
             "event_type": "like",
@@ -386,33 +431,31 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping like_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                row_data.setdefault("id", self._next_row_id())
-                if row_data.get("message_id"):
-                    try:
-                        result = self._client.table("like_events").upsert(
-                            row_data, on_conflict="message_id,tiktok_username"
-                        ).execute()
-                        self._log_result("like_events", "upsert", result)
-                    except Exception as exc:
-                        if self._is_missing_unique_constraint(exc):
-                            result = self._client.table("like_events").insert(row_data).execute()
-                            self._log_result("like_events", "insert-fallback", result)
-                        else:
-                            raise
-                else:
-                    result = self._client.table("like_events").insert(row_data).execute()
-                    self._log_result("like_events", "insert", result)
-            except Exception as exc:
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("like_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("like_events", row_data)
+                    action = "insert-fallback"
+                self._log_result("like_events", action, resp)
+            except Exception:
                 logger.exception("Failed to log like event")
 
-    def close(self) -> None:
-        return
+    async def close(self) -> None:
+        if not self._client:
+            return
+        try:
+            await self._client.aclose()
+        except Exception:
+            pass
+        self._client = None
 
     async def log_event(self, event_type: str, payload: dict, tiktok_username: str) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
         row = {
+            "id": self._next_raw_id(),
             "event_type": event_type,
             "iso_ts": ts,
             "unix_ts": unix_ts,
@@ -426,12 +469,10 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping tiktok_events_raw insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                row_data.setdefault("id", self._next_raw_id())
-                result = self._client.table("tiktok_events_raw").insert(row_data).execute()
-                self._log_result("tiktok_events_raw", "insert", result)
-            except Exception as exc:
+                resp = await self._post_row("tiktok_events_raw", row_data)
+                self._log_result("tiktok_events_raw", "insert", resp)
+            except Exception:
                 logger.exception("Failed to log tiktok_events_raw")
-
 COOKIE_ENV_MAP = {
     "sessionid": "TIKTOK_SESSIONID",
     "sessionid_ss": "TIKTOK_SESSIONID_SS",
@@ -501,14 +542,14 @@ def _gather_tiktok_cookies() -> dict:
         else:
             logger.warning("TikTok cookies file not found: %s", path)
     for cookie_key, env_name in COOKIE_ENV_MAP.items():
-        val = os.environ.get(env_name)
+        val = _env(env_name, "")
         if val:
             cookies[cookie_key] = val
     return cookies
 
 
 def _load_device_id() -> Optional[str]:
-    env_val = os.environ.get("TIKTOK_DEVICE_ID")
+    env_val = _env("TIKTOK_DEVICE_ID", "")
     if env_val:
         return env_val.strip()
     if TIKTOK_DEVICE_ID_FILE:
@@ -582,7 +623,41 @@ def _normalize_user_id(val: str) -> str:
         s = val if isinstance(val, str) else str(val or "")
     except Exception:
         return ""
+    if s.startswith("<object object") and "object at" in s:
+        return ""
     return s.strip().lstrip("@").lower()
+
+
+def _is_placeholder_obj(val: str) -> bool:
+    return val.startswith("<object object") and "object at" in val
+
+
+_HOST_TOKENS = {"host", "the host", "creator", "streamer"}
+
+
+def _clean_recipient(primary, fallback="") -> str:
+    candidate = ""
+    if isinstance(primary, str):
+        candidate = primary.strip()
+    else:
+        candidate = _extract_handle(primary)
+    if candidate:
+        lowered = candidate.strip().lower()
+        if lowered in _HOST_TOKENS:
+            candidate = ""
+        elif not _is_placeholder_obj(candidate):
+            return candidate
+    if isinstance(fallback, str):
+        candidate = fallback.strip()
+    else:
+        candidate = _extract_handle(fallback)
+    if candidate:
+        lowered = candidate.strip().lower()
+        if lowered in _HOST_TOKENS:
+            return ""
+        if not _is_placeholder_obj(candidate):
+            return candidate
+    return ""
 
 
 def _extract_handle(user_obj) -> str:
@@ -653,8 +728,14 @@ class TikTokLiveListener:
         self._max_backoff = 60
         self._rate_limit_backoff = 300  # 5 minutes
         self._offline_backoff = 60
+        self._not_found_backoff = 900
+        self._last_rate_limit_log = datetime.min.replace(tzinfo=timezone.utc)
+        self._rate_limit_logged = False
         self._last_offline_log = datetime.min.replace(tzinfo=timezone.utc)
         self._offline_logged = False
+        self._last_not_found_log = datetime.min.replace(tzinfo=timezone.utc)
+        self._not_found_logged = False
+        self._last_parse_error_log = datetime.min.replace(tzinfo=timezone.utc)
         # dedupe cache (type,id) -> timestamp
         self._seen = {}
         self._cookies = _gather_tiktok_cookies()
@@ -804,6 +885,8 @@ class TikTokLiveListener:
                 host = None
             logger.info("Connected to TikTok LIVE as %s", host or self.client.unique_id or "unknown")
             self._offline_logged = False
+            self._not_found_logged = False
+            self._rate_limit_logged = False
 
         @self.client.on(ttevents.DisconnectEvent)
         async def on_disconnect(_: ttevents.DisconnectEvent) -> None:
@@ -1007,23 +1090,28 @@ class TikTokLiveListener:
                     desc = ""
                     if isinstance(payload, dict):
                         desc = str(payload.get("describe") or "")
+                    if desc and "gifted the host" in desc.lower():
+                        gift_to = self.username or ""
                     parsed_recipient = _extract_recipient_from_describe(desc)
                     if parsed_recipient:
                         gift_to = gift_to or parsed_recipient
                         gift_to_handle = gift_to_handle or _normalize_user_id(parsed_recipient)
             except Exception:
                 pass
+            display_to = _clean_recipient(gift_to, gift_to_handle) or (self.username or "host")
             logger.info(
                 "Gift event: %s %s from %s to %s",
                 gift_name or "Unknown gift",
                 gift_amount or "",
                 _format_handle(gift_from, gift_from_handle) or "unknown",
-                _format_handle(gift_to, gift_to_handle) or self.username or "host",
+                _format_handle(display_to, display_to) or self.username or "host",
             )
             name = event.gift.name if hasattr(event, "gift") else None
             await self._maybe_trigger(comment=None, gift_name=name)
             if gift_value:
-                recipient = gift_to or gift_to_handle
+                recipient = _clean_recipient(gift_to, gift_to_handle)
+                if not recipient:
+                    recipient = self.username or ""
                 await self._score_gift(gift_value, recipient)
             await self._event_store.log_gift(payload, event, self.username, gift_value)
             logger.info("Current battle score: %s", self._score_by_id)
@@ -1121,6 +1209,8 @@ class TikTokLiveListener:
         except Exception:
             rec_val = ""
         rec = (rec_val or "").strip().lower().lstrip("@")
+        if _is_placeholder_obj(rec_val):
+            rec = ""
         if not rec:
             return "slot_one"
         for key, name in self._slots.items():
@@ -1146,6 +1236,9 @@ class TikTokLiveListener:
         await self._safe_post(f"{self.api_base}/score/{slot}/add", {"amount": amount})
         self._last_scores[slot] = self._last_scores.get(slot, 0) + amount
         rid = _normalize_user_id(recipient)
+        if not rid:
+            slot_name = self._slots.get(slot) or ""
+            rid = _normalize_user_id(slot_name) or slot
         if rid:
             self._score_by_id[rid] = self._score_by_id.get(rid, 0) + amount
 
@@ -1195,6 +1288,38 @@ class TikTokLiveListener:
                 break
             except Exception as exc:
                 msg = str(exc).lower()
+                if (
+                    "rate_limit" in msg
+                    or "too many connections" in msg
+                    or "sign_not_200" in msg
+                    or "sign api" in msg
+                    or "eulerstream" in msg
+                ):
+                    now = datetime.now(timezone.utc)
+                    if not self._rate_limit_logged or (now - self._last_rate_limit_log) > timedelta(minutes=10):
+                        logger.warning(
+                            "TikTok rate limit encountered. Backing off for %s seconds.",
+                            self._rate_limit_backoff,
+                        )
+                        self._rate_limit_logged = True
+                        self._last_rate_limit_log = now
+                    backoff = self._rate_limit_backoff
+                    continue
+                if "usernotfound" in msg or "user not found" in msg:
+                    now = datetime.now(timezone.utc)
+                    if not self._not_found_logged or (now - self._last_not_found_log) > timedelta(hours=1):
+                        logger.error("TikTok user '@%s' not found. Check the username.", self.username)
+                        self._not_found_logged = True
+                        self._last_not_found_log = now
+                    backoff = self._not_found_backoff
+                    continue
+                if "expecting value" in msg and "line 1 column 1" in msg:
+                    now = datetime.now(timezone.utc)
+                    if (now - self._last_parse_error_log) > timedelta(minutes=5):
+                        logger.warning("TikTok listener received an invalid response. Retrying...")
+                        self._last_parse_error_log = now
+                    backoff = min(self._max_backoff, max(self._base_backoff, backoff))
+                    continue
                 if "offline" in msg or "not live" in msg:
                     if not self._offline_logged:
                         logger.info("TikTok user '@%s' is offline. Will retry.", self.username)
@@ -1263,29 +1388,15 @@ async def main() -> None:
         logger.error("No TikTok usernames configured. Set TIKTOK_USERNAMES.")
         return
     logger.info("Starting TikTok listeners for: %s", ", ".join([f"@{u}" for u in usernames]))
-    supabase_url = SUPABASE_URL
-    if not supabase_url and SUPABASE_PROJECT_ID:
-        supabase_url = f"https://{SUPABASE_PROJECT_ID}.supabase.co"
-    supabase_key = (
-        SUPABASE_SECRET_KEY
-        or SUPABASE_SERVICE_ROLE_KEY
-        or SUPABASE_PUBLISHABLE_KEY
-        or SUPABASE_ANON_KEY
-    )
+    supabase_url = f"https://{SUPABASE_PROJECT_ID}.supabase.co"
     if SUPABASE_SECRET_KEY:
         logger.info("Using Supabase secret key for event ingestion.")
-    elif SUPABASE_SERVICE_ROLE_KEY:
-        logger.info("Using Supabase service_role key for event ingestion (legacy).")
-    elif SUPABASE_PUBLISHABLE_KEY:
-        logger.warning("Using Supabase publishable key; server-side writes may be restricted by RLS.")
-    elif SUPABASE_ANON_KEY:
-        logger.warning("Using Supabase anon key (legacy); server-side writes may be restricted by RLS.")
     else:
         logger.error("Supabase key missing. Set SUPABASE_SECRET_KEY.")
     if supabase_url:
-        key_tail = (supabase_key or "")[-6:]
+        key_tail = (SUPABASE_SECRET_KEY or "")[-6:]
         logger.info("Supabase target: %s (key suffix: %s)", supabase_url, key_tail if key_tail else "n/a")
-    event_store = SupabaseEventStore(supabase_url, supabase_key)
+    event_store = SupabaseEventStore(supabase_url,  SUPABASE_SECRET_KEY)
     listeners = [TikTokLiveListener(u, API_BASE, event_store) for u in usernames]
 
     async def run_listener(listener: TikTokLiveListener) -> None:
@@ -1302,7 +1413,7 @@ async def main() -> None:
         logger.info("Shutting down TikTok listeners.")
         for l in listeners:
             await l.close()
-        event_store.close()
+        await event_store.close()
 
 
 if __name__ == "__main__":
