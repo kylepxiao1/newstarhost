@@ -235,6 +235,10 @@ class SupabaseEventStore:
         if isinstance(payload, dict):
             gift_monitor_payload = payload.get("gift_monitor_info") or payload.get("giftMonitorInfo")
         gift_monitor_event = _get_attr_any(event, "gift_monitor_info", "giftMonitorInfo")
+        user_identity_payload = None
+        if isinstance(payload, dict):
+            user_identity_payload = payload.get("user_identity") or payload.get("userIdentity")
+        user_identity_event = _get_attr_any(event, "user_identity", "userIdentity")
         gift = payload.get("gift") if isinstance(payload, dict) else {}
         if not isinstance(gift, dict):
             gift = {}
@@ -247,14 +251,45 @@ class SupabaseEventStore:
         repeat_count = _get_any(payload, "repeat_count", "repeatCount", default=_get_any(gift, "repeat_count"))
         if repeat_count is None:
             repeat_count = _get_attr_any(gift_obj, "repeat_count", "repeatCount")
-        anchor_id = _get_any(payload, "anchor_id", "anchorId")
-        if not anchor_id and gift_monitor_payload is not None:
-            if isinstance(gift_monitor_payload, dict):
-                anchor_id = _get_any(gift_monitor_payload, "anchor_id", "anchorId")
-            else:
-                anchor_id = _get_attr_any(gift_monitor_payload, "anchor_id", "anchorId")
-        if not anchor_id:
-            anchor_id = _get_attr_any(gift_monitor_event, "anchor_id", "anchorId")
+
+        def _gift_monitor_val(*names):
+            if gift_monitor_payload is not None:
+                if isinstance(gift_monitor_payload, dict):
+                    val = _get_any(gift_monitor_payload, *names)
+                else:
+                    val = _get_attr_any(gift_monitor_payload, *names)
+                if _is_valid_value(val):
+                    return val
+            val = _get_attr_any(gift_monitor_event, *names)
+            if _is_valid_value(val):
+                return val
+            return None
+
+        def _user_identity_val(*names):
+            if user_identity_payload is not None:
+                if isinstance(user_identity_payload, dict):
+                    val = _get_any(user_identity_payload, *names)
+                else:
+                    val = _get_attr_any(user_identity_payload, *names)
+                if val is not None:
+                    return val
+            return _get_attr_any(user_identity_event, *names)
+
+        anchor_id = _get_any(payload, "anchor_id", "anchorId") or _gift_monitor_val("anchor_id", "anchorId")
+        describe_val = _get_any(payload, "describe") or _get_attr_any(base_message, "describe")
+        room_heat_val = _get_any(payload, "room_message_heat_level") or _get_attr_any(
+            base_message, "room_message_heat_level", "roomMessageHeatLevel"
+        )
+        gift_monitor_from_platform = _get_any(payload, "gift_monitor_from_platform") or _gift_monitor_val(
+            "from_platform", "fromPlatform"
+        )
+        gift_monitor_from_version = _get_any(payload, "gift_monitor_from_version") or _gift_monitor_val(
+            "from_version", "fromVersion"
+        )
+        gift_monitor_send_message_success_ms = _gift_monitor_val(
+            "send_gift_send_message_success_ms", "sendGiftSendMessageSuccessMs"
+        )
+        gift_monitor_to_user_id = _gift_monitor_val("to_user_id", "toUserId")
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
@@ -289,16 +324,26 @@ class SupabaseEventStore:
             "send_type": _get_any(payload, "send_type", "sendType"),
             "order_id": _get_any(payload, "order_id", "orderId"),
             "group_id": _get_any(payload, "group_id", "groupId"),
-            "describe": _get_any(payload, "describe"),
-            "is_gift_giver_of_anchor": _get_any(payload, "is_gift_giver_of_anchor"),
-            "is_subscriber_of_anchor": _get_any(payload, "is_subscriber_of_anchor"),
-            "is_mutual_following_with_anchor": _get_any(payload, "is_mutual_following_with_anchor"),
-            "is_follower_of_anchor": _get_any(payload, "is_follower_of_anchor"),
-            "gift_monitor_from_platform": _get_any(payload, "gift_monitor_from_platform"),
-            "gift_monitor_from_version": _get_any(payload, "gift_monitor_from_version"),
-            "gift_monitor_send_msg_ms": _get_any(payload, "gift_monitor_send_msg_ms"),
+            "describe": describe_val,
+            "is_gift_giver_of_anchor": _get_any(payload, "is_gift_giver_of_anchor")
+            or _user_identity_val("is_gift_giver_of_anchor", "isGiftGiverOfAnchor"),
+            "is_subscriber_of_anchor": _get_any(payload, "is_subscriber_of_anchor")
+            or _user_identity_val("is_subscriber_of_anchor", "isSubscriberOfAnchor"),
+            "is_mutual_following_with_anchor": _get_any(
+                payload, "is_mutual_following_with_anchor", "is_mutual_following_of_anchor"
+            )
+            or _user_identity_val("is_mutual_following_with_anchor", "is_mutual_following_of_anchor"),
+            "is_follower_of_anchor": _get_any(payload, "is_follower_of_anchor")
+            or _user_identity_val("is_follower_of_anchor", "isFollowerOfAnchor"),
+            "gift_monitor_from_platform": gift_monitor_from_platform,
+            "gift_monitor_from_version": gift_monitor_from_version,
+            "gift_monitor_send_msg_ms": _get_any(payload, "gift_monitor_send_msg_ms")
+            or gift_monitor_send_message_success_ms,
             "priority": _get_any(payload, "priority"),
-            "room_message_heat_level": _get_any(payload, "room_message_heat_level"),
+            "room_message_heat_level": room_heat_val,
+            "gift_monitor_anchor_id": _gift_monitor_val("anchor_id", "anchorId"),
+            "gift_monitor_to_user_id": gift_monitor_to_user_id,
+            "gift_monitor_send_message_success_ms": gift_monitor_send_message_success_ms,
             "tiktok_username": tiktok_username,
         }
         if row.get("to_user_id") is not None and not _is_valid_value(row.get("to_user_id")):
@@ -343,6 +388,7 @@ class SupabaseEventStore:
                     _get_any(receiver_payload, "id", "user_id"),
                     _get_any(to_user_payload, "id", "user_id"),
                     _get_attr_any(event_to_user, "id", "user_id"),
+                    gift_monitor_to_user_id,
                     row.get("anchor_id"),
                     to_member_id_int,
                     to_member_id,
