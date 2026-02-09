@@ -585,17 +585,21 @@ class SupabaseEventStore:
         username = _extract_handle(user_obj)
         nickname = getattr(user_obj, "nickname", "") if user_obj else ""
         user_id = getattr(user_obj, "unique_id", "") if user_obj else ""
+        user_sec_uid = _get_attr_any(user_obj, "sec_uid", "user_sec_uid")
+        follow_role = _get_attr_any(user_obj, "follow_role", "followRole")
         if isinstance(payload, dict):
             user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else {}
             username = username or _get_any(user_payload, "unique_id", "display_id", "username")
             nickname = nickname or _get_any(user_payload, "nickname", "nick_name")
             user_id = user_id or _get_any(user_payload, "id", "user_id")
+            user_sec_uid = user_sec_uid or _get_any(user_payload, "sec_uid", "user_sec_uid")
         if not username or not user_id:
             user_info = _get_attr_any(event, "user_info", "userInfo")
             if user_info:
                 username = username or _extract_handle(user_info)
                 nickname = nickname or _get_attr_any(user_info, "nickname", "nick_name", "nickName")
                 user_id = user_id or _get_attr_any(user_info, "id", "user_id")
+                user_sec_uid = user_sec_uid or _get_attr_any(user_info, "sec_uid", "user_sec_uid")
         base_message = _get_attr_any(event, "base_message", "baseMessage")
         room_id = _get_any(payload, "room_id", "roomId") or _get_attr_any(base_message, "room_id", "roomId")
         create_time_ms = _get_any(payload, "create_time", "create_time_ms", "timestamp") or _get_attr_any(
@@ -610,13 +614,77 @@ class SupabaseEventStore:
         total_like_count = _get_any(payload, "total_like_count", "totalCount", "total_like") or _get_attr_any(
             event, "total", "total_like_count", "totalCount", "total_like"
         )
-        user_sec_uid = _get_any(payload, "user_sec_uid", "sec_uid")
-        follow_role = _get_any(payload, "follow_role")
+        user_sec_uid = user_sec_uid or _get_any(payload, "user_sec_uid", "sec_uid")
+        follow_role = follow_role or _get_any(payload, "follow_role", "followRole")
+        if isinstance(payload, dict):
+            user_payload = payload.get("user") if isinstance(payload.get("user"), dict) else {}
+            user_sec_uid = user_sec_uid or _get_any(user_payload, "sec_uid", "user_sec_uid")
+            follow_info = user_payload.get("follow_info") if isinstance(user_payload.get("follow_info"), dict) else None
+            if follow_info is None and isinstance(user_payload.get("followInfo"), dict):
+                follow_info = user_payload.get("followInfo")
+            follow_role = follow_role or _get_any(
+                user_payload, "follow_role", "followRole", "follow_status", "followStatus", "follow_state", "followState"
+            )
+            if follow_info:
+                follow_role = follow_role or _get_any(
+                    follow_info, "follow_role", "followRole", "follow_status", "followStatus", "follow_state", "followState"
+                )
         if not user_sec_uid or not follow_role:
             user_info = _get_attr_any(event, "user_info", "userInfo")
             if user_info:
                 user_sec_uid = user_sec_uid or _get_attr_any(user_info, "sec_uid", "user_sec_uid")
-                follow_role = follow_role or _get_attr_any(user_info, "follow_role", "followRole")
+                follow_role = follow_role or _get_attr_any(user_info, "follow_role", "followRole", "follow_status", "followStatus")
+                follow_info_obj = _get_attr_any(user_info, "follow_info", "followInfo")
+                follow_role = follow_role or _get_attr_any(
+                    follow_info_obj, "follow_role", "followRole", "follow_status", "followStatus"
+                )
+        if not follow_role:
+            public_area = None
+            if isinstance(payload, dict):
+                public_area = payload.get("public_area_message_common") or payload.get("publicAreaMessageCommon")
+            if public_area is None:
+                public_area = _get_attr_any(event, "public_area_message_common", "publicAreaMessageCommon")
+            if public_area is None and base_message:
+                public_area = _get_attr_any(base_message, "public_area_message_common", "publicAreaMessageCommon")
+
+            def _extract_follow_from_metrics(pa_obj):
+                if not pa_obj:
+                    return None
+                portrait = pa_obj.get("portrait_info") if isinstance(pa_obj, dict) else _get_attr_any(pa_obj, "portrait_info", "portraitInfo")
+                metrics = None
+                if isinstance(portrait, dict):
+                    metrics = portrait.get("user_metrics") or portrait.get("userMetrics")
+                else:
+                    metrics = _get_attr_any(portrait, "user_metrics", "userMetrics")
+                if not metrics:
+                    return None
+                for metric in metrics:
+                    m_type = metric.get("type") if isinstance(metric, dict) else _get_attr_any(metric, "type")
+                    m_value = metric.get("metrics_value") if isinstance(metric, dict) else _get_attr_any(metric, "metrics_value", "metricsValue")
+                    if m_type is None:
+                        continue
+                    if "FOLLOW" in str(m_type).upper():
+                        return m_value
+                return None
+
+            follow_role = follow_role or _extract_follow_from_metrics(public_area)
+            if not follow_role:
+                portrait = public_area.get("portrait_info") if isinstance(public_area, dict) else _get_attr_any(public_area, "portrait_info", "portraitInfo")
+                tags = portrait.get("portrait_tag") if isinstance(portrait, dict) else _get_attr_any(portrait, "portrait_tag", "portraitTag")
+                if tags:
+                    for tag in tags:
+                        show_val = tag.get("show_value") if isinstance(tag, dict) else _get_attr_any(tag, "show_value", "showValue")
+                        if not show_val:
+                            continue
+                        lower_val = str(show_val).lower()
+                        if "notfollower" in lower_val or "not_follower" in lower_val:
+                            follow_role = 0
+                            break
+                        if "follower" in lower_val:
+                            follow_role = 1
+                            break
+        if not _is_valid_value(follow_role):
+            follow_role = None
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
