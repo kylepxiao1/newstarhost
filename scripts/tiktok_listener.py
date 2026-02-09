@@ -225,6 +225,7 @@ class SupabaseEventStore:
         tiktok_username: str,
         gift_value_raw: Optional[int],
         gift_value_delta: Optional[int],
+        raw_id: Optional[int] = None,
     ) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
@@ -255,7 +256,7 @@ class SupabaseEventStore:
         if not anchor_id:
             anchor_id = _get_attr_any(gift_monitor_event, "anchor_id", "anchorId")
         row = {
-            "id": self._next_row_id(),
+            "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
             "event_type": "gift",
@@ -298,7 +299,6 @@ class SupabaseEventStore:
             "gift_monitor_send_msg_ms": _get_any(payload, "gift_monitor_send_msg_ms"),
             "priority": _get_any(payload, "priority"),
             "room_message_heat_level": _get_any(payload, "room_message_heat_level"),
-            "payload_json": _safe_json(payload),
             "tiktok_username": tiktok_username,
         }
         if row.get("to_user_id") is not None and not _is_valid_value(row.get("to_user_id")):
@@ -437,7 +437,7 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log gift event")
 
-    async def log_comment(self, payload: dict, event, tiktok_username: str) -> None:
+    async def log_comment(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
@@ -467,7 +467,7 @@ class SupabaseEventStore:
             user_id = user_id or _get_attr_any(user_info, "id", "user_id")
             user_sec_uid = user_sec_uid or _get_attr_any(user_info, "sec_uid", "user_sec_uid")
         row = {
-            "id": self._next_row_id(),
+            "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
             "event_type": "comment",
@@ -484,7 +484,6 @@ class SupabaseEventStore:
             "nickname": nickname,
             "user_sec_uid": user_sec_uid or _get_any(payload, "user_sec_uid", "sec_uid"),
             "follow_role": _get_any(payload, "follow_role"),
-            "payload_json": _safe_json(payload),
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
@@ -504,7 +503,7 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log comment event")
 
-    async def log_like(self, payload: dict, event, tiktok_username: str) -> None:
+    async def log_like(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
@@ -545,7 +544,7 @@ class SupabaseEventStore:
                 user_sec_uid = user_sec_uid or _get_attr_any(user_info, "sec_uid", "user_sec_uid")
                 follow_role = follow_role or _get_attr_any(user_info, "follow_role", "followRole")
         row = {
-            "id": self._next_row_id(),
+            "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
             "event_type": "like",
@@ -559,7 +558,6 @@ class SupabaseEventStore:
             "nickname": nickname,
             "user_sec_uid": user_sec_uid,
             "follow_role": follow_role,
-            "payload_json": _safe_json(payload),
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
@@ -588,12 +586,19 @@ class SupabaseEventStore:
             pass
         self._client = None
 
-    async def log_event(self, event_type: str, payload: dict, tiktok_username: str) -> None:
+    async def log_event(
+        self,
+        event_type: str,
+        payload: dict,
+        tiktok_username: str,
+        raw_id: Optional[int] = None,
+    ) -> Optional[int]:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
+        event_id = raw_id if raw_id is not None else self._next_raw_id()
         row = {
-            "id": self._next_raw_id(),
+            "id": event_id,
             "event_type": event_type,
             "iso_ts": ts,
             "unix_ts": unix_ts,
@@ -605,12 +610,16 @@ class SupabaseEventStore:
             try:
                 if not self._client:
                     logger.debug("Supabase client unavailable; skipping tiktok_events_raw insert")
-                    return
+                    return None
                 row_data = dict(zip(row.keys(), values))
                 resp = await self._post_row("tiktok_events_raw", row_data)
                 self._log_result("tiktok_events_raw", "insert", resp)
+                if resp is None or not resp.is_success:
+                    return None
+                return event_id
             except Exception:
                 logger.exception("Failed to log tiktok_events_raw")
+                return None
 COOKIE_ENV_MAP = {
     "sessionid": "TIKTOK_SESSIONID",
     "sessionid_ss": "TIKTOK_SESSIONID_SS",
@@ -1206,7 +1215,7 @@ class TikTokLiveListener:
             if self._is_duplicate(event, "gift"):
                 return
             payload = _payload(event)
-            await self._event_store.log_event("gift", payload, self.username)
+            raw_id = await self._event_store.log_event("gift", payload, self.username)
             await self._sync_slots()
             gift_name = ""
             gift_amount = ""
@@ -1389,13 +1398,15 @@ class TikTokLiveListener:
                     recipient = self.username or ""
                 await self._score_gift(gift_value, recipient)
             if should_log:
-                await self._event_store.log_gift(
-                    payload,
-                    event,
-                    self.username,
-                    gift_value_raw,
-                    gift_value_log_total,
-                )
+                if raw_id is not None:
+                    await self._event_store.log_gift(
+                        payload,
+                        event,
+                        self.username,
+                        gift_value_raw,
+                        gift_value_log_total,
+                        raw_id=raw_id,
+                    )
             logger.info("Current battle score: %s", self._score_by_id)
 
         @self.client.on(ttevents.CommentEvent)
@@ -1403,7 +1414,7 @@ class TikTokLiveListener:
             if self._is_duplicate(event, "comment"):
                 return
             payload = _payload(event)
-            await self._event_store.log_event("comment", payload, self.username)
+            raw_id = await self._event_store.log_event("comment", payload, self.username)
             commenter = ""
             try:
                 commenter = _extract_handle(payload.get("user_info")) if isinstance(payload, dict) else ""
@@ -1420,7 +1431,8 @@ class TikTokLiveListener:
                 commenter = ""
             commenter = _format_handle(commenter, commenter)
             logger.info("Comment event: %s (by %s)", getattr(event, "comment", None), commenter or "unknown")
-            await self._event_store.log_comment(payload, event, self.username)
+            if raw_id is not None:
+                await self._event_store.log_comment(payload, event, self.username, raw_id=raw_id)
             text = event.comment or ""
             if text.startswith("!battle"):
                 await self.trigger_start("command")
@@ -1439,8 +1451,9 @@ class TikTokLiveListener:
             if self._is_duplicate(event, "like"):
                 return
             payload = _payload(event)
-            await self._event_store.log_event("like", payload, self.username)
-            await self._event_store.log_like(payload, event, self.username)
+            raw_id = await self._event_store.log_event("like", payload, self.username)
+            if raw_id is not None:
+                await self._event_store.log_like(payload, event, self.username, raw_id=raw_id)
             return
 
     async def _maybe_trigger(self, comment: Optional[str], gift_name: Optional[str]) -> None:
