@@ -6,11 +6,13 @@ import csv
 import json
 import asyncio
 import subprocess
+import time
+import random
+from datetime import datetime, timezone
 from pathlib import Path
 import unicodedata
 import uuid
 import shutil
-from pathlib import Path
 from typing import Optional, List, Tuple
 
 import uvicorn
@@ -40,8 +42,12 @@ RAPIDAPI_KEY = _env("RAPIDAPI_KEY", "")
 RAPIDAPI_HOST = _env("RAPIDAPI_HOST", "")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID", "").strip()
 SUPABASE_PUBLISHABLE_KEY = _env("SUPABASE_PUBLISHABLE_KEY", "").strip()
-SUPABASE_URL = f"https://{SUPABASE_PROJECT_ID}.supabase.co"
+SUPABASE_SECRET_KEY = _env("SUPABASE_SECRET_KEY", "").strip()
+SUPABASE_URL = _env("SUPABASE_URL", "").strip()
+if not SUPABASE_URL and SUPABASE_PROJECT_ID:
+    SUPABASE_URL = f"https://{SUPABASE_PROJECT_ID}.supabase.co"
 SUPABASE_CLIENT_KEY = SUPABASE_PUBLISHABLE_KEY
+SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1" if SUPABASE_URL else ""
 
 
 def _find_tiktok_id(data, handle: str) -> Optional[str]:
@@ -272,6 +278,10 @@ class DeleteDancerRequest(BaseModel):
     name: str
 
 
+class SpoofGiftRequest(BaseModel):
+    slot: Optional[str] = None
+
+
 def _norm_filename(s: str) -> str:
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
     s = re.sub(r'[\\/*?:"<>|]+', "", s)
@@ -346,6 +356,35 @@ def _normalize_slot(raw: str) -> str:
     if token in {"2", "two", "slot2", "slot_two", "b", "beta"}:
         return "slot_two"
     return raw
+
+
+def _supabase_headers() -> Optional[dict]:
+    if not SUPABASE_SECRET_KEY or not SUPABASE_REST_URL:
+        return None
+    return {
+        "apikey": SUPABASE_SECRET_KEY,
+        "Authorization": f"Bearer {SUPABASE_SECRET_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "return=minimal",
+    }
+
+
+async def _insert_supabase_row(table: str, row: dict) -> Optional[str]:
+    headers = _supabase_headers()
+    if not headers:
+        return "Supabase credentials missing. Set SUPABASE_URL/SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY."
+    try:
+        async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=10.0) as client:
+            resp = await client.post(f"/{table}", json=row, headers=headers)
+    except Exception as exc:
+        return f"Supabase request failed: {exc}"
+    if resp.is_success:
+        return None
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = resp.text or ""
+    return f"Supabase insert failed (status={resp.status_code}): {payload}"
 
 
 @app.post("/battle/start")
@@ -439,6 +478,78 @@ async def register_win(body: WinRequest) -> JSONResponse:
         state = state_manager.increment_win(body.name)
     _broadcast_state(state)
     return JSONResponse(state)
+
+
+@app.post("/battle/spoof_gift")
+async def spoof_gift(body: SpoofGiftRequest = SpoofGiftRequest()) -> JSONResponse:
+    state = state_manager.get_state()
+    slot = (body.slot or "slot_one").strip().lower()
+    slot = _normalize_slot(slot)
+    slot_name = (state.get(slot) or "").strip()
+    if not slot_name:
+        return JSONResponse({"ok": False, "error": f"{slot.replace('_', ' ').title()} is not set."}, status_code=400)
+    dancers = state.get("dancers", []) or []
+    match = next((d for d in dancers if (d.get("name") or "").lower() == slot_name.lower()), None)
+    if not match:
+        return JSONResponse({"ok": False, "error": f"{slot.replace('_', ' ').title()} dancer not found."}, status_code=400)
+    tiktok_id = match.get("tiktok_id") or match.get("tiktokId")
+    if not tiktok_id:
+        return JSONResponse({"ok": False, "error": f"{slot.replace('_', ' ').title()} dancer missing TikTok ID."}, status_code=400)
+
+    to_member_id = str(tiktok_id).strip()
+    if to_member_id.isdigit():
+        try:
+            to_member_id = int(to_member_id)
+        except Exception:
+            pass
+
+    now_dt = datetime.now(timezone.utc)
+    row_id = int(time.time() * 1000) * 1000 + random.randint(0, 999)
+    raw_row = {
+        "id": row_id,
+        "event_type": "gift",
+        "iso_ts": now_dt.isoformat(),
+        "unix_ts": int(now_dt.timestamp()),
+        "payload": "DUMMY",
+        "msgId": row_id,
+        "tiktok_username": "DUMMY",
+    }
+    raw_err = await _insert_supabase_row("tiktok_events_raw", raw_row)
+    if raw_err and "23505" not in raw_err and "duplicate key" not in raw_err:
+        logger.warning("Spoof raw insert failed: %s", raw_err)
+        return JSONResponse({"ok": False, "error": raw_err}, status_code=500)
+    row = {
+        "id": row_id,
+        "iso_ts": now_dt.isoformat(),
+        "unix_ts": int(now_dt.timestamp()),
+        "event_type": "gift",
+        "room_id": 0,
+        "create_time_ms": int(now_dt.timestamp() * 1000),
+        "message_id": row_id,
+        "gift_id": 1,
+        "gift_name": "DUMMY",
+        "diamond_count": 1,
+        "repeat_count": 1,
+        "combo_count": 1,
+        "amount_value": 1,
+        "fan_ticket_count": 1,
+        "room_fan_ticket_count": 1,
+        "from_user_id": 0,
+        "from_username": "DUMMY",
+        "from_nickname": "DUMMY",
+        "to_user_id": 0,
+        "to_username": "DUMMY",
+        "to_nickname": "DUMMY",
+        "to_member_id_int": to_member_id,
+        "to_member_nickname": "DUMMY",
+        "describe": "DUMMY",
+        "tiktok_username": "DUMMY",
+    }
+    err = await _insert_supabase_row("gift_events", row)
+    if err:
+        logger.warning("Spoof gift insert failed: %s", err)
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+    return JSONResponse({"ok": True})
 
 
 @app.post("/camera/select")

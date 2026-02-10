@@ -106,6 +106,8 @@
       </table>
       <div class="row">
         <button class="secondary" onclick="pullFromStudio()">Sync from TikTok Studio</button>
+        <button class="secondary" onclick="spoofGift()">Spoof Gift (Dancer 1)</button>
+        <button class="secondary" onclick="spoofGiftTwo()">Spoof Gift (Dancer 2)</button>
       </div>
     </section>
 
@@ -252,7 +254,31 @@
           const row = payload?.new || payload?.record || payload || {};
           applyGiftPoints(row);
         })
+        .on("postgres_changes", {event:"UPDATE", schema:"public", table:"gift_events"}, payload => {
+          const row = payload?.new || payload?.record || payload || {};
+          applyGiftPoints(row);
+        })
         .subscribe();
+    }
+
+    async function spoofGift() {
+      const resp = await api("/battle/spoof_gift", {method:"POST"});
+      let payload = {};
+      try { payload = await resp.json(); } catch (e) {}
+      if (!resp.ok || payload?.ok === false) {
+        const msg = payload?.error || "Spoof gift failed.";
+        alert(msg);
+      }
+    }
+
+    async function spoofGiftTwo() {
+      const resp = await api("/battle/spoof_gift", {method:"POST", body:{slot:"slot_two"}});
+      let payload = {};
+      try { payload = await resp.json(); } catch (e) {}
+      if (!resp.ok || payload?.ok === false) {
+        const msg = payload?.error || "Spoof gift failed.";
+        alert(msg);
+      }
     }
 
     function debugLog(...args) {
