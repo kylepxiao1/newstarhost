@@ -99,7 +99,7 @@ flyctl auth login
 flyctl machines list -a newstarhost
 
 # SSH into the machine
-flyctl ssh console -a newstarhost
+flyctl ssh console -a newstarhost --machine 827d21b79120d8
 
 # Start the listener machine
 fly machines start 7843e41c06d1e8
