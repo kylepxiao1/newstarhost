@@ -669,7 +669,7 @@ class SupabaseEventStore:
             "event_type": event_type,
             "iso_ts": ts,
             "unix_ts": unix_ts,
-            "payload_json": _safe_json(payload),
+            "payload": _safe_json(payload),
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]

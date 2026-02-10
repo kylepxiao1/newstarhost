@@ -276,6 +276,9 @@ class TikTokLiveListener:
         self.api_base = api_base.rstrip("/")
         self.http = httpx.AsyncClient(timeout=10)
         self._event_store = event_store
+        self._raw_lock = asyncio.Lock()
+        self._raw_event_cache: dict[int, tuple[int, float]] = {}
+        self._raw_event_ttl = timedelta(minutes=5)
         self._last_start = datetime.min.replace(tzinfo=timezone.utc)
         self._last_end = datetime.min.replace(tzinfo=timezone.utc)
         self._cooldown = timedelta(seconds=30)
@@ -333,6 +336,7 @@ class TikTokLiveListener:
                     pass
 
         self.client = TikTokLiveClient(unique_id=username)
+        self._patch_ws_parser()
         self._apply_client_cookies()
         if not self._device_id:
             try:
@@ -344,6 +348,44 @@ class TikTokLiveListener:
             self._device_id = pinned
             _persist_device_id(pinned)
         self._wire_events()
+
+    def _patch_ws_parser(self) -> None:
+        original = self.client._parse_webcast_response_message
+
+        async def _wrapped(*args, **kwargs):
+            events = await original(*args, **kwargs)
+            message = None
+            if args:
+                message = args[0]
+            if message is None:
+                message = kwargs.get("webcast_response_message")
+            if message is None:
+                return events
+            try:
+                message_dict = message.to_dict()
+            except Exception:
+                message_dict = {}
+            method = ""
+            try:
+                method = getattr(message, "method", "") or (message_dict.get("method") if isinstance(message_dict, dict) else "")
+            except Exception:
+                method = ""
+            msg_id = None
+            try:
+                msg_id = getattr(message, "msg_id", None)
+            except Exception:
+                msg_id = None
+            for event in events:
+                try:
+                    event._ws_method = method
+                    event._ws_msg_id = msg_id
+                    if message_dict:
+                        event._ws_message_dict = message_dict
+                except Exception:
+                    continue
+            return events
+
+        self.client._parse_webcast_response_message = _wrapped
 
     def _cookie_counts(self) -> dict[str, int]:
         counts: dict[str, int] = {}
@@ -548,11 +590,103 @@ class TikTokLiveListener:
         self._combo_state[key] = (count, now)
         return max(0, delta)
 
+    def _extract_message_id(self, payload: dict) -> Optional[int]:
+        if not isinstance(payload, dict):
+            return None
+        msg_id = _get_any(payload, "msg_id", "msgId", "message_id", "messageId")
+        if msg_id is None:
+            base_message = payload.get("base_message") or payload.get("baseMessage") or {}
+            if isinstance(base_message, dict):
+                msg_id = _get_any(base_message, "msg_id", "msgId", "message_id", "messageId")
+        return _coerce_int(msg_id)
+
+    def _raw_event_type_from_method(self, method: str, fallback: str) -> str:
+        if method:
+            mapped = proto_events.EVENT_MAPPINGS.get(method)
+            if mapped:
+                return mapped.__name__
+            return method
+        return fallback
+
+    def _event_message_id(self, payload: dict, event) -> Optional[int]:
+        msg_id = self._extract_message_id(payload)
+        if msg_id is not None:
+            return msg_id
+        msg_id = getattr(event, "_ws_msg_id", None)
+        if msg_id is not None:
+            return _coerce_int(msg_id)
+        ws_payload = getattr(event, "_ws_message_dict", None)
+        if isinstance(ws_payload, dict):
+            return self._extract_message_id(ws_payload)
+        return None
+
+    def _get_cached_raw_id(self, message_id: Optional[int]) -> Optional[int]:
+        if message_id is None:
+            return None
+        now = time.time()
+        ttl = self._raw_event_ttl.total_seconds()
+        for key, (_, ts) in list(self._raw_event_cache.items()):
+            if now - ts > ttl:
+                self._raw_event_cache.pop(key, None)
+        entry = self._raw_event_cache.get(message_id)
+        if not entry:
+            return None
+        raw_id, ts = entry
+        if now - ts > ttl:
+            self._raw_event_cache.pop(message_id, None)
+            return None
+        return raw_id
+
+    def _remember_raw_id(self, message_id: Optional[int], raw_id: Optional[int]) -> None:
+        if message_id is None or raw_id is None:
+            return
+        self._raw_event_cache[message_id] = (raw_id, time.time())
+
+    async def _log_raw_event(self, event_type: str, payload: dict) -> Optional[int]:
+        message_id = self._extract_message_id(payload)
+        async with self._raw_lock:
+            cached = self._get_cached_raw_id(message_id)
+            if cached is not None:
+                return cached
+            raw_id = await self._event_store.log_event(event_type, payload, self.username)
+            if raw_id is not None:
+                self._remember_raw_id(message_id, raw_id)
+            return raw_id
+
+    def _event_payload(self, event) -> dict:
+        try:
+            if hasattr(event, "to_dict"):
+                return event.to_dict()
+        except Exception:
+            pass
+        return _payload(event)
+
+    async def _raw_id_for_event(self, event, payload: dict, fallback_type: str) -> Optional[int]:
+        message_id = self._event_message_id(payload, event)
+        raw_id = self._get_cached_raw_id(message_id)
+        if raw_id is not None:
+            return raw_id
+        ws_payload = getattr(event, "_ws_message_dict", None)
+        if isinstance(ws_payload, dict):
+            method = getattr(event, "_ws_method", "") or ""
+            event_type = self._raw_event_type_from_method(method, fallback_type)
+            return await self._log_raw_event(event_type, ws_payload)
+        return await self._log_raw_event(fallback_type, payload)
+
     def _wire_events(self) -> None:
         try:
             self.client.remove_all_listeners()
         except Exception:
             pass
+
+        @self.client.on(ttevents.WebsocketResponseEvent)
+        async def on_websocket_event(event: ttevents.WebsocketResponseEvent) -> None:
+            payload = getattr(event, "_ws_message_dict", None) or self._event_payload(event)
+            method = ""
+            if isinstance(payload, dict):
+                method = str(payload.get("method") or payload.get("type") or "")
+            event_type = self._raw_event_type_from_method(method, event.type or "websocket")
+            await self._log_raw_event(event_type, payload)
 
         @self.client.on(ttevents.ConnectEvent)
         async def on_connect(_: ttevents.ConnectEvent) -> None:
@@ -662,7 +796,7 @@ class TikTokLiveListener:
             if self._is_duplicate(event, "gift"):
                 return
             payload = _payload(event)
-            raw_id = await self._event_store.log_event("gift", payload, self.username)
+            raw_id = await self._raw_id_for_event(event, payload, "gift")
             await self._sync_slots()
             gift_name = ""
             gift_amount = ""
@@ -859,7 +993,7 @@ class TikTokLiveListener:
             if self._is_duplicate(event, "comment"):
                 return
             payload = _payload(event)
-            raw_id = await self._event_store.log_event("comment", payload, self.username)
+            raw_id = await self._raw_id_for_event(event, payload, "comment")
             commenter = ""
             try:
                 commenter = _extract_handle(payload.get("user_info")) if isinstance(payload, dict) else ""
@@ -896,7 +1030,7 @@ class TikTokLiveListener:
             if self._is_duplicate(event, "like"):
                 return
             payload = _payload(event)
-            raw_id = await self._event_store.log_event("like", payload, self.username)
+            raw_id = await self._raw_id_for_event(event, payload, "like")
             if raw_id is not None:
                 await self._event_store.log_like(payload, event, self.username, raw_id=raw_id)
             return

@@ -80,7 +80,7 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 ## TikTok LIVE Listener
 `scripts/tiktok_listener.py` (async):
 - Connects via `tiktoklive` to `TIKTOK_USERNAME`.
-- Logs raw events to `tiktok_events.log`.
+- Logs raw stdout to `stdout.log`.
 - Commands: `!battle` starts, `!end` stops, `!slots A|B` sets slot_one/slot_two (fallback to env defaults).
 - Uses native events: `LinkMicBattleEvent` to start battles, `LinkMicArmiesEvent` to track scores, heuristics as backup.
 - Calls backend: `/battle/start`, `/battle/end`, `/battle/slots/import`, `/score/.../add`.
