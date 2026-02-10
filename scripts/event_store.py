@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import json
 import logging
 import re
 import time
@@ -664,12 +666,39 @@ class SupabaseEventStore:
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
         event_id = raw_id if raw_id is not None else self._next_raw_id()
+        payload_json = _safe_json(payload)
+        payload_value = None
+        msg_id_value = None
+        try:
+            parsed = json.loads(payload_json)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            payload_value = parsed.get("payload")
+            msg_id_value = _get_any(parsed, "msgId", "msg_id", "messageId", "message_id")
+            if msg_id_value is None:
+                base_message = parsed.get("baseMessage") or parsed.get("base_message")
+                if isinstance(base_message, dict):
+                    msg_id_value = _get_any(base_message, "msgId", "msg_id", "messageId", "message_id")
+        if isinstance(msg_id_value, str):
+            try:
+                msg_id_value = int(msg_id_value)
+            except Exception:
+                pass
+        if isinstance(payload_value, (bytes, bytearray)):
+            try:
+                payload_value = base64.b64encode(bytes(payload_value)).decode("ascii")
+            except Exception:
+                payload_value = None
+        elif payload_value is not None and not isinstance(payload_value, str):
+            payload_value = str(payload_value)
         row = {
             "id": event_id,
             "event_type": event_type,
             "iso_ts": ts,
             "unix_ts": unix_ts,
-            "payload": _safe_json(payload),
+            "payload": payload_value,
+            "msgId": msg_id_value,
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
