@@ -3,6 +3,8 @@ import os
 import re
 import io
 import csv
+import json
+import asyncio
 import os
 import re
 import subprocess
@@ -37,6 +39,89 @@ DIST_DIR = (BASE_DIR / ".." / "dist").resolve()
 MEDIA_DIR.mkdir(exist_ok=True)
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "522756c8bamshcbed3268bd8d8a7p15af50jsn5acd33380e60")
 RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "youtube-mp310.p.rapidapi.com")
+
+
+def _find_tiktok_id(data, handle: str) -> Optional[str]:
+    handle_l = (handle or "").lstrip("@").lower()
+    if not handle_l:
+        return None
+    if isinstance(data, dict):
+        unique = data.get("uniqueId") or data.get("unique_id") or data.get("uniqueID")
+        if unique and str(unique).lower() == handle_l:
+            uid = data.get("id") or data.get("userId") or data.get("user_id")
+            if uid:
+                return str(uid)
+        for val in data.values():
+            found = _find_tiktok_id(val, handle_l)
+            if found:
+                return found
+    elif isinstance(data, list):
+        for item in data:
+            found = _find_tiktok_id(item, handle_l)
+            if found:
+                return found
+    return None
+
+
+def _extract_tiktok_id_from_html(html: str, handle: str) -> Optional[str]:
+    if not html:
+        return None
+    handle_l = (handle or "").lstrip("@").lower()
+    if not handle_l:
+        return None
+    script_ids = ("SIGI_STATE", "__UNIVERSAL_DATA_FOR_REHYDRATION__")
+    for script_id in script_ids:
+        match = re.search(
+            rf'<script[^>]+id="{script_id}"[^>]*>(.*?)</script>',
+            html,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if not match:
+            continue
+        raw = match.group(1).strip()
+        if not raw:
+            continue
+        try:
+            payload = json.loads(raw)
+        except Exception:
+            continue
+        found = _find_tiktok_id(payload, handle_l)
+        if found:
+            return found
+    handle_esc = re.escape(handle_l)
+    patterns = [
+        rf'"uniqueId":"{handle_esc}".{{0,200}}?"id":"(\d+)"',
+        rf'"id":"(\d+)".{{0,200}}?"uniqueId":"{handle_esc}"',
+        rf'"userId":"(\d+)".{{0,200}}?"uniqueId":"{handle_esc}"',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, html)
+        if match:
+            return match.group(1)
+    return None
+
+
+async def _lookup_tiktok_id(handle: str) -> Optional[str]:
+    handle = (handle or "").strip().lstrip("@")
+    if not handle:
+        return None
+    url = f"https://www.tiktok.com/@{handle}"
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(url, headers=headers)
+            if resp.status_code >= 400:
+                return None
+            return _extract_tiktok_id_from_html(resp.text, handle)
+    except Exception:
+        return None
 
 
 @asynccontextmanager
@@ -459,7 +544,24 @@ async def tag_song(body: TagSongRequest) -> JSONResponse:
 
 @app.post("/dancers/register")
 async def register_dancer(body: DancerRequest) -> JSONResponse:
-    state = state_manager.add_dancer(body.name, body.handle)
+    tiktok_id = await _lookup_tiktok_id(body.handle)
+    state = state_manager.add_dancer(body.name, body.handle, tiktok_id)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+@app.post("/dancers/refresh_ids")
+async def refresh_dancer_ids() -> JSONResponse:
+    dancers = state_manager.get_state().get("dancers", []) or []
+    updates = {}
+    for dancer in dancers:
+        handle = (dancer.get("handle") or "").strip()
+        if not handle:
+            continue
+        tiktok_id = await _lookup_tiktok_id(handle)
+        if tiktok_id:
+            updates[handle.lstrip("@").lower()] = tiktok_id
+        await asyncio.sleep(0.35)
+    state = state_manager.update_dancer_ids(updates)
     _broadcast_state(state)
     return JSONResponse(state)
 

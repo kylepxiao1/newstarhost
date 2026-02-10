@@ -303,7 +303,7 @@ class BattleStateManager:
                 self._persist_library(lib)
             return self._state.copy()
 
-    def add_dancer(self, name: str, handle: str) -> Dict:
+    def add_dancer(self, name: str, handle: str, tiktok_id: Optional[str] = None) -> Dict:
         with self._lock:
             dancers = self._state.dancers or []
             name_l = (name or "").lower()
@@ -311,11 +311,20 @@ class BattleStateManager:
             replaced = False
             for idx, d in enumerate(dancers):
                 if d.get("name", "").lower() == name_l or d.get("handle", "").lower() == handle_l:
-                    dancers[idx] = {"name": name, "handle": handle}
+                    entry = {"name": name, "handle": handle}
+                    existing_id = d.get("tiktok_id") or d.get("tiktokId")
+                    if tiktok_id:
+                        entry["tiktok_id"] = tiktok_id
+                    elif existing_id:
+                        entry["tiktok_id"] = existing_id
+                    dancers[idx] = entry
                     replaced = True
                     break
             if not replaced:
-                dancers.append({"name": name, "handle": handle})
+                entry = {"name": name, "handle": handle}
+                if tiktok_id:
+                    entry["tiktok_id"] = tiktok_id
+                dancers.append(entry)
             self._state.dancers = dancers
             self._persist_dancers(dancers)
             return self._state.copy()
@@ -349,6 +358,27 @@ class BattleStateManager:
                             changed = True
             if changed:
                 self._persist_library(lib)
+            return self._state.copy()
+
+    def update_dancer_ids(self, updates: Dict[str, str]) -> Dict:
+        if not updates:
+            return self._state.copy()
+        with self._lock:
+            dancers = self._state.dancers or []
+            changed = False
+            for dancer in dancers:
+                handle = (dancer.get("handle") or "").lstrip("@").lower()
+                if not handle:
+                    continue
+                new_id = updates.get(handle)
+                if not new_id:
+                    continue
+                if dancer.get("tiktok_id") != new_id:
+                    dancer["tiktok_id"] = new_id
+                    changed = True
+            if changed:
+                self._state.dancers = dancers
+                self._persist_dancers(dancers)
             return self._state.copy()
 
     def set_last_winner(self, name: str) -> Dict:
