@@ -50,9 +50,9 @@ def _load_env_file(path: Path) -> dict[str, str]:
 
 def _load_env_from_config() -> dict[str, str]:
     repo_root = Path(__file__).resolve().parent.parent
-    for name in (".env"):
+    for name in (".env",):
         candidate = repo_root / name
-        if candidate.exists():
+        if candidate.exists() and candidate.is_file():
             return _load_env_file(candidate)
     return {}
 

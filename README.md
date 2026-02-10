@@ -85,6 +85,31 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 - Uses native events: `LinkMicBattleEvent` to start battles, `LinkMicArmiesEvent` to track scores, heuristics as backup.
 - Calls backend: `/battle/start`, `/battle/end`, `/battle/slots/import`, `/score/.../add`.
 
+### Fly.io Listener Machine
+Useful commands when running the listener on Fly.io:
+```powershell
+# Authenticate Fly CLI
+flyctl auth login
+
+# List machines
+flyctl machines list -a newstarhost
+
+# SSH into the machine
+flyctl ssh console -a newstarhost
+
+# Start the listener machine
+fly machines start 7843e41c06d1e8
+
+# Check the listener logs
+flyctl logs -a newstarhost --machine 7843e41c06d1e8
+
+# Download a file from the machine (one-shot)
+flyctl ssh sftp get -a newstarhost /path/on/machine/filename.ext C:\path\to\local\filename.ext
+
+# Upload a file to the machine (one-shot)
+flyctl ssh sftp put -a newstarhost C:\path\to\local\file.ext /path/on/machine/file.ext
+```
+
 ## Audio Routing (Windows)
 - With virtual cam: route mic/system audio via VB-Cable or VoiceMeeter; select the same input in TikTok LIVE Studio.
 - With OBS: configure monitoring device and feed Virtual Camera/RTMP as usual.
