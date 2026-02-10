@@ -14,7 +14,7 @@ import pyvirtualcam
 import websockets
 from pyvirtualcam import PixelFormat
 
-API_BASE = os.environ.get("BATTLE_API", "http://127.0.0.1:8000")
+API_BASE = os.environ.get("API_BASE", "https://newstarhost.fly.dev") # http://127.0.0.1:8000
 DEFAULT_CAM_INDEX = int(os.environ.get("INPUT_CAM_INDEX", -1))  # -1 => auto-pick first working camera
 WIDTH = int(os.environ.get("CAM_WIDTH", 1280))
 HEIGHT = int(os.environ.get("CAM_HEIGHT", 720))
