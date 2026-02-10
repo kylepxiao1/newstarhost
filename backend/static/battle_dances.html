@@ -17,6 +17,7 @@
     button.secondary { background: #334155; }
     button.danger { background: #ef4444; }
     input, select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; }
+    #slotOneSelect, #slotTwoSelect { font-weight: 700; }
     ul { list-style: none; padding: 0; margin: 0; max-height: 220px; overflow: auto; }
     li { padding: 8px; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; }
     .badge { padding: 4px 8px; border-radius: 6px; background: #1e293b; font-size: 12px; }
@@ -67,11 +68,6 @@
         <button class="danger" onclick="cancelRoutine()">Cancel Battle</button>
       </div>
       <div class="row">
-        <button class="secondary" onclick="playRole('mvp')">Play MVP Song</button>
-        <button class="secondary" onclick="playRole('attention')">Play Attention SFX</button>
-        <button class="secondary" onclick="playRole('win')">Play Win Song</button>
-      </div>
-      <div class="row">
         <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
       </div>
       <div class="grid-2" style="margin-bottom:10px; align-items:center;">
@@ -118,6 +114,11 @@
         <button class="secondary" id="tabOne" onclick="selectTab('slot_one')">Dancer 1</button>
         <button class="secondary" id="tabTwo" onclick="selectTab('slot_two')">Dancer 2</button>
         <button class="secondary" id="tabIntersect" onclick="selectTab('intersect')">Intersect</button>
+      </div>
+      <div class="row">
+        <button class="secondary" onclick="playRole('attention')">Play Attention SFX</button>
+        <button class="secondary" onclick="playRole('win')">Play Win Song</button>
+        <button class="secondary" onclick="playRole('mvp')">Play MVP Song</button>
       </div>
       <div class="row">
         <span>Current song: <span id="currentSongLabel">-</span></span>
