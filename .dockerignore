@@ -11,7 +11,8 @@
 **\.Python
 **\build
 **\develop-eggs
-**\dist
+!dist/
+!dist/**
 **\downloads
 **\eggs
 **\.eggs

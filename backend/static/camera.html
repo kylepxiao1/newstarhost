@@ -12,6 +12,7 @@
     h2 { margin-top: 0; font-size: 16px; letter-spacing: 0.02em; }
     .row { display: flex; gap: 8px; margin-bottom: 10px; }
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    .button-link { display: inline-flex; align-items: center; justify-content: center; background: #2563eb; color: #fff; border-radius: 6px; padding: 8px 12px; font-weight: 600; font-size: 14px; font-family: "Segoe UI", Arial, sans-serif; text-decoration: none; border: none; cursor: pointer; }
     select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
   </style>
 </head>
@@ -32,6 +33,7 @@
       <div class="row">
         <button class="secondary" onclick="applyCamera()">Use Camera</button>
         <button class="secondary" onclick="startPreview()">Start Preview</button>
+        <a class="button-link" href="/dist/virtual_cam_compositor.exe" download>Download Virtual Cam Compositor</a>
       </div>
       <video id="preview" width="100%" autoplay playsinline style="background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
     </section>

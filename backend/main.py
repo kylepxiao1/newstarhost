@@ -33,6 +33,7 @@ logger = logging.getLogger(__name__)
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 MEDIA_DIR = (BASE_DIR / ".." / "media").resolve()
+DIST_DIR = (BASE_DIR / ".." / "dist").resolve()
 MEDIA_DIR.mkdir(exist_ok=True)
 RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "522756c8bamshcbed3268bd8d8a7p15af50jsn5acd33380e60")
 RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "youtube-mp310.p.rapidapi.com")
@@ -57,6 +58,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json", lifespan=lifespan)
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+app.mount("/dist", StaticFiles(directory=str(DIST_DIR), check_dir=False), name="dist")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
