@@ -138,6 +138,7 @@ celerybeat.pid
 .env
 .envrc
 app.env
+s3_sync.env
 .venv
 env/
 venv/

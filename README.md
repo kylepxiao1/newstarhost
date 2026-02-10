@@ -58,6 +58,10 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 - Uses `scripts/virtual_cam_compositor.py` with `pyvirtualcam` + `opencv` to capture your real camera, draw names/scores/mode + dotted center line, and expose a virtual camera device.
 - Configure env vars as needed: `INPUT_CAM_INDEX`, `CAM_WIDTH`, `CAM_HEIGHT`, `CAM_FPS`, `STATE_POLL_SECS`.
 - Select the created virtual camera in TikTok LIVE Studio.
+- Build a Windows executable (PyInstaller):
+```powershell
+pyinstaller --onefile --name virtual_cam_compositor --console scripts\virtual_cam_compositor.py
+```
 
 ### B) OBS-based overlay
 - Scenes: `MainScene`, `BattleScene` (override via env) if you choose OBS.

@@ -27,7 +27,7 @@ primary_region = 'lax'
   processes = ['app']
 
 [processes]
-  app = 'python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080'
+  app = 'bash -lc "bash /app/scripts/s3_sync.sh & exec python -m uvicorn backend.main:app --host 0.0.0.0 --port 8080"'
   listener = 'python scripts/tiktok_listener.py'
 
 [[vm]]
