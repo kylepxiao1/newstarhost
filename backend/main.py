@@ -94,6 +94,7 @@ class CameraSelectRequest(BaseModel):
 class SongRequest(BaseModel):
     target: str
     url: str
+    context: Optional[str] = None
 
 
 class SongBackgroundRequest(BaseModel):
@@ -356,7 +357,7 @@ async def select_camera(body: CameraSelectRequest) -> JSONResponse:
 async def play_song(body: SongRequest) -> JSONResponse:
     state = state_manager.set_current_song(body.target, body.url)
     # increment play count for this url
-    state = state_manager.increment_play(body.url)
+    state = state_manager.increment_play(body.url, context=body.context or "")
     _broadcast_state(state)
     return JSONResponse(state)
 

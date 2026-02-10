@@ -544,7 +544,7 @@
       }
       // cancel routine if user manually picks music
       cancelRoutine();
-      await api("/songs/play", {method:"POST", body:{target: currentTab, url}});
+      await api("/songs/play", {method:"POST", body:{target: currentTab, url, context: "battle"}});
       const songs = state.songs || {};
       songs.current = url;
       songs[currentTab] = url;
@@ -679,7 +679,7 @@
       if (!bg) {
         bg = getRoleUrl("background");
         if (bg) {
-          api("/songs/play", {method:"POST", body:{target:"background", url:bg}});
+          api("/songs/play", {method:"POST", body:{target:"background", url:bg, context: "battle"}});
           state.songs = state.songs || {};
           state.songs.background = bg;
           state.songs.current = state.songs.current || bg;
@@ -1009,7 +1009,7 @@
       if (!next || next === routine.currentSongUrl) return;
       markRoutinePlayed(next);
       routine.currentSongUrl = next;
-      api("/songs/play", {method:"POST", body:{target:"group", url: next}}).catch(()=>{});
+      api("/songs/play", {method:"POST", body:{target:"group", url: next, context: "battle"}}).catch(()=>{});
       playSequence(["bell"], false, () => {
         startAudio(next, {skipFadeOut:true, loop:false, onEnd: () => {
           const after = decideNextSong(next);
@@ -1062,7 +1062,7 @@
       const url = decideNextSong(lastUrl) || getRoleUrl("background");
       if (!url) { ensureBackground(); return; }
       const afterDoorbell = () => {
-        api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
+        api("/songs/play", {method:"POST", body:{target:"group", url, context: "battle"}}).catch(()=>{});
         if (!state.songs) state.songs = {};
         state.songs.current = url;
         routine.currentSongOwner = routine.firstSongPlayed ? getLeaderName() : "";
@@ -1105,7 +1105,7 @@
         alert(`No song with role: ${role}`);
         return;
       }
-      api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
+      api("/songs/play", {method:"POST", body:{target:"group", url, context: "battle"}}).catch(()=>{});
       startAudio(url, {loop:false});
     }
 
@@ -1175,7 +1175,7 @@
       routine.currentSongOwner = leader;
       routine.currentSongUrl = newUrl;
       markRoutinePlayed(newUrl);
-      api("/songs/play", {method:"POST", body:{target:"group", url:newUrl}}).catch(()=>{});
+      api("/songs/play", {method:"POST", body:{target:"group", url:newUrl, context: "battle"}}).catch(()=>{});
       playSequence(["bell"], false, () => {
         startAudio(newUrl, {skipFadeOut:true, loop:false, onEnd: () => {
           const next = decideNextSong(newUrl);

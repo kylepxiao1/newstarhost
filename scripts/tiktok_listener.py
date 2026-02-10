@@ -50,7 +50,7 @@ def _load_env_file(path: Path) -> dict[str, str]:
 
 def _load_env_from_config() -> dict[str, str]:
     repo_root = Path(__file__).resolve().parent.parent
-    for name in ("tiktok_listener.env", ".env.tiktok", ".env"):
+    for name in (".env"):
         candidate = repo_root / name
         if candidate.exists():
             return _load_env_file(candidate)

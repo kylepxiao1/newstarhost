@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Intro Group Dances</title>
+  <title>Group Dances</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
     header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
@@ -414,7 +414,7 @@
         return alert("Select a song");
       }
       const bellUrl = getRoleUrl("bell");
-      api("/songs/play", {method:"POST", body:{target: currentTab, url}}).catch(()=>{});
+      api("/songs/play", {method:"POST", body:{target: currentTab, url, context: "group dances"}}).catch(()=>{});
       if (!songsState) songsState = {};
       songsState.current = url;
       // bell -> song -> applause -> background (if any)

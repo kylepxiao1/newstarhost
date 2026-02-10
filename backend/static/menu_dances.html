@@ -326,7 +326,7 @@
         if (fromSelect) return;
         return alert("Select a song");
       }
-      api("/songs/play", {method:"POST", body:{target: "group", url}}).catch(()=>{});
+      api("/songs/play", {method:"POST", body:{target: "group", url, context: "menu"}}).catch(()=>{});
       if (!songsState) songsState = {};
       songsState.current = url;
       const bellUrl = getRoleUrl("bell");
@@ -473,7 +473,7 @@
         alert(`No song with role: ${role}`);
         return;
       }
-      api("/songs/play", {method:"POST", body:{target:"group", url}}).catch(()=>{});
+      api("/songs/play", {method:"POST", body:{target:"group", url, context: "menu"}}).catch(()=>{});
       startAudio(url, {loop:false});
     }
 

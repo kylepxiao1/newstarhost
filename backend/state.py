@@ -59,10 +59,11 @@ class BattleStateManager:
         self._plays_path: Optional[Path] = Path(plays_path) if plays_path else None
         self._points_path: Optional[Path] = Path(points_path) if points_path else None
         self._analytics: Optional[AnalyticsStore] = AnalyticsStore(analytics_path) if analytics_path else None
+        if self._analytics and not self._analytics.enabled:
+            self._analytics = None
         library = self._load_library()
         dancers = self._load_dancers()
         if self._analytics:
-            self._analytics.migrate_from_json(self._plays_path, self._points_path, cleanup=True)
             stats = self._analytics.load_stats()
             plays = {k: v.get("play_count", 0) for k, v in stats.items()}
             points = {k: v.get("points_count", 0) for k, v in stats.items()}
@@ -519,7 +520,7 @@ class BattleStateManager:
                 self._state.songs["library"] = lib
                 self._persist_library(lib)
 
-    def increment_play(self, url: str) -> Dict:
+    def increment_play(self, url: str, context: str = "") -> Dict:
         with self._lock:
             if not url:
                 return self._state.copy()
@@ -530,10 +531,14 @@ class BattleStateManager:
                 lib = self._state.songs.get("library", {}) or {}
                 song_name = url
                 assigned = []
+                duration_sec = None
                 for meta in lib.values():
                     if meta.get("url") == url:
                         song_name = meta.get("name") or url
                         assigned = meta.get("dancers") or []
+                        duration_raw = meta.get("duration_sec")
+                        if isinstance(duration_raw, (int, float)) and duration_raw:
+                            duration_sec = int(duration_raw)
                         break
                 now = datetime.now().astimezone()
                 unix_ts = int(now.timestamp())
@@ -544,6 +549,7 @@ class BattleStateManager:
                 slot_two = self._state.slot_two or ""
                 score_one = int(self._state.scores.get("slot_one", 0))
                 score_two = int(self._state.scores.get("slot_two", 0))
+                points_count = int(self._state.points_counts.get(url, 0))
                 self._analytics.increment_play(
                     url,
                     song_name,
@@ -558,6 +564,11 @@ class BattleStateManager:
                     score_two,
                     bool(self._state.active),
                     self._state.battle_mode,
+                    self._state.group_name or "",
+                    context,
+                    duration_sec,
+                    play_count=int(plays.get(url, 0)),
+                    points_count=points_count,
                 )
             return self._state.copy()
 
@@ -570,7 +581,14 @@ class BattleStateManager:
             self._state.points_counts = points
             if self._analytics:
                 now = datetime.now().astimezone()
-                self._analytics.increment_points(url, int(amount), int(now.timestamp()), now.isoformat())
+                self._analytics.increment_points(
+                    url,
+                    int(amount),
+                    int(now.timestamp()),
+                    now.isoformat(),
+                    play_count=int(self._state.play_counts.get(url, 0)),
+                    points_count=int(points.get(url, 0)),
+                )
             return self._state.copy()
 
     def rename_media_files(self, media_dir: Path) -> None:
