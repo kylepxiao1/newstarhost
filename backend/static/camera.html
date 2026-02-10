@@ -46,21 +46,56 @@
     let state = {};
     let ws;
 
+    let cameraLabelsReady = false;
+    async function ensureCameraLabels() {
+      if (cameraLabelsReady) return;
+      if (!navigator.mediaDevices?.getUserMedia) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(t => t.stop());
+        cameraLabelsReady = true;
+      } catch (e) {
+        // If permission is denied, labels may remain blank.
+      }
+    }
+
     async function refreshCameras() {
       try {
+        const backendList = await api("/camera/devices").then(r => r.json()).catch(() => ({devices: []}));
+        const dshow = Array.isArray(backendList.devices) ? backendList.devices : [];
+        await ensureCameraLabels();
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cams = devices.filter(d => d.kind === "videoinput");
         const select = document.getElementById("cameraSelect");
         select.innerHTML = "";
-        cams.forEach((cam, idx) => {
-          const opt = document.createElement("option");
-          opt.value = cam.deviceId || "";
-          opt.dataset.idx = idx;
-          opt.dataset.label = cam.label || `Camera ${idx}`;
-          opt.textContent = cam.label || `Camera ${idx}`;
-          select.appendChild(opt);
-        });
-        if (!select.value && cams[0]) select.value = cams[0].deviceId;
+        if (dshow.length) {
+          dshow.forEach((cam) => {
+            const opt = document.createElement("option");
+            opt.value = cam.label || "";
+            opt.dataset.idx = cam.index;
+            opt.dataset.label = cam.label || "";
+            opt.textContent = cam.label || `Camera ${cam.index}`;
+            select.appendChild(opt);
+          });
+          if (!select.value && dshow[0]) select.value = dshow[0].label || "";
+          console.log("[camera] dshow enumerate", dshow);
+        } else {
+          cams.forEach((cam, idx) => {
+            const opt = document.createElement("option");
+            opt.value = cam.deviceId || "";
+            opt.dataset.idx = idx;
+            opt.dataset.label = cam.label || "";
+            opt.textContent = cam.label || `Camera ${idx}`;
+            select.appendChild(opt);
+          });
+          if (!select.value && cams[0]) select.value = cams[0].deviceId;
+          console.log("[camera] enumerate", cams.map((c, i) => ({
+            idx: i,
+            label: c.label || "",
+            deviceId: c.deviceId || "",
+            groupId: c.groupId || ""
+          })));
+        }
       } catch (e) {
         console.warn("Camera enumeration failed", e);
       }
@@ -68,9 +103,18 @@
 
     function applyCamera() {
       const select = document.getElementById("cameraSelect");
-      const idx = Number(select.selectedOptions[0]?.dataset.idx ?? 0);
+      const idx = Number(select.selectedOptions[0]?.dataset.idx ?? -1);
       const label = select.selectedOptions[0]?.dataset.label || "";
-      return api("/camera/select", {method:"POST", body:{index: idx, label}}).catch(()=>{});
+      const labelBase = label.replace(/\s*\([^)]*\)\s*$/, "");
+      const payload = {index: idx, label};
+      console.log("[camera] apply", {
+        selectedIdx: idx,
+        selectedLabel: label,
+        selectedLabelBase: labelBase,
+        selectedDeviceId: select.value || "",
+        payload
+      });
+      return api("/camera/select", {method:"POST", body: payload}).catch(()=>{});
     }
 
     async function startPreview() {

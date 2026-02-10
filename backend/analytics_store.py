@@ -9,42 +9,11 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import httpx
+from scripts.utils import _load_env_from_config
 
 logger = logging.getLogger("analytics-store")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-
-def _load_env_file(path: Path) -> dict[str, str]:
-    env: dict[str, str] = {}
-    data = path.read_text(encoding="utf-8")
-    for raw_line in data.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.lower().startswith("export "):
-            line = line[7:].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if value and ((value[0] == value[-1]) and value[0] in {"'", '"'}):
-            value = value[1:-1]
-        env.setdefault(key, value)
-    return env
-
-
-def _load_env_from_config() -> dict[str, str]:
-    repo_root = Path(__file__).resolve().parent.parent
-    for name in ("tiktok_listener.env", ".env.tiktok", ".env"):
-        candidate = repo_root / name
-        if candidate.exists() and candidate.is_file():
-            return _load_env_file(candidate)
-    return {}
-
 
 ENV = _load_env_from_config()
 

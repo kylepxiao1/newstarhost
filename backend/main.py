@@ -3,6 +3,10 @@ import os
 import re
 import io
 import csv
+import os
+import re
+import subprocess
+from pathlib import Path
 import unicodedata
 import uuid
 import shutil
@@ -344,6 +348,7 @@ async def register_win(body: WinRequest) -> JSONResponse:
 
 @app.post("/camera/select")
 async def select_camera(body: CameraSelectRequest) -> JSONResponse:
+    logger.info("Camera select request: index=%s label=%s", body.index, body.label)
     if body.index is not None:
         state_manager.set_camera_index(body.index)
     if body.label is not None:
@@ -360,6 +365,46 @@ async def play_song(body: SongRequest) -> JSONResponse:
     state = state_manager.increment_play(body.url, context=body.context or "")
     _broadcast_state(state)
     return JSONResponse(state)
+
+
+def _find_ffmpeg() -> str:
+    env = os.environ.get("FFMPEG_BIN", "").strip()
+    if env:
+        return env
+    repo_root = Path(__file__).resolve().parent.parent
+    candidates = list(repo_root.glob("scripts/ffmpeg-bin/**/ffmpeg.exe"))
+    if candidates:
+        return str(candidates[0])
+    return "ffmpeg"
+
+
+def _dshow_video_devices() -> list[str]:
+    ffmpeg = _find_ffmpeg()
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except Exception as exc:
+        logger.debug("FFmpeg device probe failed (%s): %s", ffmpeg, exc)
+        return []
+    output = (result.stderr or "") + "\n" + (result.stdout or "")
+    devices: list[str] = []
+    for line in output.splitlines():
+        if "Alternative name" in line:
+            continue
+        match = re.search(r'"([^"]+)"\s*\(video\)', line)
+        if match:
+            devices.append(match.group(1))
+    return devices
+
+
+@app.get("/camera/devices")
+async def camera_devices() -> JSONResponse:
+    devices = _dshow_video_devices()
+    return JSONResponse({"devices": [{"index": i, "label": name} for i, name in enumerate(devices)]})
 
 
 @app.post("/songs/background")

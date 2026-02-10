@@ -1228,8 +1228,20 @@
     }
 
 
+    let cameraLabelsReady = false;
+    async function ensureCameraLabels() {
+      if (cameraLabelsReady) return;
+      if (!navigator.mediaDevices?.getUserMedia) return;
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(t => t.stop());
+        cameraLabelsReady = true;
+      } catch (e) {}
+    }
+
     async function refreshCameras() {
       try {
+        await ensureCameraLabels();
         const devices = await navigator.mediaDevices.enumerateDevices();
         // Only list physical/non-virtual cams for feeding into the virtual cam
         const cams = devices.filter(d => d.kind === "videoinput" && !/virtual/i.test(d.label || ""));
@@ -1239,11 +1251,17 @@
           const opt = document.createElement("option");
           opt.value = cam.deviceId || "";
           opt.dataset.idx = idx;
-          opt.dataset.label = cam.label || `Camera ${idx}`;
+          opt.dataset.label = cam.label || "";
           opt.textContent = cam.label || `Camera ${idx}`;
           select.appendChild(opt);
         });
         if (!select.value && cams[0]) select.value = cams[0].deviceId;
+        console.log("[battle-camera] enumerate", cams.map((c, i) => ({
+          idx: i,
+          label: c.label || "",
+          deviceId: c.deviceId || "",
+          groupId: c.groupId || ""
+        })));
       } catch (e) {
         console.warn("Camera enumeration failed", e);
       }

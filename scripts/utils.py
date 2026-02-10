@@ -1,5 +1,6 @@
 import json
 import re
+from pathlib import Path
 
 
 def _safe_json(payload) -> str:
@@ -118,6 +119,37 @@ def _extract_handle(user_obj) -> str:
     except Exception:
         return ""
     return ""
+
+
+def _load_env_file(path: Path) -> dict[str, str]:
+    env: dict[str, str] = {}
+    data = path.read_text(encoding="utf-8")
+    for raw_line in data.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+        if value and ((value[0] == value[-1]) and value[0] in {"'", '"'}):
+            value = value[1:-1]
+        env.setdefault(key, value)
+    return env
+
+
+def _load_env_from_config() -> dict[str, str]:
+    repo_root = Path(__file__).resolve().parent.parent
+    name = "app.env"
+    candidate = repo_root / name
+    if candidate.exists() and candidate.is_file():
+        return _load_env_file(candidate)
+    return {}
 
 
 def _extract_recipient_from_describe(describe: str) -> str:
