@@ -1,6 +1,17 @@
 import json
+import os
 import re
 from pathlib import Path
+
+
+_ENV_CACHE: dict[str, str] | None = None
+
+
+def _env(key: str, default: str = "") -> str:
+    global _ENV_CACHE
+    if _ENV_CACHE is None:
+        _ENV_CACHE = _load_env_from_config()
+    return os.environ.get(key, _ENV_CACHE.get(key, default))
 
 
 def _safe_json(payload) -> str:

@@ -68,6 +68,10 @@
         <button class="danger" onclick="cancelRoutine()">Cancel Battle</button>
       </div>
       <div class="row">
+        <button class="secondary" onclick="startLiveRoutine(120000)">Run Live 2m Battle</button>
+        <button class="secondary" onclick="startLiveRoutine(60000)">Run Live 1m Battle</button>
+      </div>
+      <div class="row">
         <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
       </div>
       <div class="grid-2" style="margin-bottom:10px; align-items:center;">
@@ -137,17 +141,20 @@
     </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
     let state = {};
     let currentTab = "";
-    let routine = { active:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set() };
+    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set() };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
     let audioUnlocked = false;
+    let supabaseClient = null;
+    let giftChannel = null;
 
     let _randSeed = (Date.now() % 2147483647) || 1;
     function rand() {
@@ -163,8 +170,98 @@
       return _randSeed / 2147483647;
     }
 
+    async function getSupabaseConfig() {
+      return api("/config").then(r => r.json()).catch(() => ({}));
+    }
+
+    async function ensureSupabaseClient() {
+      if (supabaseClient) return supabaseClient;
+      if (!window.supabase || !window.supabase.createClient) return null;
+      const cfg = await getSupabaseConfig();
+      if (!cfg.supabase_url || !cfg.supabase_key) {
+        alert("Supabase config missing. Set SUPABASE_URL and SUPABASE_PUBLISHABLE_KEY.");
+        return null;
+      }
+      supabaseClient = window.supabase.createClient(cfg.supabase_url, cfg.supabase_key);
+      return supabaseClient;
+    }
+
+    function stopLiveSubscription() {
+      if (giftChannel && supabaseClient) {
+        supabaseClient.removeChannel(giftChannel);
+      }
+      giftChannel = null;
+    }
+
+    function getTiktokIdMap() {
+      const map = new Map();
+      (state.dancers || []).forEach(d => {
+        const id = d.tiktok_id || d.tiktokId;
+        if (id) map.set(String(id), d.name || "");
+      });
+      return map;
+    }
+
+    function giftPointsFromRow(row) {
+      const diamond = Number(row.diamond_count ?? row.diamondCount ?? row.diamondcount);
+      const repeatRaw = row.repeat_count ?? row.repeatCount ?? row.repeatcount;
+      const repeat = repeatRaw == null ? 1 : Number(repeatRaw);
+      if (!Number.isFinite(diamond) || diamond <= 0) return 0;
+      const count = Number.isFinite(repeat) && repeat > 0 ? repeat : 1;
+      return Math.round(diamond * count);
+    }
+
+    function giftToMemberId(row) {
+      const val = row.to_member_id_int ?? row.to_member_id ?? row.toMemberIdInt ?? row.toMemberId;
+      if (val == null) return "";
+      return String(val);
+    }
+
+    function slotForDancerName(name) {
+      const target = (name || "").toLowerCase();
+      const a = (routine.dancers[0] || "").toLowerCase();
+      const b = (routine.dancers[1] || "").toLowerCase();
+      if (target && target === a) return "slot_one";
+      if (target && target === b) return "slot_two";
+      return "";
+    }
+
+    function applyGiftPoints(row) {
+      if (!routine.active || !routine.live) return;
+      if (Date.now() > routine.endTime) {
+        stopLiveSubscription();
+        return;
+      }
+      const points = giftPointsFromRow(row || {});
+      if (!points) return;
+      const memberId = giftToMemberId(row || {});
+      if (!memberId) return;
+      const map = getTiktokIdMap();
+      const dancerName = map.get(memberId);
+      if (!dancerName) return;
+      const slot = slotForDancerName(dancerName);
+      if (!slot) return;
+      api(`/score/${slot}/add`, {method:"POST", body:{amount: points}}).then(refreshState);
+    }
+
+    async function subscribeToGifts() {
+      const client = await ensureSupabaseClient();
+      if (!client) return;
+      stopLiveSubscription();
+      giftChannel = client
+        .channel("gift-events-battle")
+        .on("postgres_changes", {event:"INSERT", schema:"public", table:"gift_events"}, payload => {
+          const row = payload?.new || payload?.record || payload || {};
+          applyGiftPoints(row);
+        })
+        .subscribe();
+    }
+
     function debugLog(...args) {
-      if (!location.hostname.includes("fly.dev")) return;
+      const host = (typeof window !== "undefined" && window.location && window.location.hostname)
+        ? window.location.hostname
+        : "";
+      if (!host.includes("fly.dev")) return;
       try { console.log("[battle-debug]", ...args); } catch (e) {}
     }
 
@@ -191,7 +288,8 @@
     }
 
     function highlightNav() {
-      const here = location.pathname.replace(/\/+$/,"") || "/";
+      const loc = (typeof window !== "undefined" && window.location) ? window.location : {pathname:""};
+      const here = (loc.pathname || "").replace(/\/+$/,"") || "/";
       document.querySelectorAll(".nav-bar a").forEach(a => {
         const link = (a.getAttribute("href") || "").replace(/\/+$/,"") || "/";
         if (link === here) a.classList.add("active"); else a.classList.remove("active");
@@ -877,24 +975,32 @@
       const played = routine.playedSongs || new Set();
       const scoreInfo = scoresForDancers(dancers[0], dancers[1]);
       // First song logic prefers shared/group
-      if (!routine.firstSongPlayed) {
-        const both = intersectSongsFor(dancers[0], dancers[1]).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r))).filter(s => !played.has(s.url));
+      if (!routine.firstSongPlayed || !scoreInfo) {
+        const both = intersectSongsFor(dancers[0], dancers[1])
+          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+          .filter(s => !played.has(s.url) && s.url !== currentUrl);
         if (both.length) return pickRandom(both).url;
-        const groups = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r))).filter(s => !played.has(s.url));
+        const groups = groupSongs()
+          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+          .filter(s => !played.has(s.url) && s.url !== currentUrl);
         if (groups.length) return pickRandom(groups).url;
         // if exhausted, allow repeats of shared/group
-        const bothRepeat = intersectSongsFor(dancers[0], dancers[1]).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+        const bothRepeat = intersectSongsFor(dancers[0], dancers[1])
+          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+          .filter(s => s.url !== currentUrl);
         if (bothRepeat.length) return pickRandom(bothRepeat).url;
-        const groupRepeat = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+        const groupRepeat = groupSongs()
+          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+          .filter(s => s.url !== currentUrl);
         if (groupRepeat.length) return pickRandom(groupRepeat).url;
       }
-      if (!scoreInfo) return currentUrl || getRoleUrl("background");
       const {leader, loser, leaderScore, loserScore} = scoreInfo;
       return pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl, played);
     }
 
     function pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl=null, played=new Set()) {
       const leaderAssigned = songsForDancer(leader).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+      const leaderNotCurrent = leaderAssigned.filter(s => s.url !== currentUrl);
       const loserAssigned = new Set(songsForDancer(loser).map(s => s.url));
       const loserKnows = new Set(songsKnownBy(loser).map(s => s.url));
       const isHighMargin = leaderScore > loserScore * 1.2;
@@ -902,7 +1008,7 @@
 
       if (isHighMargin) {
         const pool = exclude(leaderAssigned);
-        const pick = pickRandom(pool.length ? pool : leaderAssigned);
+        const pick = pickRandom(pool.length ? pool : leaderNotCurrent);
         return pick ? pick.url : null;
       }
       const shared = exclude(leaderAssigned).filter(s => loserAssigned.has(s.url) || loserKnows.has(s.url));
@@ -910,8 +1016,18 @@
         const pick = pickRandom(shared);
         return pick ? pick.url : null;
       }
-      const groups = groupSongs().filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r))).filter(s => !played.has(s.url) && s.url !== currentUrl);
-      const pickGroup = pickRandom(groups.length ? groups : groupSongs());
+      const sharedAny = leaderNotCurrent.filter(s => loserAssigned.has(s.url) || loserKnows.has(s.url));
+      if (sharedAny.length) {
+        const pick = pickRandom(sharedAny);
+        return pick ? pick.url : null;
+      }
+      const groups = groupSongs()
+        .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+        .filter(s => !played.has(s.url) && s.url !== currentUrl);
+      const groupAll = groupSongs()
+        .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+        .filter(s => s.url !== currentUrl);
+      const pickGroup = pickRandom(groups.length ? groups : groupAll);
       return pickGroup ? pickGroup.url : null;
     }
 
@@ -927,7 +1043,7 @@
     function pickSongFor(name, excludeUrl=null) {
       const pool = songsForDancer(name).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
       const filtered = excludeUrl ? pool.filter(s => s.url !== excludeUrl) : pool;
-      const chosen = pickRandom(filtered.length ? filtered : pool);
+      const chosen = pickRandom(filtered);
       return chosen ? chosen.url : null;
     }
 
@@ -938,13 +1054,6 @@
       if (a > b) return state.slot_one || "";
       if (b > a) return state.slot_two || "";
       return "";
-    }
-
-    function nextSongFor(dancerA, dancerB, excludeUrl=null) {
-      const pool = [...songsForDancer(dancerA), ...songsForDancer(dancerB)].filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
-      const filtered = pool.filter(s => s.url !== excludeUrl);
-      const chosen = pickRandom(filtered.length ? filtered : pool);
-      return chosen ? chosen.url : null;
     }
 
     function clearRoutineTimers() {
@@ -986,8 +1095,10 @@
         });
         return;
       }
+      stopLiveSubscription();
       clearRoutineTimers();
       routine.active = true;
+      routine.live = false;
       routine.startTime = Date.now();
       routine.endTime = routine.startTime + durationMs;
       routine.dancers = chooseTwoDancers();
@@ -1005,7 +1116,37 @@
       renderTimer(true);
     }
 
-   function skipSong() {
+    async function startLiveRoutine(durationMs=120000) {
+      if (!audioUnlocked) {
+        unlockAudio().then(ok => {
+          if (ok) startLiveRoutine(durationMs);
+          else alert("Click anywhere on the page once to enable audio.");
+        });
+        return;
+      }
+      stopLiveSubscription();
+      clearRoutineTimers();
+      routine.active = true;
+      routine.live = true;
+      routine.startTime = Date.now();
+      routine.endTime = routine.startTime + durationMs;
+      routine.dancers = chooseTwoDancers();
+      routine.firstSongPlayed = false;
+      routine.warned = false;
+      routine.playedSongs = new Set();
+      stopPointsInterval();
+      setCenterLine(true);
+      api("/battle/start", {method:"POST", body:{}}).then(()=> {
+        api("/battle/slot/slot_one", {method:"POST", body:{slot_one: routine.dancers[0], slot_two: routine.dancers[1]}}).catch(()=>{});
+        api("/battle/slot/slot_two", {method:"POST", body:{slot_one: routine.dancers[0], slot_two: routine.dancers[1]}}).catch(()=>{});
+        saveWinnerValue(routine.dancers[0]);
+      });
+      playRoutineSong(null);
+      renderTimer(true);
+      await subscribeToGifts();
+    }
+
+    function skipSong() {
       const next = decideNextSong(routine.currentSongUrl);
       if (!next || next === routine.currentSongUrl) return;
       markRoutinePlayed(next);
@@ -1013,20 +1154,20 @@
       api("/songs/play", {method:"POST", body:{target:"group", url: next, context: "battle"}}).catch(()=>{});
       playSequence(["bell"], false, () => {
         startAudio(next, {skipFadeOut:true, loop:false, onEnd: () => {
-          const after = decideNextSong(next);
-          if (!after) return;
-          playSequence(["bell"], false, () => playRoutineSong(after));
+          playSequence(["bell"], false, () => playRoutineSong(next));
         }});
       });
     }
 
     function cancelRoutine() {
       routine.active = false;
+      routine.live = false;
       routine.warned = false;
       routine.playedSongs = new Set();
       clearRoutineTimers();
       stopPointsInterval();
       stopSwitchInterval();
+      stopLiveSubscription();
       const player = document.getElementById("player");
       try { player.pause(); } catch(e){}
       ensureBackground();
@@ -1042,8 +1183,10 @@
       if (remaining <= 0) {
         playSequence(["applause","win"], true);
         routine.active = false;
+        routine.live = false;
         stopPointsInterval();
         stopSwitchInterval();
+        stopLiveSubscription();
         evaluateWinner();
         return;
       }
@@ -1060,7 +1203,7 @@
         });
         return;
       }
-      const url = decideNextSong(lastUrl) || getRoleUrl("background");
+      let url = decideNextSong(lastUrl) || getRoleUrl("background");
       if (!url) { ensureBackground(); return; }
       const afterDoorbell = () => {
         api("/songs/play", {method:"POST", body:{target:"group", url, context: "battle"}}).catch(()=>{});
@@ -1072,9 +1215,7 @@
         stopSwitchInterval();
         routine.switchInterval = setInterval(() => monitorSongSwitch(), 2000);
         startAudio(url, {loop:false, onEnd: () => {
-          const next = decideNextSong(url);
-          if (!next) return;
-          playSequence(["bell"], false, () => playRoutineSong(next));
+          playSequence(["bell"], false, () => playRoutineSong(url));
         }});
       };
       if (!routine.firstSongPlayed) {
@@ -1179,9 +1320,7 @@
       api("/songs/play", {method:"POST", body:{target:"group", url:newUrl, context: "battle"}}).catch(()=>{});
       playSequence(["bell"], false, () => {
         startAudio(newUrl, {skipFadeOut:true, loop:false, onEnd: () => {
-          const next = decideNextSong(newUrl);
-          if (!next) return;
-          playSequence(["bell"], false, () => playRoutineSong(next));
+          playSequence(["bell"], false, () => playRoutineSong(newUrl));
         }});
       });
     }
@@ -1212,9 +1351,11 @@
        }
        if (remaining <= 0) {
          routine.active = false;
+         routine.live = false;
          routine.warned = false;
          stopTimerInterval();
           stopPointsInterval();
+          stopLiveSubscription();
           const player = document.getElementById("player");
           try { player.pause(); } catch(e){}
           evaluateWinner();
@@ -1289,7 +1430,11 @@
 
     // WebSocket live updates
     function connectWs() {
-      const ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
+      const origin = (typeof window !== "undefined" && window.location && window.location.origin)
+        ? window.location.origin
+        : "";
+      if (!origin) return;
+      const ws = new WebSocket((origin.replace(/^http/,"ws")) + "/ws/state");
       ws.onopen = () => { const d=document.getElementById("wsDot"); const t=document.getElementById("statusText"); if(d){d.style.background="#22c55e"; d.style.boxShadow="0 0 8px #22c55e";} if(t) t.textContent="Live"; };
       const markDown = () => {
         const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");

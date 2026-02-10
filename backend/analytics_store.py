@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import queue
 import threading
 import time
@@ -9,20 +8,11 @@ from pathlib import Path
 from typing import Dict, Optional
 
 import httpx
-from scripts.utils import _load_env_from_config
+from scripts.utils import _env
 
 logger = logging.getLogger("analytics-store")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-ENV = _load_env_from_config()
-
-
-def _env(key: str, default: str = "") -> str:
-    if key in ENV:
-        return ENV.get(key, default)
-    return os.environ.get(key, default)
-
 
 class AnalyticsStore:
     def __init__(self, db_path: Path) -> None:

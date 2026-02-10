@@ -17,20 +17,15 @@ from TikTokLive.events import proto_events
 from TikTokLive.client.web.web_settings import WebDefaults
 from event_store import SupabaseEventStore
 from utils import (
+    _env,
     _extract_handle,
     _extract_recipient_from_describe,
     _get_any,
     _get_attr_any,
     _is_placeholder_obj,
     _is_valid_value,
-    _load_env_from_config,
     _safe_event_user,
 )
-ENV = _load_env_from_config()
-
-
-def _env(key: str, default: str = "") -> str:
-    return ENV.get(key, default)
 
 
 def _env_flag(key: str, default: bool = False) -> bool:

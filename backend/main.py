@@ -5,8 +5,6 @@ import io
 import csv
 import json
 import asyncio
-import os
-import re
 import subprocess
 from pathlib import Path
 import unicodedata
@@ -28,6 +26,7 @@ import backend.config as config
 from backend.obs_controller import OBSController
 from backend.state import BattleStateManager
 from backend.websocket_manager import WebsocketManager
+from scripts.utils import _env
 
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -37,8 +36,12 @@ STATIC_DIR = BASE_DIR / "static"
 MEDIA_DIR = (BASE_DIR / ".." / "media").resolve()
 DIST_DIR = (BASE_DIR / ".." / "dist").resolve()
 MEDIA_DIR.mkdir(exist_ok=True)
-RAPIDAPI_KEY = os.environ.get("RAPIDAPI_KEY", "522756c8bamshcbed3268bd8d8a7p15af50jsn5acd33380e60")
-RAPIDAPI_HOST = os.environ.get("RAPIDAPI_HOST", "youtube-mp310.p.rapidapi.com")
+RAPIDAPI_KEY = _env("RAPIDAPI_KEY", "")
+RAPIDAPI_HOST = _env("RAPIDAPI_HOST", "")
+SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID", "").strip()
+SUPABASE_PUBLISHABLE_KEY = _env("SUPABASE_PUBLISHABLE_KEY", "").strip()
+SUPABASE_URL = f"https://{SUPABASE_PROJECT_ID}.supabase.co"
+SUPABASE_CLIENT_KEY = SUPABASE_PUBLISHABLE_KEY
 
 
 def _find_tiktok_id(data, handle: str) -> Optional[str]:
@@ -151,6 +154,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/config")
+async def get_config() -> JSONResponse:
+    return JSONResponse({"supabase_url": SUPABASE_URL, "supabase_key": SUPABASE_CLIENT_KEY})
 
 obs = OBSController()
 state_manager = BattleStateManager(
