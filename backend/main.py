@@ -224,6 +224,7 @@ class RegisterSongRequest(BaseModel):
     exclusive_mvp_for: Optional[str] = None
     volume: Optional[float] = None
     difficulty: Optional[str] = None
+    camera_dance: Optional[bool] = None
 
 
 class TagSongRequest(BaseModel):
@@ -241,6 +242,7 @@ class UpdateSongDancersRequest(BaseModel):
     exclusive_mvp_for: Optional[str] = None
     volume: Optional[float] = None
     difficulty: Optional[str] = None
+    camera_dance: Optional[bool] = None
 
 
 class RenameSongRequest(BaseModel):
@@ -698,6 +700,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
         body.exclusive_mvp_for,
         body.volume,
         body.difficulty,
+        body.camera_dance,
     )
     _broadcast_state(state)
     return JSONResponse(state)
@@ -767,6 +770,7 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
         body.exclusive_mvp_for,
         body.volume,
         body.difficulty,
+        body.camera_dance,
     )
     _broadcast_state(state)
     return JSONResponse(state)

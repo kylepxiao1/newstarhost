@@ -186,7 +186,7 @@ class BattleStateManager:
             self._state.songs["position"] = str(pos)
             return self._state.copy()
 
-    def register_song(self, song_id: str, name: str, url: str, dancers: Optional[list] = None, front_dancers: Optional[list] = None, mvp_dancers: Optional[list] = None, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None) -> Dict:
+    def register_song(self, song_id: str, name: str, url: str, dancers: Optional[list] = None, front_dancers: Optional[list] = None, mvp_dancers: Optional[list] = None, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             roles_list = roles or []
@@ -218,6 +218,7 @@ class BattleStateManager:
                 "volume": vol_value,
                 "duration_sec": lib.get(song_id, {}).get("duration_sec"),
                 "difficulty": (difficulty or "medium"),
+                "camera_dance": bool(camera_dance) if camera_dance is not None else False,
             }
             if self._library_path and not lib[song_id].get("duration_sec"):
                 duration = self._get_duration_for_url(url, self._library_path.parent)
@@ -240,7 +241,7 @@ class BattleStateManager:
             self._persist_library(lib)
             return self._state.copy()
 
-    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None) -> Dict:
+    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             if song_id in lib:
@@ -281,6 +282,10 @@ class BattleStateManager:
                     lib[song_id]["difficulty"] = difficulty or "medium"
                 else:
                     lib[song_id].setdefault("difficulty", "medium")
+                if camera_dance is not None:
+                    lib[song_id]["camera_dance"] = bool(camera_dance)
+                else:
+                    lib[song_id].setdefault("camera_dance", False)
                 self._state.songs["library"] = lib
                 self._persist_library(lib)
             return self._state.copy()
@@ -457,6 +462,7 @@ class BattleStateManager:
                 v.setdefault("knows_song", [])
                 v.setdefault("duration_sec", None)
                 v.setdefault("difficulty", "medium")
+                v.setdefault("camera_dance", False)
             return data
         except Exception:
             return {}
