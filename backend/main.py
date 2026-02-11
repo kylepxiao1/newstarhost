@@ -38,6 +38,7 @@ STATIC_DIR = BASE_DIR / "static"
 MEDIA_DIR = (BASE_DIR / ".." / "media").resolve()
 DIST_DIR = (BASE_DIR / ".." / "dist").resolve()
 MEDIA_DIR.mkdir(exist_ok=True)
+HOTKEYS_PATH = MEDIA_DIR / "hotkeys.json"
 RAPIDAPI_KEY = _env("RAPIDAPI_KEY", "")
 RAPIDAPI_HOST = _env("RAPIDAPI_HOST", "")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID", "").strip()
@@ -48,6 +49,36 @@ if not SUPABASE_URL and SUPABASE_PROJECT_ID:
     SUPABASE_URL = f"https://{SUPABASE_PROJECT_ID}.supabase.co"
 SUPABASE_CLIENT_KEY = SUPABASE_PUBLISHABLE_KEY
 SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1" if SUPABASE_URL else ""
+
+ROLE_OPTIONS = {"bell", "applause", "mvp", "attention", "background", "win", "closing"}
+
+
+def _load_hotkeys() -> dict:
+    defaults = {"fade_in": True, "fade_out": True, "hotkeys": {}}
+    if not HOTKEYS_PATH.exists():
+        return defaults
+    try:
+        payload = json.loads(HOTKEYS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return defaults
+    except Exception:
+        return defaults
+    fade_in = payload.get("fade_in")
+    fade_out = payload.get("fade_out")
+    hotkeys = payload.get("hotkeys")
+    data = {
+        "fade_in": True if fade_in is None else bool(fade_in),
+        "fade_out": True if fade_out is None else bool(fade_out),
+        "hotkeys": hotkeys if isinstance(hotkeys, dict) else {},
+    }
+    return data
+
+
+def _save_hotkeys(payload: dict) -> None:
+    try:
+        HOTKEYS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to save hotkeys.json: %s", exc)
 
 
 def _find_tiktok_id(data, handle: str) -> Optional[str]:
@@ -286,6 +317,41 @@ class SpoofGiftRequest(BaseModel):
 class LiveBattleEndRequest(BaseModel):
     start_ms: int
     end_ms: Optional[int] = None
+
+
+class SettingsRequest(BaseModel):
+    fade_in: Optional[bool] = None
+    fade_out: Optional[bool] = None
+    hotkeys: Optional[dict] = None
+
+
+@app.get("/settings/data")
+async def get_settings() -> JSONResponse:
+    return JSONResponse(_load_hotkeys())
+
+
+@app.post("/settings/data")
+async def update_settings(body: SettingsRequest) -> JSONResponse:
+    data = _load_hotkeys()
+    if body.fade_in is not None:
+        data["fade_in"] = bool(body.fade_in)
+    if body.fade_out is not None:
+        data["fade_out"] = bool(body.fade_out)
+    if body.hotkeys is not None and isinstance(body.hotkeys, dict):
+        cleaned = {}
+        for key, role in body.hotkeys.items():
+            k = str(key)
+            if not (len(k) == 1 and k.isdigit()):
+                continue
+            role_str = str(role).strip() if role is not None else ""
+            if not role_str:
+                continue
+            if role_str not in ROLE_OPTIONS:
+                continue
+            cleaned[k] = role_str
+        data["hotkeys"] = cleaned
+    _save_hotkeys(data)
+    return JSONResponse(data)
 
 
 def _norm_filename(s: str) -> str:
@@ -819,6 +885,11 @@ async def add_points(req: PointsRequest) -> JSONResponse:
 @app.get("/analytics")
 async def analytics_page() -> FileResponse:
     return _static_file("analytics.html")
+
+
+@app.get("/settings")
+async def settings_page() -> FileResponse:
+    return _static_file("settings.html")
 
 
 @app.get("/analytics/plays")

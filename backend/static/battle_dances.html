@@ -149,13 +149,48 @@
     let currentTab = "";
     let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false };
     let timerInterval = null;
-    const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
+    const SPECIAL_ROLES = ["bell","applause","attention","background","win","closing"];
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
     let audioUnlocked = false;
     let supabaseClient = null;
     let giftChannel = null;
+    let hotkeyMap = {};
+    let settingsFadeIn = true;
+    let settingsFadeOut = true;
+
+    async function loadSettings() {
+      try {
+        const res = await api("/settings/data");
+        const data = await res.json();
+        settingsFadeIn = data.fade_in !== false;
+        settingsFadeOut = data.fade_out !== false;
+        hotkeyMap = data.hotkeys || {};
+        const fadeInToggle = document.getElementById("fadeToggle");
+        const fadeOutToggle = document.getElementById("fadeOutToggle");
+        if (fadeInToggle) fadeInToggle.checked = settingsFadeIn;
+        if (fadeOutToggle) fadeOutToggle.checked = settingsFadeOut;
+      } catch (e) {}
+    }
+
+    function isTypingTarget(target) {
+      if (!target) return false;
+      const tag = (target.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+    }
+
+    function handleHotkey(evt) {
+      if (evt.defaultPrevented) return;
+      if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+      if (isTypingTarget(evt.target)) return;
+      const key = evt.key;
+      if (!/^\d$/.test(key)) return;
+      const role = hotkeyMap[key];
+      if (!role) return;
+      evt.preventDefault();
+      playRoleHotkey(role);
+    }
 
     let _randSeed = (Date.now() % 2147483647) || 1;
     function rand() {
@@ -1353,6 +1388,12 @@
       startAudio(url, {loop:false});
     }
 
+    function playRoleHotkey(role) {
+      const url = getRoleUrl(role);
+      if (!url) return;
+      startAudio(url, {loop:false, isRole:true});
+    }
+
     function saveWinnerValue(name) {
       api("/battle/winner", {method:"POST", body:{name}});
     }
@@ -1553,7 +1594,14 @@
     connectWs();
 
     document.addEventListener("pointerdown", () => { unlockAudio(); }, { once: true });
+    document.addEventListener("keydown", handleHotkey);
+    window.addEventListener("message", (evt) => {
+      if (evt?.data?.type === "settings-updated") {
+        loadSettings();
+      }
+    });
 
+    loadSettings();
     refreshState();
     refreshSongs();
   </script>

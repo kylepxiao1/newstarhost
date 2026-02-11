@@ -77,6 +77,37 @@
     let lastSongUrl = loadLastSong();
     let supabaseClient = null;
     let currentSuggestedUrl = "";
+    let hotkeyMap = {};
+    let settingsFadeIn = true;
+    let settingsFadeOut = true;
+
+    async function loadSettings() {
+      try {
+        const res = await api("/settings/data");
+        const data = await res.json();
+        settingsFadeIn = data.fade_in !== false;
+        settingsFadeOut = data.fade_out !== false;
+        hotkeyMap = data.hotkeys || {};
+      } catch (e) {}
+    }
+
+    function isTypingTarget(target) {
+      if (!target) return false;
+      const tag = (target.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+    }
+
+    function handleHotkey(evt) {
+      if (evt.defaultPrevented) return;
+      if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+      if (isTypingTarget(evt.target)) return;
+      const key = evt.key;
+      if (!/^\d$/.test(key)) return;
+      const role = hotkeyMap[key];
+      if (!role) return;
+      evt.preventDefault();
+      playRoleHotkey(role);
+    }
 
     async function getSupabaseConfig() {
       return api("/config").then(r => r.json()).catch(() => ({}));
@@ -376,8 +407,8 @@
       const player = getAudioPlayer();
       if (!player) return;
       const targetVolume = normalizeVolume((typeof opts.volume === "number") ? opts.volume : getSongVolume(url));
-      const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
-      const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
+      const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? settingsFadeIn;
+      const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? settingsFadeOut;
       const doPlay = () => {
         try { player.pause(); } catch(e){}
         player.loop = !!opts.loop;
@@ -483,6 +514,21 @@
       startAudio(url, {loop:false});
     }
 
+    function playRoleHotkey(role) {
+      const url = getRoleUrl(role);
+      if (!url) return;
+      const bg = getRoleUrl("background");
+      startAudio(url, {
+        loop: false,
+        isRole: true,
+        onEnd: () => {
+          if (bg) {
+            startAudio(bg, {loop:true, fade:false, fadeOut:false, skipFadeOut:true, isRole:true});
+          }
+        }
+      });
+    }
+
     function playSequence(steps) {
       if (!steps || !steps.length) return;
       const [first, ...rest] = steps.filter(Boolean);
@@ -561,6 +607,7 @@
       if (best) best.el.classList.add("active");
     }
 
+    loadSettings();
     refreshData();
     refreshState();
     refreshSongs();
@@ -580,6 +627,12 @@
     connectWs();
     restoreAudio(document.getElementById("player"));
     highlightNav();
+    document.addEventListener("keydown", handleHotkey);
+    window.addEventListener("message", (evt) => {
+      if (evt?.data?.type === "settings-updated") {
+        loadSettings();
+      }
+    });
 
     async function startPreview() {
       const video = document.getElementById("preview");

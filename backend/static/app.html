@@ -30,6 +30,7 @@
     <a href="#songs" data-target="songs">Songs</a>
     <a href="#audio" data-target="audio">Audio Tools</a>
     <a href="#camera" data-target="camera">Camera</a>
+    <a href="#settings" data-target="settings">Settings</a>
     <a href="#analytics" data-target="analytics">Analytics</a>
   </div>
   <div class="shell">
@@ -41,6 +42,7 @@
       <iframe id="frame-songs" src="/songs/edit"></iframe>
       <iframe id="frame-audio" src="/audio/tools"></iframe>
       <iframe id="frame-camera" src="/camera/manage"></iframe>
+      <iframe id="frame-settings" src="/settings"></iframe>
       <iframe id="frame-analytics" src="/analytics"></iframe>
     </div>
   </div>
@@ -58,6 +60,7 @@
       songs: document.getElementById("frame-songs"),
       audio: document.getElementById("frame-audio"),
       camera: document.getElementById("frame-camera"),
+      settings: document.getElementById("frame-settings"),
       analytics: document.getElementById("frame-analytics"),
     };
     let libraryCache = {};
@@ -125,6 +128,14 @@
 
     window.addEventListener("message", (evt) => {
       const data = evt.data || {};
+      if (data.type === "settings-updated") {
+        Object.values(frames).forEach((frame) => {
+          try {
+            frame?.contentWindow?.postMessage({type:"settings-updated"}, "*");
+          } catch (e) {}
+        });
+        return;
+      }
       if (data.type === "play-audio" && data.url) {
         pauseAllAudio();
         if (globalPlayer.src !== data.url) {

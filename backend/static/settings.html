@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Settings</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
+    h2 { margin-top: 0; font-size: 16px; }
+    .row { display: flex; gap: 10px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
+    label { display: inline-flex; align-items: center; gap: 6px; }
+    select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #1f2937; }
+    th { font-size: 12px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; }
+    .status { font-weight: 600; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Settings</h1>
+  </header>
+  <main>
+    <section>
+      <h2>Audio Fade</h2>
+      <div class="row">
+        <label><input type="checkbox" id="fadeInToggle"> Fade in 0.5s</label>
+        <label><input type="checkbox" id="fadeOutToggle"> Fade out 0.5s</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Bind Hotkeys</h2>
+      <div class="row" style="margin-bottom:12px;">
+        <span class="status">Map number keys to role SFX.</span>
+      </div>
+      <table>
+        <thead>
+          <tr><th>Key</th><th>Role</th></tr>
+        </thead>
+        <tbody id="hotkeyRows"></tbody>
+      </table>
+    </section>
+
+    <div class="row">
+      <button onclick="saveSettings()">Save Settings</button>
+      <span id="statusText" class="status"></span>
+    </div>
+  </main>
+
+  <script>
+    const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
+    const ROLE_OPTIONS = ["", "bell", "applause", "attention", "background", "win", "mvp", "closing"];
+    const DIGITS = ["1","2","3","4","5","6","7","8","9","0"];
+    let settings = { fade_in: true, fade_out: true, hotkeys: {} };
+    let hotkeyMap = {};
+
+    function isTypingTarget(target) {
+      if (!target) return false;
+      const tag = (target.tagName || "").toLowerCase();
+      return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+    }
+
+    function getRoleUrl(role) {
+      const entry = Object.values(songsLibrary || {}).find(s => (s.roles || []).includes(role));
+      return entry?.url || "";
+    }
+
+    function playRole(role) {
+      const url = getRoleUrl(role);
+      if (!url) return;
+      if (window.top && window.top !== window) {
+        window.top.postMessage({type:"play-audio", url}, "*");
+      } else {
+        const audio = new Audio(url);
+        audio.play().catch(()=>{});
+      }
+    }
+
+    function handleHotkey(evt) {
+      if (evt.defaultPrevented) return;
+      if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+      if (isTypingTarget(evt.target)) return;
+      const key = evt.key;
+      if (!/^\d$/.test(key)) return;
+      const role = hotkeyMap[key];
+      if (!role) return;
+      evt.preventDefault();
+      playRole(role);
+    }
+
+    let songsLibrary = {};
+
+    async function loadLibrary() {
+      try {
+        const res = await api("/songs");
+        const data = await res.json();
+        songsLibrary = data?.library || {};
+      } catch (e) {}
+    }
+
+    function renderHotkeys() {
+      const tbody = document.getElementById("hotkeyRows");
+      tbody.innerHTML = "";
+      DIGITS.forEach(key => {
+        const tr = document.createElement("tr");
+        const tdKey = document.createElement("td");
+        tdKey.textContent = key;
+        const tdSelect = document.createElement("td");
+        const sel = document.createElement("select");
+        sel.dataset.key = key;
+        ROLE_OPTIONS.forEach(role => {
+          const opt = document.createElement("option");
+          opt.value = role;
+          opt.textContent = role ? role : "(none)";
+          sel.appendChild(opt);
+        });
+        sel.value = settings.hotkeys?.[key] || "";
+        tdSelect.appendChild(sel);
+        tr.appendChild(tdKey);
+        tr.appendChild(tdSelect);
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function loadSettings() {
+      try {
+        const res = await api("/settings/data");
+        const data = await res.json();
+        settings = {
+          fade_in: data.fade_in !== false,
+          fade_out: data.fade_out !== false,
+          hotkeys: data.hotkeys || {}
+        };
+        hotkeyMap = settings.hotkeys || {};
+      } catch (e) {}
+      const fadeIn = document.getElementById("fadeInToggle");
+      const fadeOut = document.getElementById("fadeOutToggle");
+      if (fadeIn) fadeIn.checked = !!settings.fade_in;
+      if (fadeOut) fadeOut.checked = !!settings.fade_out;
+      renderHotkeys();
+    }
+
+    async function saveSettings() {
+      const fadeIn = document.getElementById("fadeInToggle")?.checked ?? true;
+      const fadeOut = document.getElementById("fadeOutToggle")?.checked ?? true;
+      const hotkeys = {};
+      document.querySelectorAll("#hotkeyRows select").forEach(sel => {
+        const key = sel.dataset.key;
+        const role = sel.value;
+        if (key && role) hotkeys[key] = role;
+      });
+      const payload = { fade_in: fadeIn, fade_out: fadeOut, hotkeys };
+      const status = document.getElementById("statusText");
+      if (status) status.textContent = "Saving...";
+      try {
+        const res = await api("/settings/data", {method:"POST", body: payload});
+        await res.json();
+        if (status) status.textContent = "Saved";
+        if (window.top && window.top !== window) {
+          window.top.postMessage({type:"settings-updated"}, "*");
+        }
+        setTimeout(() => {
+          window.location.reload();
+        }, 200);
+      } catch (e) {
+        if (status) status.textContent = "Save failed";
+      }
+    }
+
+    loadLibrary();
+    loadSettings();
+    document.addEventListener("keydown", handleHotkey);
+  </script>
+</body>
+</html>
