@@ -61,36 +61,7 @@
     <div id="songsContainer" class="songs"></div>
   </section>
 
-  <section>
-    <h2>Playback Controls</h2>
-    <div class="row">
-      <button class="secondary" onclick="playRole('mvp')">Play MVP Song</button>
-    </div>
-    <div class="row">
-      <select id="randomDancerSelect" style="flex:1;"></select>
-      <button onclick="playRandomForDancer()">Play Random for Dancer</button>
-    </div>
-    <div class="row">
-      <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
-      <datalist id="songSuggestions"></datalist>
-    </div>
-    <div class="row">
-      <select id="songSelect" style="flex:1;"></select>
-      <button onclick="playSong()">Play Song</button>
-    </div>
-    <div class="row" style="align-items:center;">
-      <label style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="fadeToggle" checked> Fade in 0.5s
-      </label>
-      <label style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="fadeOutToggle" checked> Fade out 0.5s
-      </label>
-    </div>
-    <div class="row" style="align-items:center;">
-      <span style="min-width:120px;">Current song:</span>
-      <span id="currentSongLabel">None</span>
-    </div>
-  </section>
+  
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -105,6 +76,7 @@
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
     let supabaseClient = null;
+    let currentSuggestedUrl = "";
 
     async function getSupabaseConfig() {
       return api("/config").then(r => r.json()).catch(() => ({}));
@@ -154,28 +126,9 @@
       } catch (e) {
         dancersList = [];
       }
-      renderDancerDatalist();
       renderDancerFilterOptions();
       renderSongs();
       ensureBackground();
-    }
-
-    function renderDancerDatalist() {
-      const sel = document.getElementById("randomDancerSelect");
-      if (!sel) return;
-      const current = sel.value || "";
-      sel.innerHTML = "";
-      const placeholder = document.createElement("option");
-      placeholder.value = "";
-      placeholder.textContent = "Select dancer";
-      sel.appendChild(placeholder);
-      dancersList.sort((a,b)=>a.localeCompare(b)).forEach(name => {
-        const opt = document.createElement("option");
-        opt.value = name;
-        opt.textContent = name;
-        sel.appendChild(opt);
-      });
-      sel.value = current || "";
     }
 
     function renderDancerFilterOptions() {
@@ -311,6 +264,7 @@
         alert("No suggested song found.");
         return;
       }
+      currentSuggestedUrl = pick.url;
       playSongWithUrl(pick.url);
     }
 
@@ -348,10 +302,6 @@
       const lib = songs.library || {};
       const currentUrlLocal = songs.current || "";
       const backgroundUrlLocal = songs.background || "";
-      const filter = (document.getElementById("songFilter")?.value || "").toLowerCase();
-      const tabFilter = (state.group_name || "").toLowerCase();
-      const datalist = document.getElementById("songSuggestions");
-      if (datalist) datalist.innerHTML = "";
       let currentName = "None";
       const tryResolve = (url) => {
         let name = "None";
@@ -366,83 +316,15 @@
         if (name === "None" && url) name = url;
         return name;
       };
-      if (currentUrlLocal) {
+      if (currentSuggestedUrl) {
+        currentName = tryResolve(currentSuggestedUrl);
+      } else if (currentUrlLocal) {
         currentName = tryResolve(currentUrlLocal);
       } else if (backgroundUrlLocal) {
         currentName = tryResolve(backgroundUrlLocal);
       }
       const currentLabel = document.getElementById("currentSongLabel");
       if (currentLabel) currentLabel.textContent = currentName;
-      const select = document.getElementById("songSelect");
-      if (select) {
-        select.innerHTML = "";
-        const includeAssigned = document.getElementById("filterAssigned")?.checked !== false;
-        const includeFronts = document.getElementById("filterFronts")?.checked !== false;
-        const includeKnows = document.getElementById("filterKnows")?.checked === true;
-        const includeMvp = document.getElementById("filterMvp")?.checked === true;
-        Object.keys(lib).forEach(key => {
-          const song = lib[key];
-          if (!baseFilterSong(song) && !(includeMvp && song.exclusive_mvp_for)) return;
-          const opt = document.createElement("option");
-          opt.value = song.url;
-          let label = song.name || key;
-          const fronts = (song.front_dancers || []).join(", ");
-          if (fronts) {
-            label += ` (Front: ${fronts})`;
-          }
-          if (song.exclusive_mvp_for) {
-            label += ` [MVP: ${song.exclusive_mvp_for}]`;
-          }
-          opt.textContent = label;
-          const assignedList = [];
-          if (includeAssigned) assignedList.push(...(song.dancers || []));
-          if (includeFronts) assignedList.push(...(song.front_dancers || []).slice(0, 1));
-          if (includeKnows) assignedList.push(...(song.knows_song || []));
-          const dancerMatch = tabFilter
-            ? assignedList.some(d => (d || "").toLowerCase().includes(tabFilter)) || (song.exclusive_mvp_for||"").toLowerCase().includes(tabFilter)
-            : true;
-          const toggleOn = includeAssigned || includeFronts || includeKnows || includeMvp;
-          const fallbackPool = [
-            ...(song.dancers || []),
-            ...(song.front_dancers || []),
-            ...(song.knows_song || []),
-          ];
-          const fallbackMatch = !filter || fallbackPool.some(d => (d || "").toLowerCase().includes(filter));
-          const matches = ((!filter || label.toLowerCase().includes(filter)) && dancerMatch) || (!toggleOn && fallbackMatch);
-          if (matches) {
-            select.appendChild(opt);
-          }
-          if (matches && datalist) {
-            const dOpt = document.createElement("option");
-            dOpt.value = label;
-            datalist.appendChild(dOpt);
-          }
-        });
-        if (!select.value && select.options.length) select.selectedIndex = 0;
-      }
-    }
-
-    function filterSelected() {
-      const filterVal = (document.getElementById("songFilter")?.value || "").toLowerCase();
-      const select = document.getElementById("songSelect");
-      if (!select) return;
-      for (let i = 0; i < select.options.length; i++) {
-        if (select.options[i].textContent.toLowerCase() === filterVal) {
-          select.selectedIndex = i;
-          playSong(true);
-          break;
-        }
-      }
-    }
-
-    function selectTab(tab) {
-      renderSongs();
-    }
-
-    async function playSong(fromSelect=false) {
-      const select = document.getElementById("songSelect");
-      const url = select ? select.value : "";
-      playSongWithUrl(url, fromSelect);
     }
 
     function playSongWithUrl(url, fromSelect=false) {
@@ -624,29 +506,6 @@
       startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, isRole, onEnd: () => playSequence(rest)});
     }
 
-    function playRandomForDancer() {
-      const raw = (document.getElementById("randomDancerSelect")?.value || "").trim();
-      if (!raw) {
-        alert("Select a registered dancer");
-        return;
-      }
-      const match = dancersList.find(d => d.toLowerCase() === raw.toLowerCase());
-      if (!match) {
-        alert("Select a registered dancer");
-        return;
-      }
-      const name = match.toLowerCase();
-      const pool = Object.values(library).filter(s => (s.dancers||[]).some(d => (d||"").toLowerCase() === name));
-      if (!pool.length) {
-        alert("No songs found for that dancer");
-        return;
-      }
-      const choice = pickRandomWeighted(pool);
-      if (choice?.url) {
-        playSongWithUrl(choice.url);
-      }
-    }
-
     function ensureBackground() {
       if (backgroundStarted) return;
       const saved = getSavedAudio();
@@ -681,28 +540,6 @@
       playCounts[url] = (playCounts[url] || 0) + 1;
       savePlayCounts();
       saveLastSong(url);
-    }
-
-    function pickRandomWeighted(pool) {
-      if (!pool?.length) return null;
-      const processed = pool.map(item => {
-        const key = typeof item === "string" ? item : (item?.url || item?.id || null);
-        const count = key ? (playCounts[key] || 0) : 0;
-        return { item, key, count };
-      });
-      let candidates = processed;
-      if (processed.length > 1 && lastSongUrl) {
-        const filtered = processed.filter(p => p.key && p.key !== lastSongUrl);
-        if (filtered.length) candidates = filtered;
-      }
-      const weights = candidates.map(p => p.key ? 1 / (1 + p.count) : 1);
-      const total = weights.reduce((a,b)=>a+b,0);
-      let r = Math.random() * total;
-      for (let i=0;i<candidates.length;i++) {
-        r -= weights[i];
-        if (r <= 0) return candidates[i].item;
-      }
-      return candidates[candidates.length-1].item;
     }
 
     function highlightNav() {

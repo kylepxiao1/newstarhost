@@ -63,34 +63,7 @@
     </div>
   </section>
 
-  <section>
-    <h2>Playback Controls</h2>
-    <div class="row">
-      <button class="secondary" onclick="playRole('background')">Play Background</button>
-      <button class="secondary" onclick="playRole('mvp')">Play MVP</button>
-    </div>
-    <div class="row">
-      <input id="songFilter" placeholder="Search songs" style="flex:1;" list="songSuggestions" oninput="renderSongs()" onchange="filterSelected()">
-      <datalist id="songSuggestions"></datalist>
-    </div>
-    <div class="row">
-      <select id="songSelect" style="flex:1;"></select>
-      <button onclick="playSong()">Play Song</button>
-    </div>
-    <div class="row" style="align-items:center;">
-      <label style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="fadeToggle" checked> Fade in 0.5s
-      </label>
-      <label style="display:flex;gap:6px;align-items:center;">
-        <input type="checkbox" id="fadeOutToggle" checked> Fade out 0.5s
-      </label>
-    </div>
-    <div class="row" style="align-items:center;">
-      <span style="min-width:120px;">Current song:</span>
-      <span id="currentSongLabel">None</span>
-    </div>
-  </section>
-  
+
   </main>
 
   <script>
