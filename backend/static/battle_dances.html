@@ -900,12 +900,12 @@
      * Weight by cooldown factor: w = 1 - exp(-x / tau), where x = plays_after_last.
      * Missing songs are treated as x = infinity (w = 1).
      */
-    async function pickWithRecencyPenalty(songs, tau = 15) {
+    async function pickWithRecencyPenalty(songs, tau = 10) {
       const list = Array.isArray(songs)
         ? songs.filter(Boolean)
         : Array.from(songs || []).filter(Boolean);
       if (!list.length) return null;
-      if (!Number.isFinite(tau) || tau <= 0) tau = 15;
+      if (!Number.isFinite(tau) || tau <= 0) tau = 10;
       const pickByWeights = (items, weights) => {
         const total = weights.reduce((sum, w) => sum + (Number.isFinite(w) ? w : 0), 0);
         if (!Number.isFinite(total) || total <= 0) {
