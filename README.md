@@ -99,13 +99,13 @@ flyctl auth login
 flyctl machines list -a newstarhost
 
 # SSH into the machine
-flyctl ssh console -a newstarhost --machine 827d21b79120d8
+flyctl ssh console -a newstarhost --machine <APP_MACHINE_ID>
 
 # Start the listener machine
-fly machines start 7843e41c06d1e8
+fly machines start <APP_MACHINE_ID>
 
 # Check the listener logs
-flyctl logs -a newstarhost --machine 7843e41c06d1e8
+flyctl logs -a newstarhost --machine <APP_MACHINE_ID>
 
 # Download a file from the machine (one-shot)
 flyctl ssh sftp get -a newstarhost /path/on/machine/filename.ext C:\path\to\local\filename.ext
