@@ -40,7 +40,6 @@
         <span id="volumeValue" style="min-width:64px;text-align:right;">100</span>
       </div>
     </section>
-  </main>
   <section>
     <h2>Roles</h2>
     <div class="row" id="rolesContainer" style="flex-wrap: wrap; gap:12px;"></div>
@@ -99,6 +98,7 @@
       <button class="danger" onclick="removeSong()">Delete Song</button>
     </div>
   </section>
+  </main>
 
   <script>
   const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});

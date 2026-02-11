@@ -35,14 +35,14 @@
       <button onclick="addDancer()">Add</button>
     </div>
   </section>
-  </main>
-  <section>
+    <section>
     <h2>Registered Dancers</h2>
     <table>
       <thead><tr><th>Name</th><th>Handle</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Actions</th></tr></thead>
       <tbody id="dancerTable"></tbody>
     </table>
   </section>
+  </main>
 
   <script>
     const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
