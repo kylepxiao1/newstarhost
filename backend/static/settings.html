@@ -40,7 +40,7 @@
       </div>
       <table>
         <thead>
-          <tr><th>Key</th><th>Role</th></tr>
+          <tr><th>Key</th><th>Role</th><th>Preview</th></tr>
         </thead>
         <tbody id="hotkeyRows"></tbody>
       </table>
@@ -121,8 +121,17 @@
         });
         sel.value = settings.hotkeys?.[key] || "";
         tdSelect.appendChild(sel);
+        const tdPreview = document.createElement("td");
+        const btn = document.createElement("button");
+        btn.textContent = "Preview";
+        btn.onclick = () => {
+          const role = sel.value;
+          if (role) playRole(role);
+        };
+        tdPreview.appendChild(btn);
         tr.appendChild(tdKey);
         tr.appendChild(tdSelect);
+        tr.appendChild(tdPreview);
         tbody.appendChild(tr);
       });
     }
