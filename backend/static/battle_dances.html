@@ -813,55 +813,62 @@
       }
   }
 
-    function pickRandom(arr) {
-      if (!arr?.length) return null;
-      const processed = arr.map(item => {
-        const key = typeof item === "string" ? item : (item?.url || item?.id || null);
-        const count = key ? (playCounts[key] || 0) : 0;
-        return { item, key, count };
-      });
-      let candidates = processed;
-      if (processed.length > 1 && lastSongUrl) {
-        const filtered = processed.filter(p => p.key && p.key !== lastSongUrl);
-        if (filtered.length) candidates = filtered;
-      }
-      const weights = candidates.map(p => p.key ? 1 / (1 + p.count) : 1);
-      const total = weights.reduce((a,b)=>a+b,0);
-      debugLog("pickRandom candidates", {
-        total,
-        lastSongUrl,
-        candidates: candidates.map(c => ({key: c.key, count: c.count, w: c.key ? 1 / (1 + c.count) : 1}))
-      });
-      const allEqual = weights.every(w => w === weights[0]);
-      if (allEqual && candidates.length > 1) {
-        const allZeroCounts = candidates.every(c => (c.count || 0) === 0);
-        let idx;
-        if (allZeroCounts && !lastSongUrl) {
-          const t = Date.now() + Math.floor((performance && performance.now ? performance.now() : 0) * 1000);
-          idx = Math.abs(t) % candidates.length;
-          debugLog("pickRandom uniform time-seed", {idx, len: candidates.length});
-        } else {
-          idx = Math.floor(rand() * candidates.length);
-          debugLog("pickRandom uniform", {idx, len: candidates.length});
+    /**
+     * Weight by cooldown factor: w = 1 - exp(-x / tau), where x = plays_after_last.
+     * Missing songs are treated as x = infinity (w = 1).
+     */
+    async function pickWithRecencyPenalty(songs, tau = 10) {
+      const list = Array.isArray(songs)
+        ? songs.filter(Boolean)
+        : Array.from(songs || []).filter(Boolean);
+      if (!list.length) return null;
+      if (!Number.isFinite(tau) || tau <= 0) tau = 10;
+      const pickByWeights = (items, weights) => {
+        const total = weights.reduce((sum, w) => sum + (Number.isFinite(w) ? w : 0), 0);
+        if (!Number.isFinite(total) || total <= 0) {
+          const idx = Math.floor(rand() * items.length);
+          return items[idx] ?? null;
         }
-        return candidates[idx].item;
+        let r = rand() * total;
+        for (let i = 0; i < items.length; i++) {
+          r -= weights[i];
+          if (r <= 0) return items[i];
+        }
+        return items[items.length - 1] ?? null;
+      };
+      const client = await ensureSupabaseClient();
+      if (!client) {
+        return pickByWeights(list, list.map(() => 1));
       }
-      if (!Number.isFinite(total) || total <= 0) {
-        const idx = Math.floor(rand() * candidates.length);
-        debugLog("pickRandom fallback", {len: candidates.length, idx});
-        return candidates[idx].item;
-      }
-      let r = rand() * total;
-      debugLog("pickRandom roll", {r});
-      for (let i=0;i<candidates.length;i++) {
-        r -= weights[i];
-        if (r <= 0) {
-          debugLog("pickRandom chosen", {idx:i, key:candidates[i].key});
-          return candidates[i].item;
+
+      const names = Array.from(new Set(list.map(s => s?.name).filter(Boolean)));
+      const playsMap = new Map();
+      if (names.length) {
+        const { data, error } = await client
+          .from("play_counts_after_last")
+          .select("song_name,plays_after_last")
+          .in("song_name", names);
+        if (error) {
+          console.warn("recencyPenalty query error", error);
+        }
+        if (!error && Array.isArray(data)) {
+          data.forEach(row => {
+            if (!row) return;
+            const name = row.song_name;
+            const val = Number(row.plays_after_last);
+            if (name && Number.isFinite(val)) playsMap.set(name, val);
+          });
         }
       }
-      debugLog("pickRandom chosen", {idx:candidates.length-1, key:candidates[candidates.length-1]?.key});
-      return candidates[candidates.length-1].item;
+
+      const weights = list.map(song => {
+        const name = song?.name;
+        const x = playsMap.has(name) ? playsMap.get(name) : Number.POSITIVE_INFINITY;
+        const safeX = Number.isFinite(x) ? Math.max(0, x) : Number.POSITIVE_INFINITY;
+        const factor = safeX === Number.POSITIVE_INFINITY ? 1 : (1 - Math.exp(-safeX / tau));
+        return Math.max(0, factor);
+      });
+      return pickByWeights(list, weights);
     }
 
     function tickPoints() {
@@ -993,36 +1000,35 @@
       return groupSongs().some(s => s.url === url);
     }
 
-    function decideNextSong(currentUrl) {
+    async function decideNextSong(currentUrl) {
       const dancers = routine.dancers || [];
       if (dancers.length < 2) return getRoleUrl("background");
       const played = routine.playedSongs || new Set();
       const scoreInfo = scoresForDancers(dancers[0], dancers[1]);
       // First song logic prefers shared/group
-      if (!routine.firstSongPlayed || !scoreInfo) {
+      if (!routine.firstSongPlayed) {
         const both = intersectSongsFor(dancers[0], dancers[1])
           .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
           .filter(s => !played.has(s.url) && s.url !== currentUrl);
-        if (both.length) return pickRandom(both).url;
+        //if (both.length) return pickRandom(both).url;
         const groups = groupSongs()
           .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
           .filter(s => !played.has(s.url) && s.url !== currentUrl);
-        if (groups.length) return pickRandom(groups).url;
-        // if exhausted, allow repeats of shared/group
-        const bothRepeat = intersectSongsFor(dancers[0], dancers[1])
-          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
-          .filter(s => s.url !== currentUrl);
-        if (bothRepeat.length) return pickRandom(bothRepeat).url;
-        const groupRepeat = groupSongs()
-          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
-          .filter(s => s.url !== currentUrl);
-        if (groupRepeat.length) return pickRandom(groupRepeat).url;
+        //if (groups.length) return pickRandom(groups).url;
+        const combined = new Set([...both, ...groups]);
+        if (combined.size) {
+          const pick = await pickWithRecencyPenalty(Array.from(combined));
+          if (pick?.url) return pick.url;
+        }
+      }
+      if (!scoreInfo) {
+        return await nextSongFor(dancers[0], dancers[1], currentUrl) || getRoleUrl("background");
       }
       const {leader, loser, leaderScore, loserScore} = scoreInfo;
-      return pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl, played);
+      return await pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl, played);
     }
 
-    function pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl=null, played=new Set()) {
+    async function pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl=null, played=new Set()) {
       const leaderAssigned = songsForDancer(leader).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
       const leaderNotCurrent = leaderAssigned.filter(s => s.url !== currentUrl);
       const loserAssigned = new Set(songsForDancer(loser).map(s => s.url));
@@ -1032,18 +1038,18 @@
 
       if (isHighMargin) {
         const pool = exclude(leaderAssigned);
-        const pick = pickRandom(pool.length ? pool : leaderNotCurrent);
-        return pick ? pick.url : null;
+        const pick = await pickWithRecencyPenalty(pool.length ? pool : leaderNotCurrent);
+        return pick?.url || null;
       }
       const shared = exclude(leaderAssigned).filter(s => loserAssigned.has(s.url) || loserKnows.has(s.url));
       if (shared.length) {
-        const pick = pickRandom(shared);
-        return pick ? pick.url : null;
+        const pick = await pickWithRecencyPenalty(shared);
+        return pick?.url || null;
       }
       const sharedAny = leaderNotCurrent.filter(s => loserAssigned.has(s.url) || loserKnows.has(s.url));
       if (sharedAny.length) {
-        const pick = pickRandom(sharedAny);
-        return pick ? pick.url : null;
+        const pick = await pickWithRecencyPenalty(sharedAny);
+        return pick?.url || null;
       }
       const groups = groupSongs()
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
@@ -1051,8 +1057,8 @@
       const groupAll = groupSongs()
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
         .filter(s => s.url !== currentUrl);
-      const pickGroup = pickRandom(groups.length ? groups : groupAll);
-      return pickGroup ? pickGroup.url : null;
+      const pickGroup = await pickWithRecencyPenalty(groups.length ? groups : groupAll);
+      return pickGroup?.url || null;
     }
 
     function groupSongs() {
@@ -1064,11 +1070,19 @@
       });
     }
 
-    function pickSongFor(name, excludeUrl=null) {
+    async function pickSongFor(name, excludeUrl=null) {
       const pool = songsForDancer(name).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
       const filtered = excludeUrl ? pool.filter(s => s.url !== excludeUrl) : pool;
-      const chosen = pickRandom(filtered);
-      return chosen ? chosen.url : null;
+      const chosen = await pickWithRecencyPenalty(filtered.length ? filtered : pool);
+      return chosen?.url || null;
+    }
+
+    async function nextSongFor(dancerA, dancerB, excludeUrl=null) {
+      const pool = [...songsForDancer(dancerA), ...songsForDancer(dancerB)]
+        .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
+      const filtered = pool.filter(s => s.url !== excludeUrl);
+      const chosen = await pickWithRecencyPenalty(filtered.length ? filtered : pool);
+      return chosen?.url || null;
     }
 
     function getLeaderName() {
@@ -1174,8 +1188,8 @@
       await subscribeToGifts();
     }
 
-    function skipSong() {
-      const next = decideNextSong(routine.currentSongUrl);
+    async function skipSong() {
+      const next = await decideNextSong(routine.currentSongUrl);
       if (!next || next === routine.currentSongUrl) return;
       markRoutinePlayed(next);
       routine.currentSongUrl = next;
@@ -1214,7 +1228,7 @@
       api("/battle/battle_end", {method:"POST", body: payload}).catch(() => {});
     }
 
-    function playRoutineSong(lastUrl) {
+    async function playRoutineSong(lastUrl) {
       if (!routine.active) return;
       const now = Date.now();
       const remaining = routine.endTime - now;
@@ -1243,7 +1257,7 @@
         });
         return;
       }
-      let url = decideNextSong(lastUrl) || getRoleUrl("background");
+      let url = (await decideNextSong(lastUrl)) || getRoleUrl("background");
       if (!url) { ensureBackground(); return; }
       const afterDoorbell = () => {
         api("/songs/play", {method:"POST", body:{target:"group", url, context: "battle"}}).catch(()=>{});
@@ -1338,7 +1352,7 @@
       refreshState();
     }
 
-    function monitorSongSwitch() {
+    async function monitorSongSwitch() {
       if (!routine.active || !routine.currentSongUrl) return;
       if (!routine.dancers || routine.dancers.length < 2) return;
       const [a, b] = routine.dancers;
@@ -1352,7 +1366,7 @@
       // If the current song owner is the leader and leader is ahead, let it keep playing
       if ((routine.currentSongOwner || "").toLowerCase() === (leader || "").toLowerCase()) return;
       // Otherwise (loser overtook or no owner), switch by margin logic
-      const newUrl = pickSongByMargin(leader, loser, leaderScore, loserScore, routine.currentSongUrl);
+      const newUrl = await pickSongByMargin(leader, loser, leaderScore, loserScore, routine.currentSongUrl);
       if (!newUrl || newUrl === routine.currentSongUrl) return;
       routine.currentSongOwner = leader;
       routine.currentSongUrl = newUrl;
