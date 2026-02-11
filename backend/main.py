@@ -281,6 +281,10 @@ class DeleteDancerRequest(BaseModel):
 class SpoofGiftRequest(BaseModel):
     slot: Optional[str] = None
 
+class LiveBattleEndRequest(BaseModel):
+    start_ms: int
+    end_ms: Optional[int] = None
+
 
 def _norm_filename(s: str) -> str:
     s = unicodedata.normalize("NFKD", s).encode("ascii", "ignore").decode("ascii")
@@ -548,6 +552,61 @@ async def spoof_gift(body: SpoofGiftRequest = SpoofGiftRequest()) -> JSONRespons
     err = await _insert_supabase_row("gift_events", row)
     if err:
         logger.warning("Spoof gift insert failed: %s", err)
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+    return JSONResponse({"ok": True})
+
+
+@app.post("/battle/battle_end")
+async def live_battle_end(body: LiveBattleEndRequest) -> JSONResponse:
+    state = state_manager.get_state()
+    scores = state.get("scores", {}) or {}
+    slot_one_name = (state.get("slot_one") or "").strip()
+    slot_two_name = (state.get("slot_two") or "").strip()
+    dancer_list = state.get("dancers", []) or []
+
+    def _find_dancer(name: str) -> dict:
+        target = (name or "").lower()
+        for d in dancer_list:
+            if (d.get("name") or "").lower() == target:
+                return d
+        return {}
+
+    dancer_one = _find_dancer(slot_one_name)
+    dancer_two = _find_dancer(slot_two_name)
+    score_one = int(scores.get("slot_one") or 0)
+    score_two = int(scores.get("slot_two") or 0)
+    if score_one == score_two:
+        winner = "tie"
+    elif score_one > score_two:
+        winner = slot_one_name or "slot_one"
+    else:
+        winner = slot_two_name or "slot_two"
+
+    start_ms = int(body.start_ms)
+    end_ms = int(body.end_ms) if body.end_ms is not None else int(time.time() * 1000)
+    start_dt = datetime.fromtimestamp(start_ms / 1000, timezone.utc)
+    end_dt = datetime.fromtimestamp(end_ms / 1000, timezone.utc)
+
+    row_id = int(time.time() * 1000) * 1000 + random.randint(0, 999)
+    row = {
+        "id": row_id,
+        "slot_one_name": slot_one_name,
+        "slot_two_name": slot_two_name,
+        "slot_one_handle": dancer_one.get("handle"),
+        "slot_two_handle": dancer_two.get("handle"),
+        "slot_one_tiktok_id": dancer_one.get("tiktok_id") or dancer_one.get("tiktokId"),
+        "slot_two_tiktok_id": dancer_two.get("tiktok_id") or dancer_two.get("tiktokId"),
+        "slot_one_points": score_one,
+        "slot_two_points": score_two,
+        "winner": winner,
+        "start_iso_ts": start_dt.isoformat(),
+        "start_unix_ts": int(start_dt.timestamp()),
+        "end_iso_ts": end_dt.isoformat(),
+        "end_unix_ts": int(end_dt.timestamp()),
+    }
+    err = await _insert_supabase_row("battle_events", row)
+    if err:
+        logger.warning("Battle event insert failed: %s", err)
         return JSONResponse({"ok": False, "error": err}, status_code=500)
     return JSONResponse({"ok": True})
 

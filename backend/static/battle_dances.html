@@ -146,7 +146,7 @@
     const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
     let state = {};
     let currentTab = "";
-    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set() };
+    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win"];
     let playCounts = loadPlayCounts();
@@ -1123,6 +1123,8 @@
       clearRoutineTimers();
       routine.active = true;
       routine.live = false;
+      routine.startedLive = false;
+      routine.logged = false;
       routine.startTime = Date.now();
       routine.endTime = routine.startTime + durationMs;
       routine.dancers = chooseTwoDancers();
@@ -1152,6 +1154,8 @@
       clearRoutineTimers();
       routine.active = true;
       routine.live = true;
+      routine.startedLive = true;
+      routine.logged = false;
       routine.startTime = Date.now();
       routine.endTime = routine.startTime + durationMs;
       routine.dancers = chooseTwoDancers();
@@ -1186,6 +1190,8 @@
     function cancelRoutine() {
       routine.active = false;
       routine.live = false;
+      routine.startedLive = false;
+      routine.logged = false;
       routine.warned = false;
       routine.playedSongs = new Set();
       clearRoutineTimers();
@@ -1200,14 +1206,24 @@
       renderTimer(true);
     }
 
+    async function recordLiveBattleEnd(endMs) {
+      if (!routine.startedLive || routine.logged) return;
+      routine.logged = true;
+      const startMs = routine.startTime || Date.now();
+      const payload = { start_ms: Math.floor(startMs), end_ms: Math.floor(endMs || Date.now()) };
+      api("/battle/battle_end", {method:"POST", body: payload}).catch(() => {});
+    }
+
     function playRoutineSong(lastUrl) {
       if (!routine.active) return;
       const now = Date.now();
       const remaining = routine.endTime - now;
       if (remaining <= 0) {
+        recordLiveBattleEnd(Date.now());
         playSequence(["applause","win"], true);
         routine.active = false;
         routine.live = false;
+        routine.startedLive = false;
         stopPointsInterval();
         stopSwitchInterval();
         stopLiveSubscription();
@@ -1374,8 +1390,10 @@
          stopSwitchInterval();
        }
        if (remaining <= 0) {
+         recordLiveBattleEnd(Date.now());
          routine.active = false;
          routine.live = false;
+         routine.startedLive = false;
          routine.warned = false;
          stopTimerInterval();
           stopPointsInterval();
