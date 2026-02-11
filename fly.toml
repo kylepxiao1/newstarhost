@@ -11,8 +11,6 @@ primary_region = 'lax'
 
 [env]
   PORT = '8080'
-  TIKTOK_USERNAMES = 'wildcard_boys valentinaaaa cardin_v_'
-  BATTLE_API = 'http://127.0.0.1:8080'
 
 [[mounts]]
   source = 'media'
