@@ -118,6 +118,7 @@
         <button class="secondary" id="tabOne" onclick="selectTab('slot_one')">Dancer 1</button>
         <button class="secondary" id="tabTwo" onclick="selectTab('slot_two')">Dancer 2</button>
         <button class="secondary" id="tabIntersect" onclick="selectTab('intersect')">Intersect</button>
+        <button class="secondary" onclick="pickSuggestedSong()">Pick Suggested</button>
       </div>
       <div class="row">
         <button class="secondary" onclick="playRole('attention')">Play Attention SFX</button>
@@ -672,13 +673,60 @@
       songs.current = url;
       songs[currentTab] = url;
       state.songs = songs;
-      // play selected -> applause -> background
-      startAudio(url, {loop:false, onEnd: () => {
-        playSequence(["applause"], false, () => {
-          const bg = state.songs?.background;
-          if (bg) startAudio(bg, {loop:true});
-        });
-      }});
+      // bell -> selected -> applause -> background
+      playSequence(["bell"], false, () => {
+        startAudio(url, {loop:false, onEnd: () => {
+          playSequence(["applause"], false, () => {
+            const bg = state.songs?.background;
+            if (bg) startAudio(bg, {loop:true});
+          });
+        }});
+      });
+      refreshState();
+    }
+
+    async function pickSuggestedSong() {
+      if (!audioUnlocked) {
+        const ok = await unlockAudio();
+        if (!ok) return alert("Click anywhere on the page once to enable audio.");
+      }
+      const slotOne = (state.slot_one || "").trim();
+      const slotTwo = (state.slot_two || "").trim();
+      if (!slotOne || !slotTwo) {
+        alert("Select Dancer 1 and Dancer 2 first.");
+        return;
+      }
+      const currentUrl = state.songs?.current || "";
+      const played = routine.playedSongs || new Set();
+      const both = intersectSongsFor(slotOne, slotTwo)
+        .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+        .filter(s => !played.has(s.url) && s.url !== currentUrl);
+      const groups = groupSongs()
+        .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+        .filter(s => !played.has(s.url) && s.url !== currentUrl);
+      const combined = new Set([...both, ...groups]);
+      let url = "";
+      if (combined.size) {
+        const pick = await pickWithRecencyPenalty(Array.from(combined));
+        if (pick?.url) url = pick.url;
+      }
+      if (!url) {
+        alert("No suggested song found.");
+        return;
+      }
+      cancelRoutine();
+      await api("/songs/play", {method:"POST", body:{target: "group", url, context: "battle"}});
+      const songs = state.songs || {};
+      songs.current = url;
+      state.songs = songs;
+      playSequence(["bell"], false, () => {
+        startAudio(url, {loop:false, onEnd: () => {
+          playSequence(["applause"], false, () => {
+            const bg = state.songs?.background;
+            if (bg) startAudio(bg, {loop:true});
+          });
+        }});
+      });
       refreshState();
     }
 
@@ -817,12 +865,12 @@
      * Weight by cooldown factor: w = 1 - exp(-x / tau), where x = plays_after_last.
      * Missing songs are treated as x = infinity (w = 1).
      */
-    async function pickWithRecencyPenalty(songs, tau = 10) {
+    async function pickWithRecencyPenalty(songs, tau = 5) {
       const list = Array.isArray(songs)
         ? songs.filter(Boolean)
         : Array.from(songs || []).filter(Boolean);
       if (!list.length) return null;
-      if (!Number.isFinite(tau) || tau <= 0) tau = 10;
+      if (!Number.isFinite(tau) || tau <= 0) tau = 5;
       const pickByWeights = (items, weights) => {
         const total = weights.reduce((sum, w) => sum + (Number.isFinite(w) ? w : 0), 0);
         if (!Number.isFinite(total) || total <= 0) {
@@ -1078,7 +1126,7 @@
     }
 
     async function nextSongFor(dancerA, dancerB, excludeUrl=null) {
-      const pool = [...songsForDancer(dancerA), ...songsForDancer(dancerB)]
+      const pool = [...songsForDancer(dancerA), ...songsForDancer(dancerB), ...groupSongs()]
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
       const filtered = pool.filter(s => s.url !== excludeUrl);
       const chosen = await pickWithRecencyPenalty(filtered.length ? filtered : pool);
