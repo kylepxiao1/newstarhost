@@ -37,8 +37,8 @@
   <section>
     <h2>Filters</h2>
     <div class="row">
-      <input id="dancerFilter" placeholder="Filter by dancer" oninput="renderSongs()">
-      <button onclick="refreshData()">Refresh</button>
+      <select id="dancerFilter" onchange="renderSongs()"></select>
+      <button onclick="playSuggested()">Play Suggested</button>
     </div>
     <div class="row" style="align-items:center;gap:16px;">
       <label style="display:flex;gap:6px;align-items:center;">
@@ -49,6 +49,9 @@
       </label>
       <label style="display:flex;gap:6px;align-items:center;">
         <input type="checkbox" id="filterKnows" onchange="renderSongs()"> Knows dance
+      </label>
+      <label style="display:flex;gap:6px;align-items:center;">
+        <input type="checkbox" id="filterMvp" onchange="renderSongs()"> MVP
       </label>
     </div>
   </section>
@@ -64,8 +67,7 @@
       <button class="secondary" onclick="playRole('mvp')">Play MVP Song</button>
     </div>
     <div class="row">
-      <input id="randomDancerInput" placeholder="Registered dancer for random pick" list="registeredDancers" style="flex:1;">
-      <datalist id="registeredDancers"></datalist>
+      <select id="randomDancerSelect" style="flex:1;"></select>
       <button onclick="playRandomForDancer()">Play Random for Dancer</button>
     </div>
     <div class="row">
@@ -91,6 +93,7 @@
   </section>
   </main>
 
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script>
     const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
     let library = {};
@@ -101,6 +104,22 @@
     let dancersList = [];
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
+    let supabaseClient = null;
+
+    async function getSupabaseConfig() {
+      return api("/config").then(r => r.json()).catch(() => ({}));
+    }
+
+    async function ensureSupabaseClient() {
+      if (supabaseClient) return supabaseClient;
+      if (!window.supabase || !window.supabase.createClient) return null;
+      const cfg = await getSupabaseConfig();
+      if (!cfg.supabase_url || !cfg.supabase_key) {
+        return null;
+      }
+      supabaseClient = window.supabase.createClient(cfg.supabase_url, cfg.supabase_key);
+      return supabaseClient;
+    }
     function getSavedAudio() {
       try { return JSON.parse(localStorage.getItem("globalAudioState") || "null"); } catch (e) { return null; }
     }
@@ -136,89 +155,193 @@
         dancersList = [];
       }
       renderDancerDatalist();
+      renderDancerFilterOptions();
       renderSongs();
       ensureBackground();
     }
 
     function renderDancerDatalist() {
-      const dl = document.getElementById("registeredDancers");
-      if (!dl) return;
-      dl.innerHTML = "";
+      const sel = document.getElementById("randomDancerSelect");
+      if (!sel) return;
+      const current = sel.value || "";
+      sel.innerHTML = "";
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "Select dancer";
+      sel.appendChild(placeholder);
       dancersList.sort((a,b)=>a.localeCompare(b)).forEach(name => {
         const opt = document.createElement("option");
         opt.value = name;
-        dl.appendChild(opt);
+        opt.textContent = name;
+        sel.appendChild(opt);
       });
+      sel.value = current || "";
+    }
+
+    function renderDancerFilterOptions() {
+      const sel = document.getElementById("dancerFilter");
+      if (!sel) return;
+      const current = sel.value || "";
+      sel.innerHTML = "";
+      const all = document.createElement("option");
+      all.value = "";
+      all.textContent = "All dancers";
+      sel.appendChild(all);
+      dancersList.sort((a,b)=>a.localeCompare(b)).forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        sel.appendChild(opt);
+      });
+      if (current && !dancersList.some(n => n.toLowerCase() === current.toLowerCase())) {
+        const opt = document.createElement("option");
+        opt.value = current;
+        opt.textContent = current;
+        sel.appendChild(opt);
+      }
+      sel.value = current || "";
+    }
+
+    function baseFilterSong(song) {
+      const hasRole = (song.roles || []).length > 0;
+      const hasDancers = (song.dancers || []).length > 0;
+      return !hasRole && hasDancers;
+    }
+
+    function hasFilterToggle() {
+      const a = document.getElementById("filterAssigned")?.checked !== false;
+      const f = document.getElementById("filterFronts")?.checked !== false;
+      const k = document.getElementById("filterKnows")?.checked === true;
+      const m = document.getElementById("filterMvp")?.checked === true;
+      return a || f || k || m;
+    }
+
+    function getFilteredSongsForCards() {
+      const dancerFilter = (document.getElementById("dancerFilter")?.value || "").toLowerCase();
+      const includeAssigned = document.getElementById("filterAssigned")?.checked !== false;
+      const includeFronts = document.getElementById("filterFronts")?.checked !== false;
+      const includeKnows = document.getElementById("filterKnows")?.checked === true;
+      const includeMvp = document.getElementById("filterMvp")?.checked === true;
+      return Object.values(library)
+        .filter(s => {
+          if (baseFilterSong(s)) return true;
+          return includeMvp && !!(s.exclusive_mvp_for || "");
+        })
+        .filter(s => {
+          if (!dancerFilter) return true;
+          const assigned = [];
+          if (includeAssigned) assigned.push(...(s.dancers||[]));
+          if (includeFronts) assigned.push(...(s.front_dancers||[]).slice(0, 1));
+          if (includeKnows) assigned.push(...(s.knows_song||[]));
+          const exclusive = (s.exclusive_mvp_for || "").toLowerCase();
+          if (exclusive && exclusive.includes(dancerFilter)) return true;
+          return assigned.some(n => (n||"").toLowerCase().includes(dancerFilter));
+        })
+        .filter(s => {
+          if (hasFilterToggle()) return true;
+          const target = (dancerFilter || "").trim();
+          if (!target) return true;
+          const pool = [
+            ...(s.dancers || []),
+            ...(s.front_dancers || []),
+            ...(s.knows_song || []),
+          ];
+          return pool.some(n => (n||"").toLowerCase().includes(target));
+        })
+        .sort((a,b)=> (a.name||"").localeCompare(b.name||""));
+    }
+
+    /**
+     * Weight by cooldown factor: w = 1 - exp(-x / tau), where x = plays_after_last.
+     * Missing songs are treated as x = infinity (w = 1).
+     */
+    async function pickWithRecencyPenalty(songs, tau = 10) {
+      const list = Array.isArray(songs)
+        ? songs.filter(Boolean)
+        : Array.from(songs || []).filter(Boolean);
+      if (!list.length) return null;
+      if (!Number.isFinite(tau) || tau <= 0) tau = 10;
+      const pickByWeights = (items, weights) => {
+        const total = weights.reduce((sum, w) => sum + (Number.isFinite(w) ? w : 0), 0);
+        if (!Number.isFinite(total) || total <= 0) {
+          const idx = Math.floor(Math.random() * items.length);
+          return items[idx] ?? null;
+        }
+        let r = Math.random() * total;
+        for (let i = 0; i < items.length; i++) {
+          r -= weights[i];
+          if (r <= 0) return items[i];
+        }
+        return items[items.length - 1] ?? null;
+      };
+      const client = await ensureSupabaseClient();
+      if (!client) {
+        return pickByWeights(list, list.map(() => 1));
+      }
+      const names = Array.from(new Set(list.map(s => s?.name).filter(Boolean)));
+      const playsMap = new Map();
+      if (names.length) {
+        const { data, error } = await client
+          .from("play_counts_after_last")
+          .select("song_name,plays_after_last")
+          .in("song_name", names);
+        if (!error && Array.isArray(data)) {
+          data.forEach(row => {
+            if (!row) return;
+            const name = row.song_name;
+            const val = Number(row.plays_after_last);
+            if (name && Number.isFinite(val)) playsMap.set(name, val);
+          });
+        }
+      }
+      const weights = list.map(song => {
+        const name = song?.name;
+        const x = playsMap.has(name) ? playsMap.get(name) : Number.POSITIVE_INFINITY;
+        const safeX = Number.isFinite(x) ? Math.max(0, x) : Number.POSITIVE_INFINITY;
+        const factor = safeX === Number.POSITIVE_INFINITY ? 1 : (1 - Math.exp(-safeX / tau));
+        return Math.max(0, factor);
+      });
+      return pickByWeights(list, weights);
+    }
+
+    async function playSuggested() {
+      const list = getFilteredSongsForCards();
+      const pick = await pickWithRecencyPenalty(list);
+      if (!pick?.url) {
+        alert("No suggested song found.");
+        return;
+      }
+      playSongWithUrl(pick.url);
     }
 
     function renderSongs() {
       const container = document.getElementById("songsContainer");
-      const baseFilter = (s) => {
-        const hasRole = (s.roles || []).length > 0;
-        const hasDancers = (s.dancers || []).length > 0;
-        const isExclusive = !!(s.exclusive_mvp_for || "");
-        // show normal dancer songs + exclusive MVP songs (even if role is set)
-        return (!hasRole && hasDancers) || isExclusive;
-      };
-      const hasFilterToggle = () => {
-        const a = document.getElementById("filterAssigned")?.checked !== false;
-        const f = document.getElementById("filterFronts")?.checked !== false;
-        const k = document.getElementById("filterKnows")?.checked === true;
-        return a || f || k;
-      };
       if (container) {
         container.innerHTML = "";
-        const dancerFilter = (document.getElementById("dancerFilter")?.value || "").toLowerCase();
-        const includeAssigned = document.getElementById("filterAssigned")?.checked !== false;
-        const includeFronts = document.getElementById("filterFronts")?.checked !== false;
-        const includeKnows = document.getElementById("filterKnows")?.checked === true;
         const durationLabel = (song) => {
           const d = parseInt(song.duration_sec, 10);
           return Number.isFinite(d) && d > 0 ? ` <span class="duration">(${d}s)</span>` : "";
         };
-        Object.values(library)
-          .filter(baseFilter)
-          .filter(s => {
-            if (!dancerFilter) return true;
-            const assigned = [];
-            if (includeAssigned) assigned.push(...(s.dancers||[]));
-            if (includeFronts) assigned.push(...(s.front_dancers||[]).slice(0, 1));
-            if (includeKnows) assigned.push(...(s.knows_song||[]));
-            const exclusive = (s.exclusive_mvp_for || "").toLowerCase();
-            if (exclusive && exclusive.includes(dancerFilter)) return true;
-            return assigned.some(n => (n||"").toLowerCase().includes(dancerFilter));
-          })
-          .filter(s => {
-            if (hasFilterToggle()) return true;
-            const target = (dancerFilter || "").trim();
-            if (!target) return true;
-            const pool = [
-              ...(s.dancers || []),
-              ...(s.front_dancers || []),
-              ...(s.knows_song || []),
-            ];
-            return pool.some(n => (n||"").toLowerCase().includes(target));
-          })
-          .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
-          .forEach(song => {
-            const card = document.createElement("div");
-            card.className = "card";
-            const diff = (song.difficulty || "medium").toLowerCase();
-            if (diff === "easy") card.classList.add("easy");
-            if (diff === "hard") card.classList.add("hard");
-            const badge = song.exclusive_mvp_for ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>` : "";
-            const frontList = (song.front_dancers || []).filter(Boolean);
-            const dancerList = (song.dancers || []).filter(Boolean);
-            const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
-            const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
-            const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
-            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${details ? `<div>${details}</div>` : ""}`;
-            const playBtn = document.createElement("button");
-            playBtn.textContent = "Play Song";
-            playBtn.onclick = () => playSongWithUrl(song.url);
-            card.appendChild(playBtn);
-            container.appendChild(card);
-          });
+        const list = getFilteredSongsForCards();
+        list.forEach(song => {
+          const card = document.createElement("div");
+          card.className = "card";
+          const diff = (song.difficulty || "medium").toLowerCase();
+          if (diff === "easy") card.classList.add("easy");
+          if (diff === "hard") card.classList.add("hard");
+          const badge = song.exclusive_mvp_for ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>` : "";
+          const frontList = (song.front_dancers || []).filter(Boolean);
+          const dancerList = (song.dancers || []).filter(Boolean);
+          const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
+          const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
+          const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
+          card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${details ? `<div>${details}</div>` : ""}`;
+          const playBtn = document.createElement("button");
+          playBtn.textContent = "Play Song";
+          playBtn.onclick = () => playSongWithUrl(song.url);
+          card.appendChild(playBtn);
+          container.appendChild(card);
+        });
       }
 
       const songs = songsState || {};
@@ -256,9 +379,10 @@
         const includeAssigned = document.getElementById("filterAssigned")?.checked !== false;
         const includeFronts = document.getElementById("filterFronts")?.checked !== false;
         const includeKnows = document.getElementById("filterKnows")?.checked === true;
+        const includeMvp = document.getElementById("filterMvp")?.checked === true;
         Object.keys(lib).forEach(key => {
           const song = lib[key];
-          if (!baseFilter(song)) return;
+          if (!baseFilterSong(song) && !(includeMvp && song.exclusive_mvp_for)) return;
           const opt = document.createElement("option");
           opt.value = song.url;
           let label = song.name || key;
@@ -277,7 +401,7 @@
           const dancerMatch = tabFilter
             ? assignedList.some(d => (d || "").toLowerCase().includes(tabFilter)) || (song.exclusive_mvp_for||"").toLowerCase().includes(tabFilter)
             : true;
-          const toggleOn = includeAssigned || includeFronts || includeKnows;
+          const toggleOn = includeAssigned || includeFronts || includeKnows || includeMvp;
           const fallbackPool = [
             ...(song.dancers || []),
             ...(song.front_dancers || []),
@@ -501,7 +625,7 @@
     }
 
     function playRandomForDancer() {
-      const raw = (document.getElementById("randomDancerInput")?.value || "").trim();
+      const raw = (document.getElementById("randomDancerSelect")?.value || "").trim();
       if (!raw) {
         alert("Select a registered dancer");
         return;
