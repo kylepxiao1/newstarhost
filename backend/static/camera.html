@@ -200,9 +200,29 @@
       if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
       try {
         stopPreview();
+        console.log("[camera] preview applyCamera start");
+        await applyCamera();
+        await delay(300);
+        try {
+          const stateSnap = await api("/state").then(r => r.json());
+          console.log("[camera] preview state after apply", {
+            camera_index: stateSnap?.camera_index,
+            camera_label: stateSnap?.camera_label
+          });
+        } catch (e) {
+          console.warn("[camera] preview state fetch failed", e);
+        }
+        console.log("[camera] preview start", {
+          priorDeviceId: previewDeviceId,
+          priorDeviceLabel: previewDeviceLabel
+        });
         const refreshed = await navigator.mediaDevices.enumerateDevices();
         const vcams = refreshed.filter(d => d.kind === "videoinput");
         const virtuals = vcams.filter(c => /virtual/i.test(c.label || ""));
+        console.log("[camera] preview enumerate", {
+          totalVideoInputs: vcams.length,
+          virtualInputs: virtuals.map(v => ({label: v.label || "", deviceId: v.deviceId || ""}))
+        });
         let target = null;
         if (previewDeviceId) {
           target = virtuals.find(c => c.deviceId === previewDeviceId);
@@ -220,12 +240,26 @@
             return alert("No virtual camera found for preview. Start the virtual cam compositor and click Refresh Cameras.");
           }
         }
+        console.log("[camera] preview target", {
+          label: target.label || "",
+          deviceId: target.deviceId || ""
+        });
         const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
         const openStream = async () => {
           const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
           previewStream = stream;
           video.srcObject = stream;
           await video.play();
+          console.log("[camera] preview playing", {
+            readyState: video.readyState,
+            width: video.videoWidth,
+            height: video.videoHeight,
+            trackStates: stream.getTracks().map(t => ({
+              kind: t.kind,
+              readyState: t.readyState,
+              muted: t.muted
+            }))
+          });
         };
         stopPreview();
         await delay(150);
@@ -236,6 +270,7 @@
         cameraLabelsReady = true;
         refreshCameras(true);
       } catch (err) {
+        console.warn("[camera] preview error", err);
         if (err?.name === "NotReadableError") {
           const label = previewDeviceLabel || "virtual camera";
           return alert(

@@ -9,8 +9,8 @@ UVICORN_LOG_LEVEL = os.environ.get("UVICORN_LOG_LEVEL", "warning")
 UVICORN_ACCESS_LOG = os.environ.get("UVICORN_ACCESS_LOG", "false").lower() in ("1", "true", "yes")
 
 
-async def launch_process(cmd):
-    return await asyncio.create_subprocess_exec(*cmd)
+async def launch_process(cmd, env=None):
+    return await asyncio.create_subprocess_exec(*cmd, env=env)
 
 
 async def main():
@@ -32,6 +32,9 @@ async def main():
         uvicorn_cmd.append("--no-access-log")
 
     compositor_cmd = [python, "scripts/virtual_cam_compositor.py"]
+    compositor_env = os.environ.copy()
+    if not compositor_env.get("API_BASE"):
+        compositor_env["API_BASE"] = f"http://127.0.0.1:{UVICORN_PORT}"
 
     print(f"Starting backend: {' '.join(uvicorn_cmd)}")
     uvicorn_proc = await launch_process(uvicorn_cmd)
@@ -40,7 +43,7 @@ async def main():
     await asyncio.sleep(1)
 
     print(f"Starting virtual cam compositor: {' '.join(compositor_cmd)}")
-    compositor_proc = await launch_process(compositor_cmd)
+    compositor_proc = await launch_process(compositor_cmd, env=compositor_env)
 
     try:
         await asyncio.gather(uvicorn_proc.wait(), compositor_proc.wait())

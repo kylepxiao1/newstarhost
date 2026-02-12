@@ -201,6 +201,11 @@ def log_dshow_devices() -> None:
 
 async def main() -> None:
     log_dshow_devices()
+    last_blank_log = 0.0
+    last_frame_log = 0.0
+    frame_sample_count = 0
+    last_open_attempt = 0.0
+
     async with httpx.AsyncClient() as client:
         state_holder: Dict = {"state": await fetch_state(client)}
         current_idx = DEFAULT_CAM_INDEX
@@ -228,29 +233,50 @@ async def main() -> None:
             while True:
                 desired_idx = state_holder.get("state", {}).get("camera_index", -1)
                 desired_label = state_holder.get("state", {}).get("camera_label", "")
-                if desired_idx != last_seen_idx or desired_label != last_seen_label:
+                state_changed = desired_idx != last_seen_idx or desired_label != last_seen_label
+                if state_changed:
                     last_seen_idx = desired_idx
                     last_seen_label = desired_label
-                    if desired_idx != -1 and desired_idx != current_idx:
-                        logger.info("Switching camera to index %s label '%s'", desired_idx, desired_label)
-                        cap.release()
-                        new_cap = open_cam(desired_idx, desired_label)
-                        if new_cap.isOpened():
-                            cap = new_cap
-                            current_idx = desired_idx
-                            current_label = desired_label
-                        else:
-                            logger.warning(
-                                "Failed to open camera index %s label '%s'; keeping previous",
-                                desired_idx,
-                                desired_label,
-                            )
+
+                should_attempt = False
+                now = time.monotonic()
+                if desired_idx != -1:
+                    if current_idx < 0:
+                        if state_changed or (now - last_open_attempt) > 2.0:
+                            should_attempt = True
+                    elif desired_idx != current_idx and state_changed:
+                        should_attempt = True
+
+                if should_attempt:
+                    last_open_attempt = now
+                    logger.info("Switching camera to index %s label '%s'", desired_idx, desired_label)
+                    cap.release()
+                    new_cap = open_cam(desired_idx, desired_label)
+                    if new_cap.isOpened():
+                        cap = new_cap
+                        current_idx = desired_idx
+                        current_label = desired_label
+                    else:
+                        logger.warning(
+                            "Failed to open camera index %s label '%s'; keeping previous",
+                            desired_idx,
+                            desired_label,
+                        )
 
                 if not cap.isOpened():
                     blank = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
                     overlayed = draw_overlay(blank, state_holder.get("state") or {})
                     cam.send(overlayed)
                     cam.sleep_until_next_frame()
+                    now = time.monotonic()
+                    if now - last_blank_log > 5.0:
+                        logger.warning(
+                            "No input camera open; outputting blank frame (current_idx=%s desired_idx=%s label='%s')",
+                            current_idx,
+                            desired_idx,
+                            desired_label,
+                        )
+                        last_blank_log = now
                     await asyncio.sleep(0.05)
                     continue
 
@@ -274,6 +300,24 @@ async def main() -> None:
                 overlayed = draw_overlay(frame, state_holder.get("state") or {})
                 cam.send(overlayed)
                 cam.sleep_until_next_frame()
+                frame_sample_count += 1
+                if frame_sample_count % max(1, int(FPS * 4)) == 0:
+                    now = time.monotonic()
+                    if now - last_frame_log > 4.0:
+                        try:
+                            mean = float(frame.mean())
+                            fmin = int(frame.min())
+                            fmax = int(frame.max())
+                        except Exception:
+                            mean, fmin, fmax = -1.0, -1, -1
+                        logger.info(
+                            "Input frame stats: mean=%.1f min=%s max=%s idx=%s",
+                            mean,
+                            fmin,
+                            fmax,
+                            current_idx,
+                        )
+                        last_frame_log = now
 
                 try:
                     state_task = asyncio.create_task(fetch_state(client))
