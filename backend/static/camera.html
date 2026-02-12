@@ -53,7 +53,6 @@
     let previewStream = null;
     let previewDeviceId = null;
     let previewDeviceLabel = null;
-    let cameraSelectListenerAttached = false;
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     async function ensureCameraLabels() {
       if (cameraLabelsReady) return;
@@ -91,12 +90,6 @@
           idx: select.selectedOptions[0]?.dataset?.idx,
           label: select.selectedOptions[0]?.dataset?.label
         };
-        console.log("[camera] refresh start", {
-          userInitiated,
-          prevSelection,
-          dshowCount: dshow.length,
-          browserCount: cams.length
-        });
         select.innerHTML = "";
         if (dshow.length) {
           dshow.forEach((cam) => {
@@ -108,7 +101,6 @@
             select.appendChild(opt);
           });
           if (!select.value && dshow[0]) select.value = dshow[0].label || "";
-          console.log("[camera] dshow enumerate", dshow);
         } else {
           cams.forEach((cam, idx) => {
             const opt = document.createElement("option");
@@ -119,12 +111,6 @@
             select.appendChild(opt);
           });
           if (!select.value && cams[0]) select.value = cams[0].deviceId;
-          console.log("[camera] enumerate", cams.map((c, i) => ({
-            idx: i,
-            label: c.label || "",
-            deviceId: c.deviceId || "",
-            groupId: c.groupId || ""
-          })));
         }
         if (prevSelection.idx || prevSelection.label) {
           const opts = Array.from(select.options);
@@ -140,22 +126,6 @@
             select.value = matched.value;
           }
         }
-        const nextSelection = {
-          value: select.value,
-          idx: select.selectedOptions[0]?.dataset?.idx,
-          label: select.selectedOptions[0]?.dataset?.label
-        };
-        console.log("[camera] refresh end", {prevSelection, nextSelection});
-        if (!cameraSelectListenerAttached) {
-          select.addEventListener("change", () => {
-            console.log("[camera] selection changed", {
-              value: select.value,
-              idx: select.selectedOptions[0]?.dataset?.idx,
-              label: select.selectedOptions[0]?.dataset?.label
-            });
-          });
-          cameraSelectListenerAttached = true;
-        }
       } catch (e) {
         console.warn("Camera enumeration failed", e);
       }
@@ -167,21 +137,7 @@
       const label = select.selectedOptions[0]?.dataset.label || "";
       const labelBase = label.replace(/\s*\([^)]*\)\s*$/, "");
       const payload = {index: idx, label};
-      console.log("[camera] apply", {
-        selectedIdx: idx,
-        selectedLabel: label,
-        selectedLabelBase: labelBase,
-        selectedDeviceId: select.value || "",
-        payload
-      });
-      return api("/camera/select", {method:"POST", body: payload})
-        .then((res) => {
-          console.log("[camera] apply response", {status: res.status});
-          return res;
-        })
-        .catch((err) => {
-          console.warn("[camera] apply failed", err);
-        });
+      return api("/camera/select", {method:"POST", body: payload}).catch(()=>{});
     }
 
     function stopPreview() {
@@ -200,29 +156,11 @@
       if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
       try {
         stopPreview();
-        console.log("[camera] preview applyCamera start");
         await applyCamera();
         await delay(300);
-        try {
-          const stateSnap = await api("/state").then(r => r.json());
-          console.log("[camera] preview state after apply", {
-            camera_index: stateSnap?.camera_index,
-            camera_label: stateSnap?.camera_label
-          });
-        } catch (e) {
-          console.warn("[camera] preview state fetch failed", e);
-        }
-        console.log("[camera] preview start", {
-          priorDeviceId: previewDeviceId,
-          priorDeviceLabel: previewDeviceLabel
-        });
         const refreshed = await navigator.mediaDevices.enumerateDevices();
         const vcams = refreshed.filter(d => d.kind === "videoinput");
         const virtuals = vcams.filter(c => /virtual/i.test(c.label || ""));
-        console.log("[camera] preview enumerate", {
-          totalVideoInputs: vcams.length,
-          virtualInputs: virtuals.map(v => ({label: v.label || "", deviceId: v.deviceId || ""}))
-        });
         let target = null;
         if (previewDeviceId) {
           target = virtuals.find(c => c.deviceId === previewDeviceId);
@@ -240,26 +178,12 @@
             return alert("No virtual camera found for preview. Start the virtual cam compositor and click Refresh Cameras.");
           }
         }
-        console.log("[camera] preview target", {
-          label: target.label || "",
-          deviceId: target.deviceId || ""
-        });
         const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
         const openStream = async () => {
           const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
           previewStream = stream;
           video.srcObject = stream;
           await video.play();
-          console.log("[camera] preview playing", {
-            readyState: video.readyState,
-            width: video.videoWidth,
-            height: video.videoHeight,
-            trackStates: stream.getTracks().map(t => ({
-              kind: t.kind,
-              readyState: t.readyState,
-              muted: t.muted
-            }))
-          });
         };
         stopPreview();
         await delay(150);
@@ -270,7 +194,6 @@
         cameraLabelsReady = true;
         refreshCameras(true);
       } catch (err) {
-        console.warn("[camera] preview error", err);
         if (err?.name === "NotReadableError") {
           const label = previewDeviceLabel || "virtual camera";
           return alert(

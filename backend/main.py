@@ -18,7 +18,7 @@ from typing import Optional, List, Tuple
 import uvicorn
 import httpx
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
@@ -680,34 +680,12 @@ async def live_battle_end(body: LiveBattleEndRequest) -> JSONResponse:
 
 
 @app.post("/camera/select")
-async def select_camera(body: CameraSelectRequest, request: Request) -> JSONResponse:
-    referer = request.headers.get("referer", "")
-    ua = request.headers.get("user-agent", "")
-    client = request.client.host if request.client else ""
-    before = state_manager.get_state()
-    logger.info(
-        "Camera select request: index=%s label=%s referer=%s client=%s ua=%s",
-        body.index,
-        body.label,
-        referer,
-        client,
-        ua,
-    )
-    logger.info(
-        "Camera state before select: index=%s label=%s",
-        before.get("camera_index"),
-        before.get("camera_label"),
-    )
+async def select_camera(body: CameraSelectRequest) -> JSONResponse:
+    logger.info("Camera select request: index=%s label=%s", body.index, body.label)
     if body.index is not None:
         state_manager.set_camera_index(body.index)
     if body.label is not None:
         state_manager.set_camera_label(body.label)
-    after = state_manager.get_state()
-    logger.info(
-        "Camera state after select: index=%s label=%s",
-        after.get("camera_index"),
-        after.get("camera_label"),
-    )
     state = state_manager.get_state()
     _broadcast_state(state)
     return JSONResponse(state)

@@ -201,9 +201,6 @@ def log_dshow_devices() -> None:
 
 async def main() -> None:
     log_dshow_devices()
-    last_blank_log = 0.0
-    last_frame_log = 0.0
-    frame_sample_count = 0
     last_open_attempt = 0.0
 
     async with httpx.AsyncClient() as client:
@@ -268,15 +265,6 @@ async def main() -> None:
                     overlayed = draw_overlay(blank, state_holder.get("state") or {})
                     cam.send(overlayed)
                     cam.sleep_until_next_frame()
-                    now = time.monotonic()
-                    if now - last_blank_log > 5.0:
-                        logger.warning(
-                            "No input camera open; outputting blank frame (current_idx=%s desired_idx=%s label='%s')",
-                            current_idx,
-                            desired_idx,
-                            desired_label,
-                        )
-                        last_blank_log = now
                     await asyncio.sleep(0.05)
                     continue
 
@@ -300,25 +288,6 @@ async def main() -> None:
                 overlayed = draw_overlay(frame, state_holder.get("state") or {})
                 cam.send(overlayed)
                 cam.sleep_until_next_frame()
-                frame_sample_count += 1
-                if frame_sample_count % max(1, int(FPS * 4)) == 0:
-                    now = time.monotonic()
-                    if now - last_frame_log > 4.0:
-                        try:
-                            mean = float(frame.mean())
-                            fmin = int(frame.min())
-                            fmax = int(frame.max())
-                        except Exception:
-                            mean, fmin, fmax = -1.0, -1, -1
-                        logger.info(
-                            "Input frame stats: mean=%.1f min=%s max=%s idx=%s",
-                            mean,
-                            fmin,
-                            fmax,
-                            current_idx,
-                        )
-                        last_frame_log = now
-
                 try:
                     state_task = asyncio.create_task(fetch_state(client))
                     await asyncio.wait_for(asyncio.shield(state_task), timeout=POLL_INTERVAL)
