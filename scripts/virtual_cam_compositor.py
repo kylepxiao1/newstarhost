@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 from pathlib import Path
 from typing import Dict
 
@@ -21,6 +22,8 @@ HEIGHT = int(os.environ.get("CAM_HEIGHT", 720))
 FPS = int(os.environ.get("CAM_FPS", 30))
 POLL_INTERVAL = float(os.environ.get("STATE_POLL_SECS", 5.0))
 WS_PATH = os.environ.get("STATE_WS_PATH", "/ws/state")
+CAM_OPEN_RETRIES = int(os.environ.get("CAM_OPEN_RETRIES", 4))
+CAM_OPEN_DELAY = float(os.environ.get("CAM_OPEN_DELAY", 0.35))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("virtual-cam")
@@ -128,17 +131,34 @@ def open_cam(idx: int, label: str = "") -> cv2.VideoCapture:
     if label:
         logger.info("Ignoring label '%s' (index-only selection enabled)", label)
     for backend in backends:
-        logger.info("Trying index %s via backend %s", idx, backend)
-        cap = cv2.VideoCapture(idx, backend)
-        if cap.isOpened():
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
-            cap.set(cv2.CAP_PROP_FPS, FPS)
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                logger.info("Opened camera index %s via backend %s", idx, backend)
-                return cap
-            cap.release()
+        for attempt in range(1, CAM_OPEN_RETRIES + 1):
+            logger.info(
+                "Trying index %s via backend %s (attempt %s/%s)",
+                idx,
+                backend,
+                attempt,
+                CAM_OPEN_RETRIES,
+            )
+            cap = cv2.VideoCapture(idx, backend)
+            if cap.isOpened():
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+                cap.set(cv2.CAP_PROP_FPS, FPS)
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    logger.info(
+                        "Opened camera index %s via backend %s (attempt %s/%s)",
+                        idx,
+                        backend,
+                        attempt,
+                        CAM_OPEN_RETRIES,
+                    )
+                    return cap
+                cap.release()
+            else:
+                cap.release()
+            if attempt < CAM_OPEN_RETRIES:
+                time.sleep(CAM_OPEN_DELAY)
     return cv2.VideoCapture()
 
 
@@ -181,47 +201,58 @@ def log_dshow_devices() -> None:
 
 async def main() -> None:
     log_dshow_devices()
-    current_idx = DEFAULT_CAM_INDEX
-    current_label = ""
-    cap = open_cam(current_idx if current_idx >= 0 else 0)
-    if current_idx < 0 or not cap.isOpened():
-        cap.release()
-        chosen = None
-        for i in range(0, 10):
-            test = open_cam(i)
-            ret, frame = test.read()
-            if ret and frame is not None:
-                chosen = test
-                current_idx = i
-                logger.info("Auto-selected camera index %s", i)
-                break
-            test.release()
-        if chosen is None:
-            raise RuntimeError("Cannot open any camera (indexes 0-9)")
-        cap = chosen
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open camera index {current_idx}")
-
-    fail_count = 0
-
     async with httpx.AsyncClient() as client:
         state_holder: Dict = {"state": await fetch_state(client)}
+        current_idx = DEFAULT_CAM_INDEX
+        current_label = ""
+        last_seen_idx = state_holder.get("state", {}).get("camera_index", -1)
+        last_seen_label = state_holder.get("state", {}).get("camera_label", "")
+        cap = cv2.VideoCapture()
+        if current_idx >= 0:
+            cap = open_cam(current_idx, "")
+            if cap.isOpened():
+                logger.info("Opened camera index %s on startup (from INPUT_CAM_INDEX)", current_idx)
+            else:
+                logger.warning("Failed to open camera index %s on startup; waiting for selection", current_idx)
+        else:
+            logger.info(
+                "No camera selected on startup; waiting for selection (initial state index=%s label='%s')",
+                last_seen_idx,
+                last_seen_label,
+            )
+
+        fail_count = 0
         ws_task = asyncio.create_task(ws_state_listener(state_holder))
         with pyvirtualcam.Camera(width=WIDTH, height=HEIGHT, fps=FPS, fmt=PixelFormat.BGR) as cam:
             logger.info("Virtual camera started: %s", cam.device)
             while True:
                 desired_idx = state_holder.get("state", {}).get("camera_index", -1)
                 desired_label = state_holder.get("state", {}).get("camera_label", "")
-                if desired_idx != -1 and desired_idx != current_idx:
-                    logger.info("Switching camera to index %s label '%s'", desired_idx, desired_label)
-                    cap.release()
-                    new_cap = open_cam(desired_idx if desired_idx != -1 else current_idx, desired_label)
-                    if new_cap.isOpened():
-                        cap = new_cap
-                        current_idx = desired_idx if desired_idx != -1 else current_idx
-                        current_label = desired_label
-                    else:
-                        logger.warning("Failed to open camera index %s label '%s'; keeping previous", desired_idx, desired_label)
+                if desired_idx != last_seen_idx or desired_label != last_seen_label:
+                    last_seen_idx = desired_idx
+                    last_seen_label = desired_label
+                    if desired_idx != -1 and desired_idx != current_idx:
+                        logger.info("Switching camera to index %s label '%s'", desired_idx, desired_label)
+                        cap.release()
+                        new_cap = open_cam(desired_idx, desired_label)
+                        if new_cap.isOpened():
+                            cap = new_cap
+                            current_idx = desired_idx
+                            current_label = desired_label
+                        else:
+                            logger.warning(
+                                "Failed to open camera index %s label '%s'; keeping previous",
+                                desired_idx,
+                                desired_label,
+                            )
+
+                if not cap.isOpened():
+                    blank = np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8)
+                    overlayed = draw_overlay(blank, state_holder.get("state") or {})
+                    cam.send(overlayed)
+                    cam.sleep_until_next_frame()
+                    await asyncio.sleep(0.05)
+                    continue
 
                 ret, frame = cap.read()
                 if not ret or frame is None:
@@ -230,7 +261,8 @@ async def main() -> None:
                     if fail_count > 30:
                         logger.warning("Reopening camera after repeated failures")
                         cap.release()
-                        cap = open_cam(current_idx if current_idx >= 0 else 0)
+                        if current_idx >= 0:
+                            cap = open_cam(current_idx, "")
                         fail_count = 0
                         await asyncio.sleep(0.1)
                         continue

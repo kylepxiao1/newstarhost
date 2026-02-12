@@ -51,6 +51,9 @@
     let cameraLabelsReady = false;
     let cameraPermissionGranted = false;
     let previewStream = null;
+    let previewDeviceId = null;
+    let previewDeviceLabel = null;
+    let cameraSelectListenerAttached = false;
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     async function ensureCameraLabels() {
       if (cameraLabelsReady) return;
@@ -83,6 +86,17 @@
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cams = devices.filter(d => d.kind === "videoinput");
         const select = document.getElementById("cameraSelect");
+        const prevSelection = {
+          value: select.value,
+          idx: select.selectedOptions[0]?.dataset?.idx,
+          label: select.selectedOptions[0]?.dataset?.label
+        };
+        console.log("[camera] refresh start", {
+          userInitiated,
+          prevSelection,
+          dshowCount: dshow.length,
+          browserCount: cams.length
+        });
         select.innerHTML = "";
         if (dshow.length) {
           dshow.forEach((cam) => {
@@ -112,6 +126,36 @@
             groupId: c.groupId || ""
           })));
         }
+        if (prevSelection.idx || prevSelection.label) {
+          const opts = Array.from(select.options);
+          let matched = null;
+          if (prevSelection.idx != null && prevSelection.idx !== "") {
+            matched = opts.find(o => o.dataset?.idx === String(prevSelection.idx));
+          }
+          if (!matched && prevSelection.label) {
+            matched = opts.find(o => (o.dataset?.label || "") === prevSelection.label);
+          }
+          if (matched) {
+            matched.selected = true;
+            select.value = matched.value;
+          }
+        }
+        const nextSelection = {
+          value: select.value,
+          idx: select.selectedOptions[0]?.dataset?.idx,
+          label: select.selectedOptions[0]?.dataset?.label
+        };
+        console.log("[camera] refresh end", {prevSelection, nextSelection});
+        if (!cameraSelectListenerAttached) {
+          select.addEventListener("change", () => {
+            console.log("[camera] selection changed", {
+              value: select.value,
+              idx: select.selectedOptions[0]?.dataset?.idx,
+              label: select.selectedOptions[0]?.dataset?.label
+            });
+          });
+          cameraSelectListenerAttached = true;
+        }
       } catch (e) {
         console.warn("Camera enumeration failed", e);
       }
@@ -130,7 +174,14 @@
         selectedDeviceId: select.value || "",
         payload
       });
-      return api("/camera/select", {method:"POST", body: payload}).catch(()=>{});
+      return api("/camera/select", {method:"POST", body: payload})
+        .then((res) => {
+          console.log("[camera] apply response", {status: res.status});
+          return res;
+        })
+        .catch((err) => {
+          console.warn("[camera] apply failed", err);
+        });
     }
 
     function stopPreview() {
@@ -149,19 +200,25 @@
       if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
       try {
         stopPreview();
-        const select = document.getElementById("cameraSelect");
-        const selectedLabel = select?.selectedOptions?.[0]?.dataset?.label || "";
-        const selectedLabelBase = selectedLabel.replace(/\s*\([^)]*\)\s*$/, "").trim();
         const refreshed = await navigator.mediaDevices.enumerateDevices();
         const vcams = refreshed.filter(d => d.kind === "videoinput");
+        const virtuals = vcams.filter(c => /virtual/i.test(c.label || ""));
         let target = null;
-        if (selectedLabelBase) {
-          const needle = selectedLabelBase.toLowerCase();
-          target = vcams.find(c => (c.label || "").toLowerCase() === needle)
-            || vcams.find(c => (c.label || "").toLowerCase().includes(needle));
-        }
-        if (!target) {
-          return alert("Selected camera not available for preview. Click Refresh Cameras and allow permission.");
+        if (previewDeviceId) {
+          target = virtuals.find(c => c.deviceId === previewDeviceId);
+          if (!target && previewDeviceLabel) {
+            const needle = previewDeviceLabel.toLowerCase();
+            target = virtuals.find(c => (c.label || "").toLowerCase() === needle)
+              || virtuals.find(c => (c.label || "").toLowerCase().includes(needle));
+          }
+          if (!target) {
+            return alert("Previous virtual camera not available. Not switching previews.");
+          }
+        } else {
+          target = virtuals.find(c => /obs/i.test(c.label || "")) || virtuals[0];
+          if (!target) {
+            return alert("No virtual camera found for preview. Start the virtual cam compositor and click Refresh Cameras.");
+          }
         }
         const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
         const openStream = async () => {
@@ -173,40 +230,18 @@
         stopPreview();
         await delay(150);
         await openStream();
+        previewDeviceId = target.deviceId || null;
+        previewDeviceLabel = target.label || null;
         cameraPermissionGranted = true;
         cameraLabelsReady = true;
         refreshCameras(true);
       } catch (err) {
         if (err?.name === "NotReadableError") {
-          try {
-            stopPreview();
-            await delay(300);
-            const select = document.getElementById("cameraSelect");
-            const selectedLabel = select?.selectedOptions?.[0]?.dataset?.label || "";
-            const selectedLabelBase = selectedLabel.replace(/\s*\([^)]*\)\s*$/, "").trim();
-            const refreshed = await navigator.mediaDevices.enumerateDevices();
-            const vcams = refreshed.filter(d => d.kind === "videoinput");
-            let target = null;
-            if (selectedLabelBase) {
-              const needle = selectedLabelBase.toLowerCase();
-              target = vcams.find(c => (c.label || "").toLowerCase() === needle)
-                || vcams.find(c => (c.label || "").toLowerCase().includes(needle));
-            }
-            if (!target) {
-              return alert("Selected camera not available for preview. Click Refresh Cameras and allow permission.");
-            }
-            const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
-            const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
-            previewStream = stream;
-            video.srcObject = stream;
-            await video.play();
-            cameraPermissionGranted = true;
-            cameraLabelsReady = true;
-            refreshCameras(true);
-            return;
-          } catch (retryErr) {
-            return alert("Camera access denied or unavailable. This can happen if another app (or the virtual camera compositor) is using the device. Close other apps and try again.\n\n" + retryErr);
-          }
+          const label = previewDeviceLabel || "virtual camera";
+          return alert(
+            "Camera access denied or unavailable for " + label + ".\n" +
+            "Not switching previews. Close other apps or restart the virtual cam compositor and try again."
+          );
         }
         alert("Camera access denied or unavailable: " + err);
       }
