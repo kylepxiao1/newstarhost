@@ -217,6 +217,11 @@ class ScoreRequest(BaseModel):
     amount: int = 1
 
 
+class ScoreImportRequest(BaseModel):
+    slot_one: int = 0
+    slot_two: int = 0
+
+
 class SlotImportRequest(BaseModel):
     slot_one: Optional[str] = None
     slot_two: Optional[str] = None
@@ -508,6 +513,14 @@ async def hide_overlay(name: str) -> JSONResponse:
 async def increment_score(slot: str, body: ScoreRequest) -> JSONResponse:
     normalized = _normalize_slot(slot)
     state = state_manager.increment_score(normalized, body.amount)
+    _sync_obs(state)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+
+@app.post("/battle/scores/import")
+async def import_scores(body: ScoreImportRequest) -> JSONResponse:
+    state = state_manager.import_scores(body.slot_one, body.slot_two)
     _sync_obs(state)
     _broadcast_state(state)
     return JSONResponse(state)

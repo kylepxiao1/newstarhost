@@ -194,6 +194,28 @@ class SupabaseEventStore:
         if active_stage:
             active_payload = decoded.get(self._camel_from_snake(active_stage))
 
+        competition_message_type = None
+        if isinstance(decoded, dict):
+            raw_type = decoded.get("type")
+            if isinstance(raw_type, str) and raw_type.strip():
+                competition_message_type = raw_type.strip()
+            elif raw_type is not None:
+                enum_name = getattr(raw_type, "name", None)
+                if isinstance(enum_name, str) and enum_name.strip():
+                    competition_message_type = enum_name.strip()
+        if not competition_message_type and active_stage:
+            stage_to_type = {
+                "initiate": "COMPETITION_MESSAGE_TYPE_INITIATE",
+                "reply": "COMPETITION_MESSAGE_TYPE_REPLY",
+                "start": "COMPETITION_MESSAGE_TYPE_START",
+                "score_change": "COMPETITION_MESSAGE_TYPE_SCORE_CHANGE",
+                "finish": "COMPETITION_MESSAGE_TYPE_FINISH",
+                "settle_start": "COMPETITION_MESSAGE_TYPE_SETTLE_START",
+                "settle_end": "COMPETITION_MESSAGE_TYPE_SETTLE_END",
+                "switch_turn": "COMPETITION_MESSAGE_TYPE_SWITCH_TURN",
+            }
+            competition_message_type = stage_to_type.get(active_stage)
+
         base_message = decoded.get("baseMessage") if isinstance(decoded, dict) else {}
         if not isinstance(base_message, dict):
             base_message = {}
@@ -217,6 +239,19 @@ class SupabaseEventStore:
                     if isinstance(start_teams, list):
                         team_infos = start_teams
 
+        def _to_id_str(value) -> Optional[str]:
+            if value is None:
+                return None
+            try:
+                text = str(value).strip()
+            except Exception:
+                return None
+            if not text:
+                return None
+            if text.endswith(".0"):
+                text = text[:-2]
+            return text
+
         team_scores = []
         team_member_ids = []
         for team in team_infos:
@@ -236,9 +271,9 @@ class SupabaseEventStore:
                     user_obj = member.get("user")
                     user_id = None
                     if isinstance(user_obj, dict):
-                        user_id = self._to_int(user_obj.get("userId"))
+                        user_id = _to_id_str(user_obj.get("userId"))
                     if user_id is None:
-                        user_id = self._to_int(member.get("userId"))
+                        user_id = _to_id_str(member.get("userId"))
                     if user_id is not None:
                         member_ids.append(user_id)
             team_member_ids.append(member_ids)
@@ -274,7 +309,7 @@ class SupabaseEventStore:
             "competition_id": self._to_int(biz_common.get("competitionId")),
             "competition_room_id": self._to_int(biz_common.get("roomId")),
             "competition_type": biz_common.get("type"),
-            "competition_message_type": decoded.get("type") if isinstance(decoded, dict) else None,
+            "competition_message_type": competition_message_type,
             "active_stage": active_stage,
             "team_count": len(team_infos) if team_infos else 0,
             "team_1_score": team_scores[0] if len(team_scores) > 0 else None,
@@ -295,6 +330,9 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping competition_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
+                # Keep Postgres text[] fields as JSON arrays for PostgREST (not JSON-encoded strings).
+                row_data["team_1_member_ids"] = row.get("team_1_member_ids") or []
+                row_data["team_2_member_ids"] = row.get("team_2_member_ids") or []
                 on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
                 action = "upsert" if on_conflict else "insert"
                 resp = await self._post_row("competition_events", row_data, on_conflict=on_conflict)

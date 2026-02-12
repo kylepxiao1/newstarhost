@@ -70,6 +70,7 @@
       <div class="row">
         <button class="secondary" onclick="startLiveRoutine(120000)">Run Live 2m Battle</button>
         <button class="secondary" onclick="startLiveRoutine(60000)">Run Live 1m Battle</button>
+        <button class="secondary" id="battleListenerBtn" onclick="toggleBattleListener()">Start Battle Listener</button>
         <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
       </div>
       <div class="grid-2" style="margin-bottom:10px; align-items:center;">
@@ -144,7 +145,7 @@
     const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
     let state = {};
     let currentTab = "";
-    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false };
+    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"" };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win","closing"];
     let playCounts = loadPlayCounts();
@@ -153,6 +154,10 @@
     let audioUnlocked = false;
     let supabaseClient = null;
     let giftChannel = null;
+    let competitionChannel = null;
+    let battleListenerActive = false;
+    let battleListenerStopping = false;
+    const handledCompetitionStartIds = new Set();
     let hotkeyMap = {};
     let settingsFadeIn = true;
     let settingsFadeOut = true;
@@ -217,6 +222,405 @@
       }
       supabaseClient = window.supabase.createClient(cfg.supabase_url, cfg.supabase_key);
       return supabaseClient;
+    }
+
+    function setBattleListenerButton() {
+      const btn = document.getElementById("battleListenerBtn");
+      if (!btn) return;
+      btn.textContent = battleListenerActive ? "Stop Battle Listener" : "Start Battle Listener";
+      btn.className = battleListenerActive ? "secondary active" : "secondary";
+    }
+
+    function battleListenerLog(message, data=null) {
+      try {
+        if (data === null) console.log("[battle-listener]", message);
+        else console.log("[battle-listener]", message, data);
+      } catch (e) {}
+    }
+
+    function normalizeId(value) {
+      if (value == null) return "";
+      let out = String(value).trim();
+      if (!out) return "";
+      out = out.replace(/^"(.*)"$/, "$1").trim();
+      if (/^\d+(\.0+)?$/.test(out)) {
+        out = out.replace(/\.0+$/, "");
+      }
+      return out;
+    }
+
+    function normalizeHandle(value) {
+      if (value == null) return "";
+      return String(value).trim().replace(/^@+/, "").toLowerCase();
+    }
+
+    function selectedGroupName() {
+      const sel = document.getElementById("groupSelect");
+      const fromSelect = (sel?.value || "").trim();
+      if (fromSelect) return fromSelect;
+      return (state.group_name || "").trim();
+    }
+
+    function selectedGroupHandle() {
+      const groupName = selectedGroupName().toLowerCase();
+      if (!groupName) return "";
+      const dancer = (state.dancers || []).find(d => ((d.name || "").toLowerCase() === groupName));
+      if (!dancer) return "";
+      return normalizeHandle(dancer.handle);
+    }
+
+    function parseIdList(value) {
+      const out = [];
+      const add = (v) => {
+        if (v == null) return;
+        if (Array.isArray(v)) {
+          v.forEach(add);
+          return;
+        }
+        if (typeof v === "number" && Number.isFinite(v)) {
+          const id = normalizeId(String(Math.trunc(v)));
+          if (id) out.push(id);
+          return;
+        }
+        if (typeof v === "string") {
+          const text = v.trim();
+          if (!text) return;
+          if (text.startsWith("{") && text.endsWith("}")) {
+            const inner = text.slice(1, -1).trim();
+            if (!inner) return;
+            inner.split(",").map(p => p.trim()).forEach(add);
+            return;
+          }
+          if ((text.startsWith("[") && text.endsWith("]")) || (text.startsWith("{") && text.endsWith("}"))) {
+            try {
+              add(JSON.parse(text));
+              return;
+            } catch (e) {}
+          }
+          const id = normalizeId(text);
+          if (id) out.push(id);
+          return;
+        }
+        if (typeof v === "object") {
+          Object.values(v).forEach(add);
+        }
+      };
+      add(value);
+      return out;
+    }
+
+    function extractTeamMemberIds(row) {
+      const team1 = parseIdList(row?.team_1_member_ids);
+      const team2 = parseIdList(row?.team_2_member_ids);
+      if (team1.length && team2.length) {
+        return { team1, team2 };
+      }
+      let parsed = row?.team_infos_json;
+      if (typeof parsed === "string") {
+        try { parsed = JSON.parse(parsed); } catch (e) { parsed = null; }
+      }
+      if (Array.isArray(parsed)) {
+        const fromInfos = parsed.map(team => {
+          if (!team || typeof team !== "object") return [];
+          const users = Array.isArray(team.users) ? team.users : (Array.isArray(team.members) ? team.members : []);
+          const ids = [];
+          users.forEach(u => {
+            if (!u || typeof u !== "object") return;
+            const direct = normalizeId(u.userId);
+            if (direct) ids.push(direct);
+            const nested = normalizeId(u.user?.userId);
+            if (nested) ids.push(nested);
+          });
+          return ids;
+        });
+        const fallback1 = team1.length ? team1 : (fromInfos[0] || []);
+        const fallback2 = team2.length ? team2 : (fromInfos[1] || []);
+        return { team1: fallback1, team2: fallback2 };
+      }
+      return { team1, team2 };
+    }
+
+    function dancerNameForTiktokId(tiktokId) {
+      const id = normalizeId(tiktokId);
+      if (!id) return "";
+      const dancers = state.dancers || [];
+      const exact = dancers.find(d => normalizeId(d.tiktok_id || d.tiktokId) === id);
+      if (exact) return exact.name || "";
+
+      // bigint values can lose precision in JS; fall back to a stable prefix key.
+      const key = id.length >= 15 ? id.slice(0, 15) : id;
+      const approx = dancers.filter(d => {
+        const dancerId = normalizeId(d.tiktok_id || d.tiktokId);
+        if (!dancerId) return false;
+        const dancerKey = dancerId.length >= 15 ? dancerId.slice(0, 15) : dancerId;
+        return dancerKey === key;
+      });
+      if (approx.length === 1) {
+        battleListenerLog("mapped dancer by approximate tiktok_id", {
+          incoming_id: id,
+          incoming_key: key,
+          dancer: approx[0].name || "",
+          dancer_id: normalizeId(approx[0].tiktok_id || approx[0].tiktokId),
+        });
+        return approx[0].name || "";
+      }
+      if (approx.length > 1) {
+        battleListenerLog("ambiguous approximate tiktok_id mapping", {
+          incoming_id: id,
+          incoming_key: key,
+          candidates: approx.map(d => ({name: d.name || "", tiktok_id: normalizeId(d.tiktok_id || d.tiktokId)})),
+        });
+      }
+      return "";
+    }
+
+    async function applyBattleStartDancersFromRow(row) {
+      const { team1, team2 } = extractTeamMemberIds(row);
+      const team1Id = team1[0] || "";
+      const team2Id = team2[0] || "";
+      const dancerOne = dancerNameForTiktokId(team1Id);
+      const dancerTwo = dancerNameForTiktokId(team2Id);
+      if (!dancerOne || !dancerTwo || dancerOne.toLowerCase() === dancerTwo.toLowerCase()) {
+        battleListenerLog("ignored start: could not map team member ids to Dancer 1/2", {
+          team_1_id: team1Id,
+          team_2_id: team2Id,
+          team_1_candidates: team1,
+          team_2_candidates: team2,
+        });
+        return null;
+      }
+      state.slot_one = dancerOne;
+      state.slot_two = dancerTwo;
+      const slotOneSel = document.getElementById("slotOneSelect");
+      const slotTwoSel = document.getElementById("slotTwoSelect");
+      if (slotOneSel) slotOneSel.value = dancerOne;
+      if (slotTwoSel) slotTwoSel.value = dancerTwo;
+      renderSlotSelects();
+      await api("/battle/slots/import", {method:"POST", body:{slot_one: dancerOne, slot_two: dancerTwo}});
+      battleListenerLog("mapped start dancers", {
+        team_1_id: team1Id,
+        team_2_id: team2Id,
+        dancer_1: dancerOne,
+        dancer_2: dancerTwo,
+      });
+      return { dancerOne, dancerTwo };
+    }
+
+    function parseUnixSeconds(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return null;
+      if (n > 1_000_000_000_000) return Math.floor(n / 1000);
+      return Math.floor(n);
+    }
+
+    function competitionIdFromRow(row) {
+      return normalizeId(row?.competition_id ?? row?.competitionId);
+    }
+
+    function parseNonNegativeInt(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n)) return null;
+      return Math.max(0, Math.floor(n));
+    }
+
+    async function handleCompetitionScoreChange(row) {
+      if (!row) return;
+      const msgType = row.competition_message_type || row.competitionMessageType || row.type;
+      if (msgType !== "COMPETITION_MESSAGE_TYPE_SCORE_CHANGE") return;
+      if (!routine.active) {
+        battleListenerLog("ignored score update: routine not active", {message_id: row.message_id || row.messageId || row.id});
+        return;
+      }
+      const rowCompetitionId = competitionIdFromRow(row);
+      const activeCompetitionId = normalizeId(routine.competitionId);
+      if (!activeCompetitionId || !rowCompetitionId || rowCompetitionId !== activeCompetitionId) {
+        battleListenerLog("ignored score update: competition_id mismatch", {
+          active_competition_id: activeCompetitionId,
+          event_competition_id: rowCompetitionId,
+          message_id: row.message_id || row.messageId || row.id,
+        });
+        return;
+      }
+      const teamOneScore = parseNonNegativeInt(row.team_1_score ?? row.team1_score ?? row.teamOneScore);
+      const teamTwoScore = parseNonNegativeInt(row.team_2_score ?? row.team2_score ?? row.teamTwoScore);
+      if (teamOneScore == null || teamTwoScore == null) {
+        battleListenerLog("ignored score update: invalid team scores", {
+          team_1_score: row.team_1_score,
+          team_2_score: row.team_2_score,
+          message_id: row.message_id || row.messageId || row.id,
+        });
+        return;
+      }
+      await api("/battle/scores/import", {method:"POST", body:{slot_one: teamOneScore, slot_two: teamTwoScore}});
+      refreshState();
+      battleListenerLog("applied score update", {
+        competition_id: rowCompetitionId,
+        team_1_score: teamOneScore,
+        team_2_score: teamTwoScore,
+        message_id: row.message_id || row.messageId || row.id,
+      });
+    }
+
+    function rememberCompetitionStart(id) {
+      if (!id) return;
+      handledCompetitionStartIds.add(id);
+      if (handledCompetitionStartIds.size <= 200) return;
+      const first = handledCompetitionStartIds.values().next();
+      if (!first.done) handledCompetitionStartIds.delete(first.value);
+    }
+
+    async function handleCompetitionStart(row) {
+      if (!row) {
+        battleListenerLog("ignored insert: missing row");
+        return;
+      }
+      const msgType = row.competition_message_type || row.competitionMessageType || row.type;
+      if (msgType !== "COMPETITION_MESSAGE_TYPE_START") {
+        battleListenerLog("ignored insert: not START type", {msgType, message_id: row.message_id || row.messageId || row.id});
+        return;
+      }
+      const groupHandle = selectedGroupHandle();
+      if (!groupHandle) {
+        battleListenerLog("ignored start: selected group has no handle", {group: selectedGroupName()});
+        return;
+      }
+      const rowUsername = normalizeHandle(row.tiktok_username ?? row.tiktokUsername);
+      if (!rowUsername || rowUsername !== groupHandle) {
+        battleListenerLog("ignored start: tiktok_username does not match selected group handle", {
+          group_handle: groupHandle,
+          event_tiktok_username: rowUsername,
+          message_id: row.message_id || row.messageId || row.id,
+        });
+        return;
+      }
+      const key = normalizeId(row.message_id || row.id);
+      if (key && handledCompetitionStartIds.has(key)) {
+        battleListenerLog("ignored start: duplicate message", {message_id: key});
+        return;
+      }
+      const mapped = await applyBattleStartDancersFromRow(row);
+      if (!mapped) return;
+      rememberCompetitionStart(key);
+      if (routine.active) {
+        battleListenerLog("ignored start: routine already active", {message_id: key});
+        return;
+      }
+      const endTs = parseUnixSeconds(row.end_timestamp ?? row.endTimestamp ?? row.end_timestamp_actual ?? row.endTimestampActual);
+      if (!endTs) {
+        battleListenerLog("ignored start: missing end_timestamp", {message_id: key});
+        return;
+      }
+      const endMs = endTs * 1000;
+      const durationMs = Math.max(0, endMs - Date.now());
+      const competitionId = competitionIdFromRow(row);
+      try {
+        battleListenerLog("competition start detected", {
+          message_id: row.message_id || row.messageId || row.id,
+          group_name: selectedGroupName(),
+          group_handle: groupHandle,
+          competition_id: competitionId,
+          end_timestamp: endTs,
+          end_ms: endMs,
+          duration_ms: durationMs
+        });
+      } catch (e) {}
+      await startLiveRoutine(durationMs, endMs, competitionId);
+    }
+
+    function stopBattleListener() {
+      if (battleListenerStopping) return;
+      battleListenerStopping = true;
+      const channel = competitionChannel;
+      competitionChannel = null;
+      battleListenerActive = false;
+      setBattleListenerButton();
+      if (channel && supabaseClient) {
+        try {
+          supabaseClient.removeChannel(channel);
+        } catch (e) {}
+      }
+      battleListenerStopping = false;
+    }
+
+    async function startBattleListener() {
+      const client = await ensureSupabaseClient();
+      if (!client) return;
+      const groupName = selectedGroupName();
+      const groupHandle = selectedGroupHandle();
+      if (!groupName || !groupHandle) {
+        alert("Set Current group to a dancer with a handle before starting Battle Listener.");
+        return;
+      }
+      battleListenerLog("starting listener", {group_name: groupName, group_handle: groupHandle});
+      stopBattleListener();
+      const channel = client
+        .channel("competition-events-battle")
+        .on("postgres_changes", {event:"INSERT", schema:"public", table:"competition_events"}, payload => {
+          const row = payload?.new || payload?.record || payload || {};
+          battleListenerLog("insert event received", {
+            message_id: row.message_id || row.messageId || row.id,
+            competition_message_type: row.competition_message_type || row.competitionMessageType || row.type,
+            tiktok_username: row.tiktok_username || row.tiktokUsername || "",
+            competition_id: competitionIdFromRow(row),
+          });
+          (async () => {
+            await handleCompetitionStart(row);
+            await handleCompetitionScoreChange(row);
+          })().catch((err) => battleListenerLog("insert handler error", String(err)));
+        })
+        .on("postgres_changes", {event:"UPDATE", schema:"public", table:"competition_events"}, payload => {
+          const row = payload?.new || payload?.record || payload || {};
+          battleListenerLog("update event received", {
+            message_id: row.message_id || row.messageId || row.id,
+            competition_message_type: row.competition_message_type || row.competitionMessageType || row.type,
+            competition_id: competitionIdFromRow(row),
+          });
+          (async () => {
+            await handleCompetitionScoreChange(row);
+          })().catch((err) => battleListenerLog("update handler error", String(err)));
+        })
+        .subscribe((status) => {
+          battleListenerLog("channel status", status);
+          if (channel !== competitionChannel) return;
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            stopBattleListener();
+          }
+        });
+      competitionChannel = channel;
+      battleListenerActive = true;
+      setBattleListenerButton();
+      try {
+        const nowSec = Math.floor(Date.now() / 1000);
+        const { data, error } = await client
+          .from("competition_events")
+          .select("*")
+          .eq("competition_message_type", "COMPETITION_MESSAGE_TYPE_START")
+          .ilike("tiktok_username", groupHandle)
+          .gt("end_timestamp", nowSec)
+          .order("id", { ascending: false })
+          .limit(5);
+        if (error) {
+          battleListenerLog("failed initial start check", error);
+        } else if (Array.isArray(data) && data.length) {
+          battleListenerLog("initial start check rows", data.length);
+          for (const row of data) {
+            await handleCompetitionStart(row);
+            if (routine.active) break;
+          }
+        } else {
+          battleListenerLog("initial start check found no active starts");
+        }
+      } catch (e) {
+        battleListenerLog("initial start check threw", String(e));
+      }
+    }
+
+    async function toggleBattleListener() {
+      if (battleListenerActive) {
+        stopBattleListener();
+        return;
+      }
+      await startBattleListener();
     }
 
     function stopLiveSubscription() {
@@ -1205,10 +1609,19 @@
       }
     }
 
-    function startRoutine(durationMs=120000) {
+    function resolveRoutineTiming(durationMs, absoluteEndMs=null) {
+      const startTime = Date.now();
+      const hasAbsoluteEnd = Number.isFinite(absoluteEndMs) && absoluteEndMs > 0;
+      const endTime = hasAbsoluteEnd
+        ? Math.floor(absoluteEndMs)
+        : (startTime + Math.max(0, Number(durationMs) || 0));
+      return { startTime, endTime };
+    }
+
+    function startRoutine(durationMs=120000, absoluteEndMs=null, competitionId=null) {
       if (!audioUnlocked) {
         unlockAudio().then(ok => {
-          if (ok) startRoutine(durationMs);
+          if (ok) startRoutine(durationMs, absoluteEndMs, competitionId);
           else alert("Click anywhere on the page once to enable audio.");
         });
         return;
@@ -1219,8 +1632,10 @@
       routine.live = false;
       routine.startedLive = false;
       routine.logged = false;
-      routine.startTime = Date.now();
-      routine.endTime = routine.startTime + durationMs;
+      routine.competitionId = normalizeId(competitionId);
+      const timing = resolveRoutineTiming(durationMs, absoluteEndMs);
+      routine.startTime = timing.startTime;
+      routine.endTime = timing.endTime;
       routine.dancers = chooseTwoDancers();
       routine.firstSongPlayed = false;
       routine.warned = false;
@@ -1236,10 +1651,10 @@
       renderTimer(true);
     }
 
-    async function startLiveRoutine(durationMs=120000) {
+    async function startLiveRoutine(durationMs=120000, absoluteEndMs=null, competitionId=null) {
       if (!audioUnlocked) {
         unlockAudio().then(ok => {
-          if (ok) startLiveRoutine(durationMs);
+          if (ok) startLiveRoutine(durationMs, absoluteEndMs, competitionId);
           else alert("Click anywhere on the page once to enable audio.");
         });
         return;
@@ -1250,8 +1665,10 @@
       routine.live = true;
       routine.startedLive = true;
       routine.logged = false;
-      routine.startTime = Date.now();
-      routine.endTime = routine.startTime + durationMs;
+      routine.competitionId = normalizeId(competitionId);
+      const timing = resolveRoutineTiming(durationMs, absoluteEndMs);
+      routine.startTime = timing.startTime;
+      routine.endTime = timing.endTime;
       routine.dancers = chooseTwoDancers();
       routine.firstSongPlayed = false;
       routine.warned = false;
@@ -1286,6 +1703,7 @@
       routine.live = false;
       routine.startedLive = false;
       routine.logged = false;
+      routine.competitionId = "";
       routine.warned = false;
       routine.playedSongs = new Set();
       clearRoutineTimers();
@@ -1318,6 +1736,7 @@
         routine.active = false;
         routine.live = false;
         routine.startedLive = false;
+        routine.competitionId = "";
         stopPointsInterval();
         stopSwitchInterval();
         stopLiveSubscription();
@@ -1494,6 +1913,7 @@
          routine.active = false;
          routine.live = false;
          routine.startedLive = false;
+         routine.competitionId = "";
          routine.warned = false;
          stopTimerInterval();
           stopPointsInterval();
@@ -1581,6 +2001,8 @@
 
     window.addEventListener("pagehide", stopPreview);
     window.addEventListener("beforeunload", stopPreview);
+    window.addEventListener("pagehide", stopBattleListener);
+    window.addEventListener("beforeunload", stopBattleListener);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopPreview();
     });
@@ -1616,6 +2038,7 @@
     });
 
     loadSettings();
+    setBattleListenerButton();
     refreshState();
     refreshSongs();
   </script>

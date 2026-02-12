@@ -148,6 +148,12 @@ class BattleStateManager:
             self._state.scores[slot] = self._state.scores.get(slot, 0) + amount
             return self._state.copy()
 
+    def import_scores(self, slot_one: int, slot_two: int) -> Dict:
+        with self._lock:
+            self._state.scores["slot_one"] = max(0, int(slot_one or 0))
+            self._state.scores["slot_two"] = max(0, int(slot_two or 0))
+            return self._state.copy()
+
     def set_overlay_state(self, name: str, visible: bool) -> Dict:
         with self._lock:
             self._state.overlay_states[name] = visible
