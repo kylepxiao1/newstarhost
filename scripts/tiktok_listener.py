@@ -681,7 +681,13 @@ class TikTokLiveListener:
             if isinstance(payload, dict):
                 method = str(payload.get("method") or payload.get("type") or "")
             event_type = self._raw_event_type_from_method(method, event.type or "websocket")
-            await self._log_raw_event(event_type, payload)
+            raw_id = await self._log_raw_event(event_type, payload)
+            if method == "WebcastCompetitionMessage":
+                await self._event_store.log_competition_event(
+                    payload=payload if isinstance(payload, dict) else {},
+                    tiktok_username=self.username,
+                    raw_id=raw_id,
+                )
 
         @self.client.on(ttevents.ConnectEvent)
         async def on_connect(_: ttevents.ConnectEvent) -> None:

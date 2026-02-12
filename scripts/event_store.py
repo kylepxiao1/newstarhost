@@ -7,7 +7,9 @@ import time
 from datetime import datetime, timezone
 from typing import Optional
 
+import betterproto
 import httpx
+from TikTokLive.events.proto_events import WebcastCompetitionMessage
 
 from utils import (
     _extract_handle,
@@ -112,6 +114,175 @@ class SupabaseEventStore:
 
     def _next_row_id(self) -> int:
         return self._next_raw_id()
+
+    def _to_int(self, value) -> Optional[int]:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        try:
+            text = str(value).strip()
+        except Exception:
+            return None
+        if not text:
+            return None
+        try:
+            return int(text)
+        except Exception:
+            try:
+                return int(float(text))
+            except Exception:
+                return None
+
+    def _camel_from_snake(self, value: str) -> str:
+        parts = value.split("_")
+        if not parts:
+            return value
+        return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+
+    async def log_competition_event(
+        self,
+        payload: dict,
+        tiktok_username: str,
+        raw_id: Optional[int] = None,
+    ) -> None:
+        payload_b64 = _get_any(payload, "payload")
+        if not payload_b64:
+            return
+
+        raw_bytes = b""
+        if isinstance(payload_b64, (bytes, bytearray)):
+            raw_bytes = bytes(payload_b64)
+            payload_b64 = base64.b64encode(raw_bytes).decode("ascii")
+        elif isinstance(payload_b64, str):
+            try:
+                raw_bytes = base64.b64decode(payload_b64 + "===")
+            except Exception:
+                logger.warning("Failed to base64 decode competition payload")
+                return
+        else:
+            return
+
+        try:
+            msg = WebcastCompetitionMessage().parse(raw_bytes)
+            decoded = msg.to_dict()
+        except Exception:
+            logger.exception("Failed to decode WebcastCompetitionMessage")
+            return
+
+        active_stage = None
+        for field_name in (
+            "initiate",
+            "reply",
+            "start",
+            "settle_start",
+            "settle_end",
+            "score_change",
+            "finish",
+            "switch_turn",
+        ):
+            try:
+                if betterproto.serialized_on_wire(getattr(msg, field_name)):
+                    active_stage = field_name
+                    break
+            except Exception:
+                continue
+
+        active_payload = None
+        if active_stage:
+            active_payload = decoded.get(self._camel_from_snake(active_stage))
+
+        base_message = decoded.get("baseMessage") if isinstance(decoded, dict) else {}
+        if not isinstance(base_message, dict):
+            base_message = {}
+        biz_common = decoded.get("bizCommon") if isinstance(decoded, dict) else {}
+        if not isinstance(biz_common, dict):
+            biz_common = {}
+
+        team_infos = []
+        if isinstance(active_payload, dict):
+            candidate = active_payload.get("teamInfos")
+            if isinstance(candidate, list):
+                team_infos = candidate
+            if not team_infos:
+                direct_teams = active_payload.get("teams")
+                if isinstance(direct_teams, list):
+                    team_infos = direct_teams
+            if not team_infos:
+                initiate_info = active_payload.get("initiateInfo")
+                if isinstance(initiate_info, dict):
+                    start_teams = initiate_info.get("teams")
+                    if isinstance(start_teams, list):
+                        team_infos = start_teams
+
+        team_scores = []
+        team_member_ids = []
+        for team in team_infos:
+            if not isinstance(team, dict):
+                continue
+            score_val = self._to_int(team.get("score"))
+            if score_val is not None:
+                team_scores.append(score_val)
+            members = team.get("members")
+            if not isinstance(members, list):
+                members = team.get("users")
+            member_ids = []
+            if isinstance(members, list):
+                for member in members:
+                    if not isinstance(member, dict):
+                        continue
+                    user_obj = member.get("user")
+                    user_id = None
+                    if isinstance(user_obj, dict):
+                        user_id = self._to_int(user_obj.get("userId"))
+                    if user_id is None:
+                        user_id = self._to_int(member.get("userId"))
+                    if user_id is not None:
+                        member_ids.append(user_id)
+            team_member_ids.append(member_ids)
+
+        now_dt = datetime.now(timezone.utc)
+        row = {
+            "id": raw_id if raw_id is not None else self._next_row_id(),
+            "iso_ts": now_dt.isoformat(),
+            "unix_ts": int(now_dt.timestamp()),
+            "message_id": self._to_int(base_message.get("messageId"))
+            or self._to_int(_get_any(payload, "msgId", "msg_id", "messageId", "message_id")),
+            "room_id": self._to_int(base_message.get("roomId")) or self._to_int(biz_common.get("roomId")),
+            "create_time_ms": self._to_int(base_message.get("createTime")),
+            "competition_id": self._to_int(biz_common.get("competitionId")),
+            "competition_room_id": self._to_int(biz_common.get("roomId")),
+            "competition_type": biz_common.get("type"),
+            "competition_message_type": decoded.get("type") if isinstance(decoded, dict) else None,
+            "active_stage": active_stage,
+            "team_count": len(team_infos) if team_infos else 0,
+            "team_1_score": team_scores[0] if len(team_scores) > 0 else None,
+            "team_2_score": team_scores[1] if len(team_scores) > 1 else None,
+            "team_1_member_ids": team_member_ids[0] if len(team_member_ids) > 0 else [],
+            "team_2_member_ids": team_member_ids[1] if len(team_member_ids) > 1 else [],
+            "total_score": sum(team_scores) if team_scores else 0,
+            "team_infos_json": _safe_json(team_infos),
+            "tiktok_username": tiktok_username,
+        }
+
+        values = [_normalize_db_value(v) for v in row.values()]
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping competition_events insert")
+                    return
+                row_data = dict(zip(row.keys(), values))
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("competition_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("competition_events", row_data)
+                    action = "insert-fallback"
+                self._log_result("competition_events", action, resp)
+            except Exception:
+                logger.exception("Failed to log competition event")
 
     async def log_gift(
         self,
