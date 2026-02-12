@@ -243,6 +243,25 @@ class SupabaseEventStore:
                         member_ids.append(user_id)
             team_member_ids.append(member_ids)
 
+        end_timestamp = None
+        end_timestamp_actual = None
+        if isinstance(active_payload, dict):
+            end_timestamp = self._to_int(
+                _get_any(
+                    active_payload,
+                    "endTimestamp",
+                    "end_timestamp",
+                )
+            )
+            end_timestamp_actual = self._to_int(
+                _get_any(
+                    active_payload,
+                    "actualEndTimestamp",
+                    "endTimestampActual",
+                    "end_timestamp_actual",
+                )
+            )
+
         now_dt = datetime.now(timezone.utc)
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
@@ -262,6 +281,8 @@ class SupabaseEventStore:
             "team_2_score": team_scores[1] if len(team_scores) > 1 else None,
             "team_1_member_ids": team_member_ids[0] if len(team_member_ids) > 0 else [],
             "team_2_member_ids": team_member_ids[1] if len(team_member_ids) > 1 else [],
+            "end_timestamp": end_timestamp,
+            "end_timestamp_actual": end_timestamp_actual,
             "total_score": sum(team_scores) if team_scores else 0,
             "team_infos_json": _safe_json(team_infos),
             "tiktok_username": tiktok_username,
