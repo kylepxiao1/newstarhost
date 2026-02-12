@@ -125,32 +125,8 @@ def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
 def open_cam(idx: int, label: str = "") -> cv2.VideoCapture:
     backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
     logger.info("Attempting camera open idx=%s label='%s'", idx, label)
-    label_variants = []
     if label:
-        label_variants.append(label)
-        trimmed = label.strip()
-        if trimmed:
-            label_variants.append(trimmed)
-        short = re.sub(r"\s*\([^)]*\)\s*$", "", label).strip()
-        if short and short not in label_variants:
-            label_variants.append(short)
-    if label:
-        for variant in label_variants:
-            for backend in backends:
-                logger.info("Trying label '%s' via backend %s", variant, backend)
-                cap = cv2.VideoCapture(f"video={variant}", backend)
-                if cap.isOpened():
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        logger.info("Opened camera by label '%s' via backend %s", variant, backend)
-                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
-                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
-                        cap.set(cv2.CAP_PROP_FPS, FPS)
-                        return cap
-                    cap.release()
-                else:
-                    cap.release()
-        logger.warning("Label open failed for %s; falling back to index %s", label_variants, idx)
+        logger.info("Ignoring label '%s' (index-only selection enabled)", label)
     for backend in backends:
         logger.info("Trying index %s via backend %s", idx, backend)
         cap = cv2.VideoCapture(idx, backend)
@@ -236,7 +212,7 @@ async def main() -> None:
             while True:
                 desired_idx = state_holder.get("state", {}).get("camera_index", -1)
                 desired_label = state_holder.get("state", {}).get("camera_label", "")
-                if (desired_idx != -1 and desired_idx != current_idx) or (desired_label and desired_label != current_label):
+                if desired_idx != -1 and desired_idx != current_idx:
                     logger.info("Switching camera to index %s label '%s'", desired_idx, desired_label)
                     cap.release()
                     new_cap = open_cam(desired_idx if desired_idx != -1 else current_idx, desired_label)

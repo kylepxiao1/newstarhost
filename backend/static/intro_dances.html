@@ -645,10 +645,21 @@
       }
     });
 
+    function stopPreview() {
+      const video = document.getElementById("preview");
+      if (!video) return;
+      const stream = video.srcObject;
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      video.srcObject = null;
+    }
+
     async function startPreview() {
       const video = document.getElementById("preview");
       if (!navigator.mediaDevices?.getUserMedia || !video) return;
       try {
+        stopPreview();
         const refreshed = await navigator.mediaDevices.enumerateDevices();
         const vcams = refreshed.filter(d => d.kind === "videoinput");
         const target = vcams.find(c => /virtual/i.test(c.label || "")) || vcams[0];
@@ -661,6 +672,11 @@
         // ignore preview errors
       }
     }
+    window.addEventListener("pagehide", stopPreview);
+    window.addEventListener("beforeunload", stopPreview);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stopPreview();
+    });
   </script>
 </body>
 </html>

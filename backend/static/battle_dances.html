@@ -1551,10 +1551,21 @@
       }
     }
 
+    function stopPreview() {
+      const video = document.getElementById("preview");
+      if (!video) return;
+      const stream = video.srcObject;
+      if (stream && stream.getTracks) {
+        stream.getTracks().forEach(t => t.stop());
+      }
+      video.srcObject = null;
+    }
+
     async function startPreview() {
       const video = document.getElementById("preview");
       if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
       try {
+        stopPreview();
         await applyCamera();
         const refreshed = await navigator.mediaDevices.enumerateDevices();
         const vcams = refreshed.filter(d => d.kind === "videoinput");
@@ -1567,6 +1578,12 @@
         alert("Camera access denied or unavailable: " + err);
       }
     }
+
+    window.addEventListener("pagehide", stopPreview);
+    window.addEventListener("beforeunload", stopPreview);
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) stopPreview();
+    });
 
     highlightNav();
 
