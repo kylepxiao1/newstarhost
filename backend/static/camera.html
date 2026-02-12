@@ -50,6 +50,8 @@
 
     let cameraLabelsReady = false;
     let cameraPermissionGranted = false;
+    let previewStream = null;
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     async function ensureCameraLabels() {
       if (cameraLabelsReady) return;
       if (!cameraPermissionGranted) return;
@@ -134,11 +136,12 @@
     function stopPreview() {
       const video = document.getElementById("preview");
       if (!video) return;
-      const stream = video.srcObject;
+      const stream = previewStream || video.srcObject;
       if (stream && stream.getTracks) {
         stream.getTracks().forEach(t => t.stop());
       }
       video.srcObject = null;
+      previewStream = null;
     }
 
     async function startPreview() {
@@ -161,13 +164,50 @@
           return alert("Selected camera not available for preview. Click Refresh Cameras and allow permission.");
         }
         const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
-        const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
-        video.srcObject = stream;
-        await video.play();
+        const openStream = async () => {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+          previewStream = stream;
+          video.srcObject = stream;
+          await video.play();
+        };
+        stopPreview();
+        await delay(150);
+        await openStream();
         cameraPermissionGranted = true;
         cameraLabelsReady = true;
         refreshCameras(true);
       } catch (err) {
+        if (err?.name === "NotReadableError") {
+          try {
+            stopPreview();
+            await delay(300);
+            const select = document.getElementById("cameraSelect");
+            const selectedLabel = select?.selectedOptions?.[0]?.dataset?.label || "";
+            const selectedLabelBase = selectedLabel.replace(/\s*\([^)]*\)\s*$/, "").trim();
+            const refreshed = await navigator.mediaDevices.enumerateDevices();
+            const vcams = refreshed.filter(d => d.kind === "videoinput");
+            let target = null;
+            if (selectedLabelBase) {
+              const needle = selectedLabelBase.toLowerCase();
+              target = vcams.find(c => (c.label || "").toLowerCase() === needle)
+                || vcams.find(c => (c.label || "").toLowerCase().includes(needle));
+            }
+            if (!target) {
+              return alert("Selected camera not available for preview. Click Refresh Cameras and allow permission.");
+            }
+            const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
+            const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+            previewStream = stream;
+            video.srcObject = stream;
+            await video.play();
+            cameraPermissionGranted = true;
+            cameraLabelsReady = true;
+            refreshCameras(true);
+            return;
+          } catch (retryErr) {
+            return alert("Camera access denied or unavailable. This can happen if another app (or the virtual camera compositor) is using the device. Close other apps and try again.\n\n" + retryErr);
+          }
+        }
         alert("Camera access denied or unavailable: " + err);
       }
     }
