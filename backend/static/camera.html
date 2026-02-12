@@ -27,7 +27,7 @@
       <h2>Cameras</h2>
       <div class="row">
         <select id="cameraSelect" style="flex:1;"></select>
-        <button class="secondary" onclick="refreshCameras()">Refresh Cameras</button>
+        <button class="secondary" onclick="refreshCameras(true)">Refresh Cameras</button>
         <button class="secondary" onclick="window.open('/camera/manage','_blank')">Open in New Tab</button>
       </div>
       <div class="row">
@@ -49,8 +49,10 @@
     let ws;
 
     let cameraLabelsReady = false;
+    let cameraPermissionGranted = false;
     async function ensureCameraLabels() {
       if (cameraLabelsReady) return;
+      if (!cameraPermissionGranted) return;
       if (!navigator.mediaDevices?.getUserMedia) return;
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
@@ -61,10 +63,20 @@
       }
     }
 
-    async function refreshCameras() {
+    async function refreshCameras(userInitiated=false) {
       try {
         const backendList = await api("/camera/devices").then(r => r.json()).catch(() => ({devices: []}));
         const dshow = Array.isArray(backendList.devices) ? backendList.devices : [];
+        if (userInitiated && !cameraPermissionGranted && navigator.mediaDevices?.getUserMedia) {
+          try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+            stream.getTracks().forEach(t => t.stop());
+            cameraPermissionGranted = true;
+            cameraLabelsReady = true;
+          } catch (e) {
+            // permission denied; continue with whatever labels we can get
+          }
+        }
         await ensureCameraLabels();
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cams = devices.filter(d => d.kind === "videoinput");
@@ -131,6 +143,9 @@
         const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
         video.srcObject = stream;
         await video.play();
+        cameraPermissionGranted = true;
+        cameraLabelsReady = true;
+        refreshCameras(true);
       } catch (err) {
         alert("Camera access denied or unavailable: " + err);
       }
@@ -184,7 +199,7 @@
 
     refreshState();
     connectWs();
-    refreshCameras();
+    refreshCameras(false);
   </script>
 </body>
 </html>

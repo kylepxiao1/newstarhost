@@ -637,8 +637,7 @@
       if(t) t.textContent="Disconnected";
     };
     ws.onmessage = evt => { try { const data=JSON.parse(evt.data); if(data.type==="state"){ state=data.payload; renderState(); renderFormationEnabled(); }} catch(e){} };
-    highlightNav();
-    startPreview();
+      highlightNav();
     document.addEventListener("keydown", handleHotkey);
     window.addEventListener("message", (evt) => {
       if (evt?.data?.type === "settings-updated") {
