@@ -60,7 +60,7 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 - Select the created virtual camera in TikTok LIVE Studio.
 - Build a Windows executable (PyInstaller):
 ```powershell
-pyinstaller --onefile --name virtual_cam_compositor --console scripts\virtual_cam_compositor.py
+.\.venv\Scripts\python.exe -m PyInstaller --onefile --name virtual_cam_compositor --console scripts\virtual_cam_compositor.py
 ```
 
 ### B) OBS-based overlay
