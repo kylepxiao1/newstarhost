@@ -68,8 +68,6 @@
         <button class="danger" onclick="cancelRoutine()">Cancel Battle</button>
       </div>
       <div class="row">
-        <button class="secondary" onclick="startLiveRoutine(120000)">Run Live 2m Battle</button>
-        <button class="secondary" onclick="startLiveRoutine(60000)">Run Live 1m Battle</button>
         <button class="secondary" id="battleListenerBtn" onclick="toggleBattleListener()">Start Battle Listener</button>
         <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
       </div>
@@ -85,6 +83,9 @@
       </div>
       <div class="row">
         <span>Timer: <strong id="timerDisplay">-</strong></span>
+      </div>
+      <div class="row">
+        <span>Status: <strong id="battleStatusLabel">Tie</strong></span>
       </div>
       <div class="row">
         <label style="display:flex;gap:6px;align-items:center; width:100%;">
@@ -106,9 +107,9 @@
         </td></tr>
       </table>
       <div class="row">
-        <button class="secondary" onclick="pullFromStudio()">Sync from TikTok Studio</button>
-        <button class="secondary" onclick="spoofGift()">Spoof Gift (Dancer 1)</button>
-        <button class="secondary" onclick="spoofGiftTwo()">Spoof Gift (Dancer 2)</button>
+        <button class="secondary" onclick="spoofStartBattle()">Spoof Start Battle</button>
+        <button class="secondary" onclick="spoofGift()">Spoof Score Update (Dancer 1)</button>
+        <button class="secondary" onclick="spoofGiftTwo()">Spoof Score Update (Dancer 2)</button>
       </div>
     </section>
 
@@ -698,23 +699,67 @@
         .subscribe();
     }
 
-    async function spoofGift() {
-      const resp = await api("/battle/spoof_gift", {method:"POST"});
+    async function spoofStartBattle() {
+      const slotOne = (document.getElementById("slotOneSelect")?.value || state.slot_one || "").trim();
+      const slotTwo = (document.getElementById("slotTwoSelect")?.value || state.slot_two || "").trim();
+      if (!slotOne || !slotTwo) {
+        alert("Select Dancer 1 and Dancer 2 first.");
+        return;
+      }
+      const resp = await api("/battle/spoof_start_battle", {
+        method: "POST",
+        body: {
+          slot_one: slotOne,
+          slot_two: slotTwo,
+          competition_id: routine.competitionId || "",
+          duration_sec: 120,
+        },
+      });
       let payload = {};
       try { payload = await resp.json(); } catch (e) {}
       if (!resp.ok || payload?.ok === false) {
-        const msg = payload?.error || "Spoof gift failed.";
+        const msg = payload?.error || "Spoof start battle failed.";
         alert(msg);
+        return;
+      }
+      const cid = normalizeId(payload?.competition_id);
+      if (cid) routine.competitionId = cid;
+      battleListenerLog("spoof start inserted", payload);
+    }
+
+    async function spoofGift() {
+      const resp = await api("/battle/spoof_gift", {
+        method:"POST",
+        body:{slot:"slot_one", competition_id: routine.competitionId || ""},
+      });
+      let payload = {};
+      try { payload = await resp.json(); } catch (e) {}
+      if (!resp.ok || payload?.ok === false) {
+        const msg = payload?.error || "Spoof score update failed.";
+        alert(msg);
+        return;
+      }
+      const cid = normalizeId(payload?.competition_id);
+      if (cid && !normalizeId(routine.competitionId)) {
+        routine.competitionId = cid;
       }
     }
 
     async function spoofGiftTwo() {
-      const resp = await api("/battle/spoof_gift", {method:"POST", body:{slot:"slot_two"}});
+      const resp = await api("/battle/spoof_gift", {
+        method:"POST",
+        body:{slot:"slot_two", competition_id: routine.competitionId || ""},
+      });
       let payload = {};
       try { payload = await resp.json(); } catch (e) {}
       if (!resp.ok || payload?.ok === false) {
-        const msg = payload?.error || "Spoof gift failed.";
+        const msg = payload?.error || "Spoof score update failed.";
         alert(msg);
+        return;
+      }
+      const cid = normalizeId(payload?.competition_id);
+      if (cid && !normalizeId(routine.competitionId)) {
+        routine.competitionId = cid;
       }
     }
 
@@ -794,13 +839,17 @@
       slotTwoCell.textContent = slotTwo;
       slotOneCell.classList.remove("leader","leader1","leader2");
       slotTwoCell.classList.remove("leader","leader1","leader2");
-      if (a === b && a > 0) {
+      if (a === b) {
         slotOneCell.classList.add("leader1");
         slotTwoCell.classList.add("leader2");
       } else if (a > b) {
         slotOneCell.classList.add("leader1");
       } else if (b > a) {
         slotTwoCell.classList.add("leader2");
+      }
+      const statusEl = document.getElementById("battleStatusLabel");
+      if (statusEl) {
+        statusEl.textContent = a === b ? `Tie (${a}-${b})` : (a > b ? `${slotOne} leads (${a}-${b})` : `${slotTwo} leads (${a}-${b})`);
       }
       renderPointsBar();
       renderGroupSelect();
@@ -1474,10 +1523,12 @@
       const bName = (b||"").toLowerCase();
       const scoreA = aName === slotOneName ? scores.slot_one || 0 : aName === slotTwoName ? scores.slot_two || 0 : 0;
       const scoreB = bName === slotOneName ? scores.slot_one || 0 : bName === slotTwoName ? scores.slot_two || 0 : 0;
-      if (scoreA === scoreB) return null;
+      if (scoreA === scoreB) {
+        return {leader:a, loser:b, leaderScore:scoreA, loserScore:scoreB, tie:true, scoreA, scoreB};
+      }
       return scoreA > scoreB
-        ? {leader:a, loser:b, leaderScore:scoreA, loserScore:scoreB}
-        : {leader:b, loser:a, leaderScore:scoreB, loserScore:scoreA};
+        ? {leader:a, loser:b, leaderScore:scoreA, loserScore:scoreB, tie:false, scoreA, scoreB}
+        : {leader:b, loser:a, leaderScore:scoreB, loserScore:scoreA, tie:false, scoreA, scoreB};
     }
 
     function isGroupSong(url) {
@@ -1505,14 +1556,24 @@
           if (pick?.url) return pick.url;
         }
       }
-      if (!scoreInfo) {
-        return await nextSongFor(dancers[0], dancers[1], currentUrl) || getRoleUrl("background");
-      }
+      if (!scoreInfo) return await nextSongFor(dancers[0], dancers[1], currentUrl) || getRoleUrl("background");
       const {leader, loser, leaderScore, loserScore} = scoreInfo;
       return await pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl, played);
     }
 
     async function pickSongByMargin(leader, loser, leaderScore, loserScore, currentUrl=null, played=new Set()) {
+      const isTie = Number(leaderScore) === Number(loserScore);
+      if (isTie) {
+        const shared = intersectSongsFor(leader, loser)
+          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+          .filter(s => !played.has(s.url) && s.url !== currentUrl);
+        const groups = groupSongs()
+          .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+          .filter(s => !played.has(s.url) && s.url !== currentUrl);
+        const combined = [...shared, ...groups];
+        const pickTie = await pickWithRecencyPenalty(combined);
+        return pickTie?.url || null;
+      }
       const leaderAssigned = songsForDancer(leader).filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)));
       const leaderNotCurrent = leaderAssigned.filter(s => s.url !== currentUrl);
       const loserAssigned = new Set(songsForDancer(loser).map(s => s.url));
@@ -1865,6 +1926,7 @@
       const isGroup = isGroupSong(routine.currentSongUrl);
       const scoreInfo = scoresForDancers(a, b);
       if (!scoreInfo) return;
+      if (scoreInfo.tie) return;
       const {leader, loser, leaderScore, loserScore} = scoreInfo;
       const loserAssigned = songsForDancer(loser).some(s => s.url === routine.currentSongUrl);
       if (shared || isGroup) return;

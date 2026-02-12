@@ -318,6 +318,15 @@ class DeleteDancerRequest(BaseModel):
 
 class SpoofGiftRequest(BaseModel):
     slot: Optional[str] = None
+    competition_id: Optional[str] = None
+    amount: Optional[int] = 1
+
+
+class SpoofStartBattleRequest(BaseModel):
+    slot_one: Optional[str] = None
+    slot_two: Optional[str] = None
+    competition_id: Optional[str] = None
+    duration_sec: Optional[int] = 120
 
 class LiveBattleEndRequest(BaseModel):
     start_ms: int
@@ -577,27 +586,50 @@ async def spoof_gift(body: SpoofGiftRequest = SpoofGiftRequest()) -> JSONRespons
     match = next((d for d in dancers if (d.get("name") or "").lower() == slot_name.lower()), None)
     if not match:
         return JSONResponse({"ok": False, "error": f"{slot.replace('_', ' ').title()} dancer not found."}, status_code=400)
-    tiktok_id = match.get("tiktok_id") or match.get("tiktokId")
-    if not tiktok_id:
-        return JSONResponse({"ok": False, "error": f"{slot.replace('_', ' ').title()} dancer missing TikTok ID."}, status_code=400)
+    slot_one_name = (state.get("slot_one") or "").strip()
+    slot_two_name = (state.get("slot_two") or "").strip()
+    match_one = next((d for d in dancers if (d.get("name") or "").lower() == slot_one_name.lower()), None)
+    match_two = next((d for d in dancers if (d.get("name") or "").lower() == slot_two_name.lower()), None)
+    if not match_one or not match_two:
+        return JSONResponse({"ok": False, "error": "Both Dancer 1 and Dancer 2 must be set."}, status_code=400)
 
-    to_member_id = str(tiktok_id).strip()
-    if to_member_id.isdigit():
-        try:
-            to_member_id = int(to_member_id)
-        except Exception:
-            pass
+    team_1_id = str(match_one.get("tiktok_id") or match_one.get("tiktokId") or "").strip()
+    team_2_id = str(match_two.get("tiktok_id") or match_two.get("tiktokId") or "").strip()
+    if not team_1_id or not team_2_id:
+        return JSONResponse({"ok": False, "error": "Dancer 1 and Dancer 2 must both have TikTok IDs."}, status_code=400)
+
+    amount = int(body.amount or 1)
+    if amount <= 0:
+        amount = 1
+
+    scores = state.get("scores", {}) or {}
+    score_one = int(scores.get("slot_one") or 0)
+    score_two = int(scores.get("slot_two") or 0)
+    if slot == "slot_one":
+        score_one += amount
+    else:
+        score_two += amount
+
+    comp_id_raw = str(body.competition_id or "").strip()
+    if comp_id_raw and comp_id_raw.isdigit():
+        competition_id = int(comp_id_raw)
+    else:
+        competition_id = int(time.time() * 1000)
+
+    group_name = (state.get("group_name") or "").strip().lower()
+    group_match = next((d for d in dancers if (d.get("name") or "").strip().lower() == group_name), None)
+    tiktok_username = str((group_match or {}).get("handle") or "DUMMY").strip().lstrip("@") or "DUMMY"
 
     now_dt = datetime.now(timezone.utc)
     row_id = int(time.time() * 1000) * 1000 + random.randint(0, 999)
     raw_row = {
         "id": row_id,
-        "event_type": "gift",
+        "event_type": "CompetitionScoreUpdate",
         "iso_ts": now_dt.isoformat(),
         "unix_ts": int(now_dt.timestamp()),
         "payload": "DUMMY",
         "msgId": row_id,
-        "tiktok_username": "DUMMY",
+        "tiktok_username": tiktok_username,
     }
     raw_err = await _insert_supabase_row("tiktok_events_raw", raw_row)
     if raw_err and "23505" not in raw_err and "duplicate key" not in raw_err:
@@ -607,34 +639,132 @@ async def spoof_gift(body: SpoofGiftRequest = SpoofGiftRequest()) -> JSONRespons
         "id": row_id,
         "iso_ts": now_dt.isoformat(),
         "unix_ts": int(now_dt.timestamp()),
-        "event_type": "gift",
         "room_id": 0,
         "create_time_ms": int(now_dt.timestamp() * 1000),
         "message_id": row_id,
-        "gift_id": 1,
-        "gift_name": "DUMMY",
-        "diamond_count": 1,
-        "repeat_count": 1,
-        "combo_count": 1,
-        "amount_value": 1,
-        "fan_ticket_count": 1,
-        "room_fan_ticket_count": 1,
-        "from_user_id": 0,
-        "from_username": "DUMMY",
-        "from_nickname": "DUMMY",
-        "to_user_id": 0,
-        "to_username": "DUMMY",
-        "to_nickname": "DUMMY",
-        "to_member_id_int": to_member_id,
-        "to_member_nickname": "DUMMY",
-        "describe": "DUMMY",
-        "tiktok_username": "DUMMY",
+        "competition_id": competition_id,
+        "competition_room_id": 0,
+        "competition_type": "BATTLE_TYPE_GROUP_SHOW",
+        "competition_message_type": "COMPETITION_MESSAGE_TYPE_SCORE_CHANGE",
+        "active_stage": "score_change",
+        "team_count": 2,
+        "team_1_score": score_one,
+        "team_2_score": score_two,
+        "team_1_member_ids": [team_1_id],
+        "team_2_member_ids": [team_2_id],
+        "total_score": score_one + score_two,
+        "team_infos_json": json.dumps(
+            [
+                {"teamId": team_1_id, "score": score_one, "users": [{"userId": team_1_id, "nickname": slot_one_name}]},
+                {"teamId": team_2_id, "score": score_two, "users": [{"userId": team_2_id, "nickname": slot_two_name}]},
+            ],
+            ensure_ascii=False,
+        ),
+        "tiktok_username": tiktok_username,
     }
-    err = await _insert_supabase_row("gift_events", row)
+    err = await _insert_supabase_row("competition_events", row)
     if err:
-        logger.warning("Spoof gift insert failed: %s", err)
+        logger.warning("Spoof competition score insert failed: %s", err)
         return JSONResponse({"ok": False, "error": err}, status_code=500)
-    return JSONResponse({"ok": True})
+    return JSONResponse({"ok": True, "competition_id": competition_id, "slot": slot, "team_1_score": score_one, "team_2_score": score_two})
+
+
+@app.post("/battle/spoof_start_battle")
+async def spoof_start_battle(body: SpoofStartBattleRequest = SpoofStartBattleRequest()) -> JSONResponse:
+    state = state_manager.get_state()
+    dancers = state.get("dancers", []) or []
+
+    slot_one_name = (body.slot_one or state.get("slot_one") or "").strip()
+    slot_two_name = (body.slot_two or state.get("slot_two") or "").strip()
+    if not slot_one_name or not slot_two_name:
+        return JSONResponse({"ok": False, "error": "Dancer 1 and Dancer 2 must both be selected."}, status_code=400)
+
+    dancer_one = next((d for d in dancers if (d.get("name") or "").lower() == slot_one_name.lower()), None)
+    dancer_two = next((d for d in dancers if (d.get("name") or "").lower() == slot_two_name.lower()), None)
+    if not dancer_one or not dancer_two:
+        return JSONResponse({"ok": False, "error": "Selected dancers not found."}, status_code=400)
+
+    team_1_id = str(dancer_one.get("tiktok_id") or dancer_one.get("tiktokId") or "").strip()
+    team_2_id = str(dancer_two.get("tiktok_id") or dancer_two.get("tiktokId") or "").strip()
+    if not team_1_id or not team_2_id:
+        return JSONResponse({"ok": False, "error": "Selected dancers must both have TikTok IDs."}, status_code=400)
+
+    comp_id_raw = str(body.competition_id or "").strip()
+    if comp_id_raw and comp_id_raw.isdigit():
+        competition_id = int(comp_id_raw)
+    else:
+        competition_id = int(time.time() * 1000)
+
+    duration_sec = int(body.duration_sec or 120)
+    if duration_sec < 1:
+        duration_sec = 120
+
+    group_name = (state.get("group_name") or "").strip().lower()
+    group_match = next((d for d in dancers if (d.get("name") or "").strip().lower() == group_name), None)
+    tiktok_username = str((group_match or {}).get("handle") or "DUMMY").strip().lstrip("@") or "DUMMY"
+
+    now_dt = datetime.now(timezone.utc)
+    now_sec = int(now_dt.timestamp())
+    end_ts = now_sec + duration_sec
+    row_id = int(time.time() * 1000) * 1000 + random.randint(0, 999)
+    raw_row = {
+        "id": row_id,
+        "event_type": "startCompetition",
+        "iso_ts": now_dt.isoformat(),
+        "unix_ts": now_sec,
+        "payload": "DUMMY",
+        "msgId": row_id,
+        "tiktok_username": tiktok_username,
+    }
+    raw_err = await _insert_supabase_row("tiktok_events_raw", raw_row)
+    if raw_err and "23505" not in raw_err and "duplicate key" not in raw_err:
+        logger.warning("Spoof start raw insert failed: %s", raw_err)
+        return JSONResponse({"ok": False, "error": raw_err}, status_code=500)
+
+    team_infos = [
+        {"teamId": team_1_id, "score": 0, "users": [{"userId": team_1_id, "nickname": slot_one_name}]},
+        {"teamId": team_2_id, "score": 0, "users": [{"userId": team_2_id, "nickname": slot_two_name}]},
+    ]
+    row = {
+        "id": row_id,
+        "iso_ts": now_dt.isoformat(),
+        "unix_ts": now_sec,
+        "message_id": row_id,
+        "room_id": 0,
+        "create_time_ms": int(now_dt.timestamp() * 1000),
+        "competition_id": competition_id,
+        "competition_room_id": 0,
+        "competition_type": "BATTLE_TYPE_GROUP_SHOW",
+        "competition_message_type": "COMPETITION_MESSAGE_TYPE_START",
+        "active_stage": "start",
+        "team_count": 2,
+        "team_1_score": 0,
+        "team_2_score": 0,
+        "team_1_member_ids": [team_1_id],
+        "team_2_member_ids": [team_2_id],
+        "end_timestamp": end_ts,
+        "end_timestamp_actual": end_ts,
+        "total_score": 0,
+        "team_infos_json": json.dumps(team_infos, ensure_ascii=False),
+        "tiktok_username": tiktok_username,
+    }
+
+    table_name = "competition_events"
+    err = await _insert_supabase_row(table_name, row)
+    if err:
+        logger.warning("Spoof start insert failed (%s): %s", table_name, err)
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "competition_id": competition_id,
+            "slot_one": slot_one_name,
+            "slot_two": slot_two_name,
+            "end_timestamp": end_ts,
+            "inserted_table": table_name,
+        }
+    )
 
 
 @app.post("/battle/battle_end")
