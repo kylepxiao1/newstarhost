@@ -14,7 +14,8 @@
     select { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
     .songs { display: flex; gap: 8px; flex-wrap: wrap; }
     .card { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
-    .camera-flag { position: absolute; top: 8px; right: 8px; width: 18px; height: 18px; opacity: 0.9; }
+    .corner-flags { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; align-items: center; }
+    .corner-flag { width: 18px; height: 18px; opacity: 0.92; object-fit: contain; }
     .card.easy { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.35); }
     .card.hard { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.35); }
     .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
@@ -172,12 +173,25 @@
             const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
             const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
             card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${details ? `<div>${details}</div>` : ""}`;
-            if (song.camera_dance) {
-              const cam = document.createElement("img");
-              cam.src = "/media/video-camera.svg";
-              cam.alt = "Camera dance";
-              cam.className = "camera-flag";
-              card.appendChild(cam);
+            const hasClosingRole = (song.roles || []).some(r => String(r || "").toLowerCase() === "closing");
+            if (song.camera_dance || hasClosingRole) {
+              const flags = document.createElement("div");
+              flags.className = "corner-flags";
+              if (song.camera_dance) {
+                const cam = document.createElement("img");
+                cam.src = "/media/video-camera.svg";
+                cam.alt = "Camera dance";
+                cam.className = "corner-flag";
+                flags.appendChild(cam);
+              }
+              if (hasClosingRole) {
+                const closing = document.createElement("img");
+                closing.src = "/media/closing.svg";
+                closing.alt = "Closing dance";
+                closing.className = "corner-flag";
+                flags.appendChild(closing);
+              }
+              card.appendChild(flags);
             }
             const playBtn = document.createElement("button");
             playBtn.textContent = "Play Song";
