@@ -557,7 +557,7 @@
         rememberCompetitionStart(key);
         return;
       }
-      const endTs = parseUnixSeconds(row.end_timestamp ?? row.endTimestamp ?? row.end_timestamp_actual ?? row.endTimestampActual);
+      const endTs = parseUnixSeconds(row.end_timestamp_actual ?? row.end_timestamp ?? row.endTimestamp ?? row.endTimestampActual);
       if (!endTs) {
         battleListenerLog("ignored start: missing end_timestamp", {message_id: key});
         return;
