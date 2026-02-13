@@ -157,6 +157,7 @@
     let giftChannel = null;
     let competitionChannel = null;
     let battleListenerActive = false;
+    let battleListenerStarting = false;
     let battleListenerStopping = false;
     const handledCompetitionStartIds = new Set();
     let hotkeyMap = {};
@@ -228,6 +229,13 @@
     function setBattleListenerButton() {
       const btn = document.getElementById("battleListenerBtn");
       if (!btn) return;
+      if (battleListenerStarting) {
+        btn.textContent = "Starting Battle Listener...";
+        btn.className = "secondary";
+        btn.disabled = true;
+        return;
+      }
+      btn.disabled = false;
       btn.textContent = battleListenerActive ? "Stop Battle Listener" : "Start Battle Listener";
       btn.className = battleListenerActive ? "secondary active" : "secondary";
     }
@@ -442,6 +450,16 @@
         });
         return;
       }
+      const slotOneName = (state.slot_one || "").trim();
+      const slotTwoName = (state.slot_two || "").trim();
+      if (!slotOneName || !slotTwoName) {
+        battleListenerLog("ignored score update: slots not mapped", {
+          slot_one: slotOneName,
+          slot_two: slotTwoName,
+          message_id: row.message_id || row.messageId || row.id,
+        });
+        return;
+      }
       const teamOneScore = parseNonNegativeInt(row.team_1_score ?? row.team1_score ?? row.teamOneScore);
       const teamTwoScore = parseNonNegativeInt(row.team_2_score ?? row.team2_score ?? row.teamTwoScore);
       if (teamOneScore == null || teamTwoScore == null) {
@@ -544,12 +562,21 @@
     }
 
     async function startBattleListener() {
+      if (battleListenerStarting) return;
+      battleListenerStarting = true;
+      setBattleListenerButton();
       const client = await ensureSupabaseClient();
-      if (!client) return;
+      if (!client) {
+        battleListenerStarting = false;
+        setBattleListenerButton();
+        return;
+      }
       const groupName = selectedGroupName();
       const groupHandle = selectedGroupHandle();
       if (!groupName || !groupHandle) {
         alert("Set Current group to a dancer with a handle before starting Battle Listener.");
+        battleListenerStarting = false;
+        setBattleListenerButton();
         return;
       }
       battleListenerLog("starting listener", {group_name: groupName, group_handle: groupHandle});
@@ -613,6 +640,9 @@
         }
       } catch (e) {
         battleListenerLog("initial start check threw", String(e));
+      } finally {
+        battleListenerStarting = false;
+        setBattleListenerButton();
       }
     }
 
@@ -828,8 +858,10 @@
     }
 
     function renderState() {
-      const slotOne = state.slot_one || "-";
-      const slotTwo = state.slot_two || "-";
+      const slotOneRaw = (state.slot_one || "").trim();
+      const slotTwoRaw = (state.slot_two || "").trim();
+      const slotOne = slotOneRaw || "-";
+      const slotTwo = slotTwoRaw || "-";
       const scores = state.scores || {slot_one:0, slot_two:0};
       const a = scores.slot_one || 0;
       const b = scores.slot_two || 0;
@@ -849,7 +881,13 @@
       }
       const statusEl = document.getElementById("battleStatusLabel");
       if (statusEl) {
-        statusEl.textContent = a === b ? `Tie (${a}-${b})` : (a > b ? `${slotOne} leads (${a}-${b})` : `${slotTwo} leads (${a}-${b})`);
+        if (a === b) {
+          statusEl.textContent = `Tie (${a}-${b})`;
+        } else if (a > b) {
+          statusEl.textContent = `${slotOneRaw || "Dancer 1"} leads (${a}-${b})`;
+        } else {
+          statusEl.textContent = `${slotTwoRaw || "Dancer 2"} leads (${a}-${b})`;
+        }
       }
       renderPointsBar();
       renderGroupSelect();
