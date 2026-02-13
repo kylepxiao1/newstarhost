@@ -160,6 +160,7 @@
     let battleListenerStarting = false;
     let battleListenerStopping = false;
     const handledCompetitionStartIds = new Set();
+    let latestBattleStartKey = 0;
     let hotkeyMap = {};
     let settingsFadeIn = true;
     let settingsFadeOut = true;
@@ -422,6 +423,22 @@
       return Math.floor(n);
     }
 
+    function parseEpochMs(value) {
+      const n = Number(value);
+      if (!Number.isFinite(n) || n <= 0) return 0;
+      if (n > 1_000_000_000_000) return Math.floor(n);
+      return Math.floor(n * 1000);
+    }
+
+    function competitionStartSortKey(row) {
+      const fromCreate = parseEpochMs(row?.create_time_ms ?? row?.createTimeMs);
+      if (fromCreate > 0) return fromCreate;
+      const fromUnix = parseEpochMs(row?.unix_ts ?? row?.unixTs);
+      if (fromUnix > 0) return fromUnix;
+      const fromIso = Date.parse(String(row?.iso_ts ?? row?.isoTs ?? "").trim() || "");
+      return Number.isFinite(fromIso) && fromIso > 0 ? Math.floor(fromIso) : 0;
+    }
+
     function competitionIdFromRow(row) {
       return normalizeId(row?.competition_id ?? row?.competitionId);
     }
@@ -517,11 +534,27 @@
         battleListenerLog("ignored start: duplicate message", {message_id: key});
         return;
       }
+      const startSortKey = competitionStartSortKey(row);
+      if (latestBattleStartKey > 0 && startSortKey > 0 && startSortKey < latestBattleStartKey) {
+        battleListenerLog("ignored start: older than latest tracked start", {
+          message_id: key || "",
+          start_key: startSortKey,
+          latest_start_key: latestBattleStartKey,
+        });
+        return;
+      }
       const mapped = await applyBattleStartDancersFromRow(row);
       if (!mapped) return;
-      rememberCompetitionStart(key);
-      if (routine.active) {
-        battleListenerLog("ignored start: routine already active", {message_id: key});
+      if (routine.active && startSortKey > 0 && latestBattleStartKey > 0 && startSortKey > latestBattleStartKey) {
+        battleListenerLog("newer start detected: restarting active routine", {
+          message_id: key || "",
+          start_key: startSortKey,
+          previous_start_key: latestBattleStartKey,
+        });
+        cancelRoutine();
+      } else if (routine.active) {
+        battleListenerLog("ignored start: routine already active", {message_id: key || ""});
+        rememberCompetitionStart(key);
         return;
       }
       const endTs = parseUnixSeconds(row.end_timestamp ?? row.endTimestamp ?? row.end_timestamp_actual ?? row.endTimestampActual);
@@ -543,6 +576,8 @@
           duration_ms: durationMs
         });
       } catch (e) {}
+      if (startSortKey > 0) latestBattleStartKey = startSortKey;
+      rememberCompetitionStart(key);
       await startLiveRoutine(durationMs, endMs, competitionId);
     }
 
@@ -581,6 +616,8 @@
       }
       battleListenerLog("starting listener", {group_name: groupName, group_handle: groupHandle});
       stopBattleListener();
+      handledCompetitionStartIds.clear();
+      latestBattleStartKey = 0;
       const channel = client
         .channel("competition-events-battle")
         .on("postgres_changes", {event:"INSERT", schema:"public", table:"competition_events"}, payload => {
@@ -625,6 +662,7 @@
           .eq("competition_message_type", "COMPETITION_MESSAGE_TYPE_START")
           .ilike("tiktok_username", groupHandle)
           .gt("end_timestamp", nowSec)
+          .order("create_time_ms", { ascending: false, nullsFirst: false })
           .order("id", { ascending: false })
           .limit(5);
         if (error) {

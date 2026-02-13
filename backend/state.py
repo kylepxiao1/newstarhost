@@ -132,14 +132,28 @@ class BattleStateManager:
         if slot not in ("slot_one", "slot_two"):
             raise ValueError("Slot must be 'slot_one' or 'slot_two'")
         with self._lock:
+            prev = getattr(self._state, slot)
             setattr(self._state, slot, name)
+            if self._normalize_slot_name(prev) != self._normalize_slot_name(name):
+                self._state.scores = {"slot_one": 0, "slot_two": 0}
             return self._state.copy()
 
     def import_slots(self, slot_one: Optional[str], slot_two: Optional[str]) -> Dict:
         with self._lock:
+            prev_one = self._state.slot_one
+            prev_two = self._state.slot_two
             self._state.slot_one = slot_one
             self._state.slot_two = slot_two
+            if (
+                self._normalize_slot_name(prev_one) != self._normalize_slot_name(slot_one)
+                or self._normalize_slot_name(prev_two) != self._normalize_slot_name(slot_two)
+            ):
+                self._state.scores = {"slot_one": 0, "slot_two": 0}
             return self._state.copy()
+
+    @staticmethod
+    def _normalize_slot_name(name: Optional[str]) -> str:
+        return (name or "").strip().lower()
 
     def increment_score(self, slot: str, amount: int = 1) -> Dict:
         if slot not in ("slot_one", "slot_two"):
