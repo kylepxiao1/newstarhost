@@ -13,9 +13,9 @@
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
     .songs { display: flex; gap: 8px; flex-wrap: wrap; }
-    .card { background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
-    .card.easy { background: rgba(34,197,94,0.12); border-color: rgba(34,197,94,0.35); }
-    .card.hard { background: rgba(239,68,68,0.12); border-color: rgba(239,68,68,0.35); }
+    .card { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
+    .corner-flags { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; align-items: center; }
+    .corner-flag { width: 18px; height: 18px; opacity: 0.92; object-fit: contain; }
     .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
     .card .duration { color: #94a3b8; font-weight: 600; }
     .card div { word-break: break-word; }
@@ -311,16 +311,25 @@
         list.forEach(song => {
           const card = document.createElement("div");
           card.className = "card";
-          const diff = (song.difficulty || "medium").toLowerCase();
-          if (diff === "easy") card.classList.add("easy");
-          if (diff === "hard") card.classList.add("hard");
-          const badge = song.exclusive_mvp_for ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>` : "";
+          const rawDiff = String(song.difficulty || "").toLowerCase();
+          const diff = (rawDiff === "easy" || rawDiff === "hard") ? rawDiff : "medium";
+          const mvpRow = song.exclusive_mvp_for
+            ? `<div style="margin:4px 0 2px 0;"><span style="padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span></div>`
+            : "";
           const frontList = (song.front_dancers || []).filter(Boolean);
           const dancerList = (song.dancers || []).filter(Boolean);
           const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
           const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
           const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
-          card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${details ? `<div>${details}</div>` : ""}`;
+          card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${mvpRow}${details ? `<div>${details}</div>` : ""}`;
+          const flags = document.createElement("div");
+          flags.className = "corner-flags";
+          const difficulty = document.createElement("img");
+          difficulty.src = `/media/${diff}.svg`;
+          difficulty.alt = `${diff} difficulty`;
+          difficulty.className = "corner-flag";
+          flags.appendChild(difficulty);
+          card.appendChild(flags);
           const playBtn = document.createElement("button");
           playBtn.textContent = "Play Song";
           playBtn.onclick = () => playSongWithUrl(song.url);
