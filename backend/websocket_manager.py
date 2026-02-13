@@ -17,13 +17,21 @@ class WebsocketManager:
         await websocket.accept()
         async with self._lock:
             self.connections.append(websocket)
-        logger.info("WebSocket connected (%s total)", len(self.connections))
+            count = len(self.connections)
+        if count == 1:
+            logger.info("WebSocket connected (first client)")
+        else:
+            logger.debug("WebSocket connected (%s total)", count)
 
     async def disconnect(self, websocket: WebSocket) -> None:
         async with self._lock:
             if websocket in self.connections:
                 self.connections.remove(websocket)
-        logger.info("WebSocket disconnected (%s total)", len(self.connections))
+            count = len(self.connections)
+        if count == 0:
+            logger.info("WebSocket disconnected (no active clients)")
+        else:
+            logger.debug("WebSocket disconnected (%s total)", count)
 
     async def broadcast(self, message: dict) -> None:
         if not self.connections:
@@ -41,4 +49,3 @@ class WebsocketManager:
                 for ws in to_remove:
                     if ws in self.connections:
                         self.connections.remove(ws)
-
