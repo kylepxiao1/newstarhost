@@ -824,7 +824,7 @@ async def live_battle_end(body: LiveBattleEndRequest) -> JSONResponse:
 
 @app.post("/camera/select")
 async def select_camera(body: CameraSelectRequest) -> JSONResponse:
-    logger.info("Camera select request: index=%s label=%s", body.index, body.label)
+    logger.debug("Camera select request: index=%s label=%s", body.index, body.label)
     if body.index is not None:
         state_manager.set_camera_index(body.index)
     if body.label is not None:

@@ -35,7 +35,8 @@
         <button class="secondary" onclick="startPreview()">Start Preview</button>
         <a class="button-link" href="/dist/virtual_cam_compositor.exe" download>Download Virtual Cam Compositor</a>
       </div>
-      <video id="preview" width="100%" autoplay playsinline style="background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
+      <video id="preview" autoplay playsinline style="width:100%;height:auto;object-fit:contain;background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
+      <div id="previewResolution" style="margin-top:8px;color:#94a3b8;font-size:13px;">Preview resolution: -</div>
     </section>
     <section>
       <h2>Overlays</h2>
@@ -53,6 +54,8 @@
     let previewStream = null;
     let previewDeviceId = null;
     let previewDeviceLabel = null;
+    const MAX_PREVIEW_WIDTH = 7680;
+    const MAX_PREVIEW_HEIGHT = 4320;
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
     async function ensureCameraLabels() {
       if (cameraLabelsReady) return;
@@ -142,6 +145,7 @@
 
     function stopPreview() {
       const video = document.getElementById("preview");
+      const meta = document.getElementById("previewResolution");
       if (!video) return;
       const stream = previewStream || video.srcObject;
       if (stream && stream.getTracks) {
@@ -149,6 +153,7 @@
       }
       video.srcObject = null;
       previewStream = null;
+      if (meta) meta.textContent = "Preview resolution: -";
     }
 
     async function startPreview() {
@@ -178,16 +183,61 @@
             return alert("No virtual camera found for preview. Start the virtual cam compositor and click Refresh Cameras.");
           }
         }
-        const constraints = target.deviceId ? { deviceId: { exact: target.deviceId } } : true;
-        const openStream = async () => {
-          const stream = await navigator.mediaDevices.getUserMedia({ video: constraints });
+        const baseConstraints = target.deviceId
+          ? {
+              deviceId: { exact: target.deviceId },
+              width: { ideal: MAX_PREVIEW_WIDTH },
+              height: { ideal: MAX_PREVIEW_HEIGHT },
+            }
+          : {
+              width: { ideal: MAX_PREVIEW_WIDTH },
+              height: { ideal: MAX_PREVIEW_HEIGHT },
+            };
+        const openStream = async (videoConstraints) => {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: videoConstraints });
           previewStream = stream;
           video.srcObject = stream;
           await video.play();
         };
         stopPreview();
         await delay(150);
-        await openStream();
+        await openStream(baseConstraints);
+        let track = previewStream?.getVideoTracks?.()[0] || null;
+        let settings = track?.getSettings?.() || {};
+        const caps = track?.getCapabilities?.() || {};
+        const maxWidth = Number(caps?.width?.max || 0);
+        const maxHeight = Number(caps?.height?.max || 0);
+        const currWidth = Number(settings.width || video.videoWidth || 0);
+        const currHeight = Number(settings.height || video.videoHeight || 0);
+        if (
+          maxWidth > 0 && maxHeight > 0 &&
+          (maxWidth > currWidth || maxHeight > currHeight)
+        ) {
+          try {
+            stopPreview();
+            await delay(100);
+            await openStream({
+              ...baseConstraints,
+              width: { ideal: maxWidth, max: maxWidth },
+              height: { ideal: maxHeight, max: maxHeight },
+            });
+            track = previewStream?.getVideoTracks?.()[0] || track;
+            settings = track?.getSettings?.() || settings;
+          } catch (e) {
+            // keep first opened stream if hard max request fails
+          }
+        }
+        const width = Number(settings.width || video.videoWidth || 0);
+        const height = Number(settings.height || video.videoHeight || 0);
+        const meta = document.getElementById("previewResolution");
+        if (meta) {
+          meta.textContent = (width > 0 && height > 0)
+            ? `Preview resolution: ${width} x ${height}`
+            : "Preview resolution: unknown";
+        }
+        if (width > 0 && height > 0) {
+          video.style.aspectRatio = `${width} / ${height}`;
+        }
         previewDeviceId = target.deviceId || null;
         previewDeviceLabel = target.label || null;
         cameraPermissionGranted = true;
