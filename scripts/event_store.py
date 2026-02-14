@@ -809,6 +809,119 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log join event")
 
+    async def log_room_update(
+        self,
+        payload: dict,
+        event,
+        tiktok_username: str,
+        raw_id: Optional[int] = None,
+    ) -> None:
+        now_dt = datetime.now(timezone.utc)
+        ts = now_dt.isoformat()
+        unix_ts = int(now_dt.timestamp())
+
+        base_message = payload.get("baseMessage") if isinstance(payload, dict) else None
+        if base_message is None and isinstance(payload, dict):
+            base_message = payload.get("base_message")
+        if not isinstance(base_message, dict):
+            base_message = {}
+
+        contributors = payload.get("mContributors") if isinstance(payload, dict) else None
+        if contributors is None and isinstance(payload, dict):
+            contributors = payload.get("m_contributors")
+        if not isinstance(contributors, list):
+            contributors = []
+
+        m_contributors = []
+        for contributor in contributors:
+            if not isinstance(contributor, dict):
+                continue
+            contributor_user = contributor.get("mUser")
+            if contributor_user is None:
+                contributor_user = contributor.get("m_user")
+            if not isinstance(contributor_user, dict):
+                contributor_user = {}
+            m_user_id = _get_any(contributor_user, "id", "idStr", "user_id", "userId")
+            if m_user_id is not None:
+                try:
+                    m_user_id = str(m_user_id).strip()
+                except Exception:
+                    m_user_id = None
+            m_contributors.append(
+                {
+                    "mScore": self._to_int(_get_any(contributor, "mScore", "m_score", "score")),
+                    "mUserId": m_user_id,
+                    "mUsername": _get_any(contributor_user, "username", "unique_id", "display_id"),
+                    "mRank": self._to_int(_get_any(contributor, "mRank", "m_rank", "rank")),
+                }
+            )
+
+        top = contributors[0] if contributors else {}
+        if not isinstance(top, dict):
+            top = {}
+        top_user = top.get("mUser")
+        if top_user is None:
+            top_user = top.get("m_user")
+        if not isinstance(top_user, dict):
+            top_user = {}
+
+        row = {
+            "id": raw_id if raw_id is not None else self._next_row_id(),
+            "iso_ts": ts,
+            "unix_ts": unix_ts,
+            "method": _get_any(payload, "method") or _get_any(base_message, "method") or "WebcastRoomUserSeqMessage",
+            "room_id": _get_any(payload, "room_id", "roomId") or _get_any(base_message, "roomId", "room_id"),
+            "create_time_ms": _get_any(payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_any(base_message, "createTime", "create_time"),
+            "message_id": _get_any(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_any(base_message, "messageId", "message_id"),
+            "viewer_count_m_total": _get_any(payload, "mTotal", "m_total"),
+            "viewer_count_total_user": _get_any(payload, "totalUser", "total_user"),
+            "anonymous": _get_any(payload, "anonymous"),
+            "contributors_count": len(contributors),
+            "m_contributors": m_contributors,
+            "top_contributor_id": _get_any(top_user, "id", "user_id", "userId", "idStr"),
+            "top_contributor_nickname": _get_any(top_user, "nickName", "nick_name", "nickname"),
+            "top_contributor_username": _get_any(top_user, "username", "unique_id", "display_id"),
+            "top_contributor_rank": _get_any(top, "mRank", "m_rank", "rank"),
+            "top_contributor_score": _get_any(top, "mScore", "m_score", "score"),
+            "tiktok_username": tiktok_username,
+        }
+        values = [_normalize_db_value(v) for v in row.values()]
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping room_update_events insert")
+                    return
+                row_data = dict(zip(row.keys(), values))
+                # Keep json/jsonb fields as native JSON for PostgREST.
+                row_data["mContributors"] = m_contributors
+                # Ensure numeric text is normalized for bigint/integer columns when present.
+                for key in (
+                    "room_id",
+                    "create_time_ms",
+                    "message_id",
+                    "viewer_count_m_total",
+                    "viewer_count_total_user",
+                    "anonymous",
+                    "top_contributor_id",
+                    "top_contributor_rank",
+                    "top_contributor_score",
+                ):
+                    if key in row_data:
+                        coerced = self._to_int(row_data.get(key))
+                        if coerced is not None:
+                            row_data[key] = coerced
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action_name = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("room_update_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("room_update_events", row_data)
+                    action_name = "insert-fallback"
+                self._log_result("room_update_events", action_name, resp)
+            except Exception:
+                logger.exception("Failed to log room update event")
+
     async def log_comment(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()

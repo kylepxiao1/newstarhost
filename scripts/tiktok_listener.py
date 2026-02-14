@@ -1034,6 +1034,14 @@ class TikTokLiveListener:
             raw_id = await self._raw_id_for_event(event, payload, "join")
             await self._event_store.log_join(payload, event, self.username, raw_id=raw_id)
 
+        @self.client.on(ttevents.RoomUserSeqEvent)
+        async def on_room_user_seq(event: ttevents.RoomUserSeqEvent) -> None:
+            if self._is_duplicate(event, "room_user_seq"):
+                return
+            payload = _payload(event)
+            raw_id = await self._raw_id_for_event(event, payload, "room_update")
+            await self._event_store.log_room_update(payload, event, self.username, raw_id=raw_id)
+
         @self.client.on(ttevents.LikeEvent)
         async def on_like(event: ttevents.LikeEvent) -> None:
             if self._is_duplicate(event, "like"):
