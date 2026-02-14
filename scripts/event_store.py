@@ -12,6 +12,7 @@ import httpx
 from TikTokLive.events.proto_events import WebcastCompetitionMessage
 
 from utils import (
+    _env,
     _extract_handle,
     _extract_recipient_from_describe,
     _get_any,
@@ -32,6 +33,13 @@ class SupabaseEventStore:
         self._client: Optional[httpx.AsyncClient] = None
         self._rest_url = ""
         self._raw_id_seq = int(time.time() * 1000) % 1000
+        self._write_tiktok_events_raw = _env("SUPABASE_WRITE_TIKTOK_EVENTS_RAW", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
         if not url or not key:
             logger.error(
                 "Supabase credentials missing. Set SUPABASE_URL and SUPABASE_SECRET_KEY (or SERVICE_ROLE_KEY)."
@@ -45,6 +53,12 @@ class SupabaseEventStore:
         }
         self._client = httpx.AsyncClient(base_url=self._rest_url, headers=headers, timeout=30.0)
         logger.info("Supabase REST client initialized for %s", self._rest_url)
+        if self._write_tiktok_events_raw:
+            logger.info("Supabase raw event writes enabled for tiktok_events_raw")
+        else:
+            logger.info(
+                "Supabase raw event writes disabled for tiktok_events_raw (set SUPABASE_WRITE_TIKTOK_EVENTS_RAW=1 to enable)"
+            )
 
     async def _post_row(
         self,
@@ -648,6 +662,153 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log gift event")
 
+    async def log_join(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
+        now_dt = datetime.now(timezone.utc)
+        ts = now_dt.isoformat()
+        unix_ts = int(now_dt.timestamp())
+
+        base_message = _get_attr_any(event, "base_message", "baseMessage")
+        user_obj = _safe_event_user(event)
+
+        user_payload = payload.get("user") if isinstance(payload, dict) and isinstance(payload.get("user"), dict) else {}
+        follow_info = (
+            user_payload.get("followInfo")
+            if isinstance(user_payload, dict) and isinstance(user_payload.get("followInfo"), dict)
+            else None
+        )
+        if follow_info is None and isinstance(user_payload, dict) and isinstance(user_payload.get("follow_info"), dict):
+            follow_info = user_payload.get("follow_info")
+
+        joined_user_id = (
+            _get_attr_any(user_obj, "id", "user_id", "userId")
+            or _get_any(user_payload, "id", "user_id", "userId")
+            or _get_any(payload, "joined_user_id", "joinedUserId")
+        )
+        joined_user_nickname = (
+            _get_attr_any(user_obj, "nickname", "nick_name", "nickName")
+            or _get_any(user_payload, "nickName", "nick_name", "nickname")
+            or _get_any(payload, "joined_user_nickname", "joinedUserNickname")
+        )
+        joined_username = (
+            _extract_handle(user_obj)
+            or _get_any(user_payload, "unique_id", "display_id", "username")
+            or _get_any(payload, "joined_username", "joinedUsername")
+        )
+        joined_user_sec_uid = (
+            _get_attr_any(user_obj, "sec_uid", "secUid", "user_sec_uid")
+            or _get_any(user_payload, "secUid", "sec_uid", "user_sec_uid")
+            or _get_any(payload, "joined_user_sec_uid", "joinedUserSecUid")
+        )
+
+        action = _get_any(payload, "action") or _get_attr_any(event, "action")
+        count = _get_any(payload, "count") or _get_attr_any(event, "count")
+        client_enter_source = _get_any(payload, "clientEnterSource", "client_enter_source")
+        client_enter_type = _get_any(payload, "clientEnterType", "client_enter_type")
+
+        public_area = payload.get("publicAreaMessageCommon") if isinstance(payload, dict) else None
+        if public_area is None and isinstance(payload, dict):
+            public_area = payload.get("public_area_message_common")
+        portrait = public_area.get("portraitInfo") if isinstance(public_area, dict) else None
+        if portrait is None and isinstance(public_area, dict):
+            portrait = public_area.get("portrait_info")
+        user_metrics = portrait.get("userMetrics") if isinstance(portrait, dict) else None
+        if user_metrics is None and isinstance(portrait, dict):
+            user_metrics = portrait.get("user_metrics")
+        if not isinstance(user_metrics, list):
+            user_metrics = []
+
+        grade_metric = None
+        subscribe_metric = None
+        follow_metric = None
+        fans_club_metric = None
+        top_viewer_metric = None
+
+        for metric in user_metrics:
+            if not isinstance(metric, dict):
+                continue
+            metric_type = str(metric.get("type") or "").upper()
+            metric_val = metric.get("metricsValue")
+            if metric_val is None:
+                metric_val = metric.get("metrics_value")
+            metric_val_int = self._to_int(metric_val)
+            metric_val_norm = metric_val_int if metric_val_int is not None else metric_val
+            if "GRADE" in metric_type:
+                grade_metric = metric_val_norm
+            elif "SUBSCRIBE" in metric_type:
+                subscribe_metric = metric_val_norm
+            elif "FOLLOW" in metric_type:
+                follow_metric = metric_val_norm
+            elif "FANS_CLUB" in metric_type or "FANSCLUB" in metric_type:
+                fans_club_metric = metric_val_norm
+            elif "TOP_VIEWER" in metric_type:
+                top_viewer_metric = metric_val_norm
+
+        follow_role = _get_any(payload, "follow_role", "followRole")
+        if not _is_valid_value(follow_role) and isinstance(follow_info, dict):
+            follow_role = _get_any(
+                follow_info,
+                "follow_role",
+                "followRole",
+                "follow_status",
+                "followStatus",
+                "follow_state",
+                "followState",
+            )
+        if not _is_valid_value(follow_role):
+            follow_role = follow_metric
+        if not _is_valid_value(follow_role):
+            follow_role = None
+
+        following_count = _get_any(follow_info, "followingCount", "following_count") if isinstance(follow_info, dict) else None
+        follower_count = _get_any(follow_info, "followerCount", "follower_count") if isinstance(follow_info, dict) else None
+
+        row = {
+            "id": raw_id if raw_id is not None else self._next_row_id(),
+            "iso_ts": ts,
+            "unix_ts": unix_ts,
+            "method": _get_any(payload, "method") or _get_attr_any(base_message, "method") or "WebcastMemberMessage",
+            "room_id": _get_any(payload, "room_id", "roomId") or _get_attr_any(base_message, "room_id", "roomId"),
+            "create_time_ms": _get_any(payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_attr_any(base_message, "create_time", "createTime"),
+            "message_id": _get_any(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_attr_any(base_message, "message_id", "messageId"),
+            "joined_user_id": joined_user_id,
+            "joined_user_nickname": joined_user_nickname,
+            "joined_username": joined_username,
+            "joined_user_sec_uid": joined_user_sec_uid,
+            "action": action,
+            "count": count,
+            "client_enter_source": client_enter_source,
+            "client_enter_type": client_enter_type,
+            "grade_metric": grade_metric,
+            "subscribe_metric": subscribe_metric,
+            "follow_metric": follow_metric,
+            "fans_club_metric": fans_club_metric,
+            "top_viewer_metric": top_viewer_metric,
+            "follow_role": follow_role,
+            "following_count": following_count,
+            "follower_count": follower_count,
+            "tiktok_username": tiktok_username,
+        }
+        values = [_normalize_db_value(v) for v in row.values()]
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping join_events insert")
+                    return
+                row_data = dict(zip(row.keys(), values))
+                # Keep json/jsonb payload as native JSON list for PostgREST.
+                row_data["user_metrics"] = user_metrics
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action_name = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("join_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("join_events", row_data)
+                    action_name = "insert-fallback"
+                self._log_result("join_events", action_name, resp)
+            except Exception:
+                logger.exception("Failed to log join event")
+
     async def log_comment(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
@@ -892,6 +1053,10 @@ class SupabaseEventStore:
         tiktok_username: str,
         raw_id: Optional[int] = None,
     ) -> Optional[int]:
+        if not self._write_tiktok_events_raw:
+            if self._debug:
+                logger.debug("Skipping tiktok_events_raw insert (disabled): event_type=%s", event_type)
+            return None
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())

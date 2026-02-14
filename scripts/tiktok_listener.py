@@ -1026,6 +1026,14 @@ class TikTokLiveListener:
             else:
                 await self._maybe_trigger(comment=text, gift_name=None)
 
+        @self.client.on(ttevents.JoinEvent)
+        async def on_join(event: ttevents.JoinEvent) -> None:
+            if self._is_duplicate(event, "join"):
+                return
+            payload = _payload(event)
+            raw_id = await self._raw_id_for_event(event, payload, "join")
+            await self._event_store.log_join(payload, event, self.username, raw_id=raw_id)
+
         @self.client.on(ttevents.LikeEvent)
         async def on_like(event: ttevents.LikeEvent) -> None:
             if self._is_duplicate(event, "like"):
