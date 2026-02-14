@@ -218,6 +218,17 @@ def _coerce_int(value) -> Optional[int]:
         return None
 
 
+def _format_exception(exc: Exception) -> str:
+    exc_type = type(exc).__name__
+    message = str(exc).strip()
+    if message:
+        return f"{exc_type}: {message}"
+    exc_repr = repr(exc)
+    if exc_repr and exc_repr != f"{exc_type}()":
+        return exc_repr
+    return f"{exc_type} (empty message)"
+
+
 _HOST_TOKENS = {"host", "the host", "creator", "streamer"}
 
 
@@ -1090,7 +1101,6 @@ class TikTokLiveListener:
                 break
             except Exception as exc:
                 msg = str(exc).lower()
-                print(msg)
                 if (
                     "rate_limit" in msg
                     or "too many connections" in msg
@@ -1126,7 +1136,12 @@ class TikTokLiveListener:
                         self._offline_logged = True
                         self._last_offline_log = datetime.now(timezone.utc)
                     backoff = self._offline_backoff
-                logger.error("TikTok listener error: %s", exc)
+                logger.error(
+                    "TikTok listener error for @%s: %s (next backoff=%ss)",
+                    self.username,
+                    _format_exception(exc),
+                    int(backoff),
+                )
                 if "device_blocked" in msg:
                     backoff = self._rate_limit_backoff
                 elif "rate_limit" in msg or "too many connections" in msg:

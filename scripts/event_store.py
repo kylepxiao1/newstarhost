@@ -670,14 +670,27 @@ class SupabaseEventStore:
         base_message = _get_attr_any(event, "base_message", "baseMessage")
         user_obj = _safe_event_user(event)
 
+        def _get_child(obj, *names):
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return _get_any(obj, *names)
+            return _get_attr_any(obj, *names)
+
         user_payload = payload.get("user") if isinstance(payload, dict) and isinstance(payload.get("user"), dict) else {}
-        follow_info = (
-            user_payload.get("followInfo")
-            if isinstance(user_payload, dict) and isinstance(user_payload.get("followInfo"), dict)
-            else None
-        )
-        if follow_info is None and isinstance(user_payload, dict) and isinstance(user_payload.get("follow_info"), dict):
-            follow_info = user_payload.get("follow_info")
+        follow_info = _get_child(user_payload, "followInfo", "follow_info")
+        if follow_info is None:
+            follow_info = _get_attr_any(user_obj, "follow_info", "followInfo")
+        if follow_info is None and isinstance(base_message, dict):
+            display_text = _get_child(base_message, "displayText", "display_text")
+            pieces = _get_child(display_text, "pieces")
+            if isinstance(pieces, list):
+                for piece in pieces:
+                    piece_user = _get_child(_get_child(piece, "userValue", "user_value"), "user")
+                    fi = _get_child(piece_user, "followInfo", "follow_info")
+                    if fi is not None:
+                        follow_info = fi
+                        break
 
         joined_user_id = (
             _get_attr_any(user_obj, "id", "user_id", "userId")
@@ -705,15 +718,14 @@ class SupabaseEventStore:
         client_enter_source = _get_any(payload, "clientEnterSource", "client_enter_source")
         client_enter_type = _get_any(payload, "clientEnterType", "client_enter_type")
 
-        public_area = payload.get("publicAreaMessageCommon") if isinstance(payload, dict) else None
-        if public_area is None and isinstance(payload, dict):
-            public_area = payload.get("public_area_message_common")
-        portrait = public_area.get("portraitInfo") if isinstance(public_area, dict) else None
-        if portrait is None and isinstance(public_area, dict):
-            portrait = public_area.get("portrait_info")
-        user_metrics = portrait.get("userMetrics") if isinstance(portrait, dict) else None
-        if user_metrics is None and isinstance(portrait, dict):
-            user_metrics = portrait.get("user_metrics")
+        public_area = _get_child(payload, "publicAreaMessageCommon", "public_area_message_common")
+        if public_area is None:
+            public_area = _get_attr_any(event, "public_area_message_common", "publicAreaMessageCommon")
+        if public_area is None and base_message is not None:
+            public_area = _get_attr_any(base_message, "public_area_message_common", "publicAreaMessageCommon")
+
+        portrait = _get_child(public_area, "portraitInfo", "portrait_info")
+        user_metrics = _get_child(portrait, "userMetrics", "user_metrics")
         if not isinstance(user_metrics, list):
             user_metrics = []
 
@@ -723,13 +735,49 @@ class SupabaseEventStore:
         fans_club_metric = None
         top_viewer_metric = None
 
+        type_map_0_based = {
+            0: "GRADE",
+            1: "SUBSCRIBE",
+            2: "FOLLOW",
+            3: "FANS_CLUB",
+            4: "TOP_VIEWER",
+        }
+        type_map_1_based = {
+            1: "GRADE",
+            2: "SUBSCRIBE",
+            3: "FOLLOW",
+            4: "FANS_CLUB",
+            5: "TOP_VIEWER",
+        }
+        numeric_types = []
+        normalized_metrics = []
         for metric in user_metrics:
-            if not isinstance(metric, dict):
-                continue
-            metric_type = str(metric.get("type") or "").upper()
-            metric_val = metric.get("metricsValue")
-            if metric_val is None:
-                metric_val = metric.get("metrics_value")
+            metric_type_raw = _get_child(metric, "type", "metricType", "metric_type")
+            metric_val = _get_child(metric, "metricsValue", "metrics_value", "value")
+            normalized_metrics.append((metric_type_raw, metric_val))
+            numeric_type = self._to_int(metric_type_raw)
+            if numeric_type is not None:
+                numeric_types.append(numeric_type)
+        enum_map = None
+        type_set = set(numeric_types)
+        if type_set.issubset(set(type_map_0_based.keys())) and type_set:
+            enum_map = type_map_0_based
+        elif type_set.issubset(set(type_map_1_based.keys())) and type_set:
+            enum_map = type_map_1_based
+
+        for metric_type_raw, metric_val in normalized_metrics:
+            metric_type = str(metric_type_raw or "").upper()
+            numeric_type = self._to_int(metric_type_raw)
+            if (
+                enum_map is not None
+                and numeric_type in enum_map
+                and (
+                    not metric_type
+                    or metric_type.isdigit()
+                    or metric_type in {"UNKNOWN", "UNSPECIFIED", "NONE"}
+                )
+            ):
+                metric_type = enum_map[numeric_type]
             metric_val_int = self._to_int(metric_val)
             metric_val_norm = metric_val_int if metric_val_int is not None else metric_val
             if "GRADE" in metric_type:
@@ -744,8 +792,8 @@ class SupabaseEventStore:
                 top_viewer_metric = metric_val_norm
 
         follow_role = _get_any(payload, "follow_role", "followRole")
-        if not _is_valid_value(follow_role) and isinstance(follow_info, dict):
-            follow_role = _get_any(
+        if not _is_valid_value(follow_role) and follow_info is not None:
+            follow_role = _get_child(
                 follow_info,
                 "follow_role",
                 "followRole",
@@ -759,8 +807,18 @@ class SupabaseEventStore:
         if not _is_valid_value(follow_role):
             follow_role = None
 
-        following_count = _get_any(follow_info, "followingCount", "following_count") if isinstance(follow_info, dict) else None
-        follower_count = _get_any(follow_info, "followerCount", "follower_count") if isinstance(follow_info, dict) else None
+        following_count = _get_child(follow_info, "followingCount", "following_count")
+        follower_count = _get_child(follow_info, "followerCount", "follower_count")
+        if following_count is None:
+            following_count = _get_child(user_payload, "followingCount", "following_count")
+        if follower_count is None:
+            follower_count = _get_child(user_payload, "followerCount", "follower_count")
+        if following_count is None:
+            following_count = _get_attr_any(user_obj, "following_count", "followingCount")
+        if follower_count is None:
+            follower_count = _get_attr_any(user_obj, "follower_count", "followerCount")
+        following_count = self._to_int(following_count)
+        follower_count = self._to_int(follower_count)
 
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
@@ -797,8 +855,6 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping join_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                # Keep json/jsonb payload as native JSON list for PostgREST.
-                row_data["user_metrics"] = user_metrics
                 on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
                 action_name = "upsert" if on_conflict else "insert"
                 resp = await self._post_row("join_events", row_data, on_conflict=on_conflict)
@@ -895,7 +951,7 @@ class SupabaseEventStore:
                     return
                 row_data = dict(zip(row.keys(), values))
                 # Keep json/jsonb fields as native JSON for PostgREST.
-                row_data["mContributors"] = m_contributors
+                row_data["m_contributors"] = m_contributors
                 # Ensure numeric text is normalized for bigint/integer columns when present.
                 for key in (
                     "room_id",
