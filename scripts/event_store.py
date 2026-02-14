@@ -876,28 +876,29 @@ class SupabaseEventStore:
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
 
-        base_message = payload.get("baseMessage") if isinstance(payload, dict) else None
-        if base_message is None and isinstance(payload, dict):
-            base_message = payload.get("base_message")
-        if not isinstance(base_message, dict):
-            base_message = {}
+        def _get_child(obj, *names):
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return _get_any(obj, *names)
+            return _get_attr_any(obj, *names)
 
-        contributors = payload.get("mContributors") if isinstance(payload, dict) else None
-        if contributors is None and isinstance(payload, dict):
-            contributors = payload.get("m_contributors")
+        base_message = _get_child(payload, "baseMessage", "base_message")
+        if base_message is None:
+            base_message = _get_attr_any(event, "base_message", "baseMessage")
+
+        contributors = _get_child(payload, "mContributors", "m_contributors", "contributors")
+        if contributors is None:
+            contributors = _get_attr_any(event, "m_contributors", "mContributors", "contributors")
+        if contributors is None and base_message is not None:
+            contributors = _get_child(base_message, "mContributors", "m_contributors", "contributors")
         if not isinstance(contributors, list):
             contributors = []
 
         m_contributors = []
         for contributor in contributors:
-            if not isinstance(contributor, dict):
-                continue
-            contributor_user = contributor.get("mUser")
-            if contributor_user is None:
-                contributor_user = contributor.get("m_user")
-            if not isinstance(contributor_user, dict):
-                contributor_user = {}
-            m_user_id = _get_any(contributor_user, "id", "idStr", "user_id", "userId")
+            contributor_user = _get_child(contributor, "mUser", "m_user", "user")
+            m_user_id = _get_child(contributor_user, "id", "idStr", "user_id", "userId")
             if m_user_id is not None:
                 try:
                     m_user_id = str(m_user_id).strip()
@@ -905,42 +906,53 @@ class SupabaseEventStore:
                     m_user_id = None
             m_contributors.append(
                 {
-                    "mScore": self._to_int(_get_any(contributor, "mScore", "m_score", "score")),
+                    "mScore": self._to_int(_get_child(contributor, "mScore", "m_score", "score")),
                     "mUserId": m_user_id,
-                    "mUsername": _get_any(contributor_user, "username", "unique_id", "display_id"),
-                    "mRank": self._to_int(_get_any(contributor, "mRank", "m_rank", "rank")),
+                    "mUsername": _get_child(contributor_user, "username", "unique_id", "display_id", "userName"),
+                    "mRank": self._to_int(_get_child(contributor, "mRank", "m_rank", "rank")),
                 }
             )
 
-        top = contributors[0] if contributors else {}
-        if not isinstance(top, dict):
-            top = {}
-        top_user = top.get("mUser")
-        if top_user is None:
-            top_user = top.get("m_user")
-        if not isinstance(top_user, dict):
-            top_user = {}
+        def _rank_value(item) -> int:
+            rank = self._to_int(_get_child(item, "mRank", "m_rank", "rank"))
+            if rank is None:
+                return 10**9
+            return rank
+
+        top = None
+        if contributors:
+            top = min(contributors, key=_rank_value)
+            if _rank_value(top) >= 10**9:
+                top = contributors[0]
+        top_user = _get_child(top, "mUser", "m_user", "user")
 
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
-            "method": _get_any(payload, "method") or _get_any(base_message, "method") or "WebcastRoomUserSeqMessage",
-            "room_id": _get_any(payload, "room_id", "roomId") or _get_any(base_message, "roomId", "room_id"),
-            "create_time_ms": _get_any(payload, "create_time", "create_time_ms", "createTime", "timestamp")
-            or _get_any(base_message, "createTime", "create_time"),
-            "message_id": _get_any(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
-            or _get_any(base_message, "messageId", "message_id"),
-            "viewer_count_m_total": _get_any(payload, "mTotal", "m_total"),
-            "viewer_count_total_user": _get_any(payload, "totalUser", "total_user"),
-            "anonymous": _get_any(payload, "anonymous"),
-            "contributors_count": len(contributors),
+            "method": _get_child(payload, "method")
+            or _get_child(base_message, "method")
+            or _get_attr_any(event, "method")
+            or "WebcastRoomUserSeqMessage",
+            "room_id": _get_child(payload, "room_id", "roomId")
+            or _get_child(base_message, "roomId", "room_id")
+            or _get_attr_any(event, "room_id", "roomId"),
+            "create_time_ms": _get_child(payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_child(base_message, "createTime", "create_time")
+            or _get_attr_any(event, "create_time", "createTime", "timestamp"),
+            "message_id": _get_child(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_child(base_message, "messageId", "message_id")
+            or _get_attr_any(event, "msg_id", "msgId", "message_id", "messageId", "event_id", "_ws_msg_id"),
+            "viewer_count_m_total": _get_child(payload, "mTotal", "m_total", "total"),
+            "viewer_count_total_user": _get_child(payload, "totalUser", "total_user"),
+            "anonymous": _get_child(payload, "anonymous"),
+            "contributors_count": len(m_contributors),
             "m_contributors": m_contributors,
-            "top_contributor_id": _get_any(top_user, "id", "user_id", "userId", "idStr"),
-            "top_contributor_nickname": _get_any(top_user, "nickName", "nick_name", "nickname"),
-            "top_contributor_username": _get_any(top_user, "username", "unique_id", "display_id"),
-            "top_contributor_rank": _get_any(top, "mRank", "m_rank", "rank"),
-            "top_contributor_score": _get_any(top, "mScore", "m_score", "score"),
+            "top_contributor_id": _get_child(top_user, "id", "user_id", "userId", "idStr"),
+            "top_contributor_nickname": _get_child(top_user, "nickName", "nick_name", "nickname"),
+            "top_contributor_username": _get_child(top_user, "username", "unique_id", "display_id", "userName"),
+            "top_contributor_rank": _get_child(top, "mRank", "m_rank", "rank"),
+            "top_contributor_score": _get_child(top, "mScore", "m_score", "score"),
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
