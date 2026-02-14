@@ -54,7 +54,12 @@ ROLE_OPTIONS = {"bell", "applause", "mvp", "attention", "background", "win", "cl
 
 
 def _load_hotkeys() -> dict:
-    defaults = {"fade_in": True, "fade_out": True, "hotkeys": {}}
+    defaults = {
+        "fade_in": True,
+        "fade_out": True,
+        "loop_same_song_after_finish": False,
+        "hotkeys": {},
+    }
     if not HOTKEYS_PATH.exists():
         return defaults
     try:
@@ -65,10 +70,12 @@ def _load_hotkeys() -> dict:
         return defaults
     fade_in = payload.get("fade_in")
     fade_out = payload.get("fade_out")
+    loop_same_song_after_finish = payload.get("loop_same_song_after_finish")
     hotkeys = payload.get("hotkeys")
     data = {
         "fade_in": True if fade_in is None else bool(fade_in),
         "fade_out": True if fade_out is None else bool(fade_out),
+        "loop_same_song_after_finish": bool(loop_same_song_after_finish),
         "hotkeys": hotkeys if isinstance(hotkeys, dict) else {},
     }
     return data
@@ -337,6 +344,7 @@ class LiveBattleEndRequest(BaseModel):
 class SettingsRequest(BaseModel):
     fade_in: Optional[bool] = None
     fade_out: Optional[bool] = None
+    loop_same_song_after_finish: Optional[bool] = None
     hotkeys: Optional[dict] = None
 
 
@@ -352,6 +360,8 @@ async def update_settings(body: SettingsRequest) -> JSONResponse:
         data["fade_in"] = bool(body.fade_in)
     if body.fade_out is not None:
         data["fade_out"] = bool(body.fade_out)
+    if body.loop_same_song_after_finish is not None:
+        data["loop_same_song_after_finish"] = bool(body.loop_same_song_after_finish)
     if body.hotkeys is not None and isinstance(body.hotkeys, dict):
         cleaned = {}
         for key, role in body.hotkeys.items():

@@ -66,8 +66,9 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
   <script>
-    const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
+    const api = window.PageShared.api;
     let library = {};
     let songsState = {};
     let state = {};
@@ -81,27 +82,20 @@
     let hotkeyMap = {};
     let settingsFadeIn = true;
     let settingsFadeOut = true;
+    let settingsLoopSameSongAfterFinish = false;
 
     async function loadSettings() {
-      try {
-        const res = await api("/settings/data");
-        const data = await res.json();
-        settingsFadeIn = data.fade_in !== false;
-        settingsFadeOut = data.fade_out !== false;
-        hotkeyMap = data.hotkeys || {};
-      } catch (e) {}
-    }
-
-    function isTypingTarget(target) {
-      if (!target) return false;
-      const tag = (target.tagName || "").toLowerCase();
-      return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+      const data = await window.PageShared.fetchAppSettings(api);
+      settingsFadeIn = data.fade_in !== false;
+      settingsFadeOut = data.fade_out !== false;
+      settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
+      hotkeyMap = data.hotkeys || {};
     }
 
     function handleHotkey(evt) {
       if (evt.defaultPrevented) return;
       if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
-      if (isTypingTarget(evt.target)) return;
+      if (window.PageShared.isTypingTarget(evt.target)) return;
       const key = evt.key;
       if (!/^\d$/.test(key)) return;
       const role = hotkeyMap[key];
@@ -368,22 +362,55 @@
       if (currentLabel) currentLabel.textContent = currentName;
     }
 
-    function playSongWithUrl(url, fromSelect=false) {
+    async function playSongWithUrl(url, fromSelect=false) {
       if (!url) {
         if (fromSelect) return;
         return alert("Select a song");
       }
+      await loadSettings();
       api("/songs/play", {method:"POST", body:{target: "group", url, context: "menu"}}).catch(()=>{});
       if (!songsState) songsState = {};
       songsState.current = url;
-      const bellUrl = getRoleUrl("bell");
-      // bell -> song -> applause -> background (loop)
-      const steps = [];
-      if (bellUrl) steps.push(bellUrl);
-      steps.push(url);
-      steps.push("applause_role");
-      steps.push("background_role");
-      playSequence(steps);
+      if (settingsLoopSameSongAfterFinish) {
+        const bellUrl = getRoleUrl("bell");
+        if (bellUrl) {
+          startAudio(bellUrl, {
+            loop:false,
+            isRole:true,
+            fade:false,
+            fadeOut:false,
+            skipFadeOut:true,
+            onEnd: () => {
+              setCurrent(url);
+              startAudio(url, {
+                loop:false,
+                fade:true,
+                fadeOut:false,
+                skipFadeOut:true,
+                onEnd: () => runPracticeRepeatCues(url),
+              });
+            }
+          });
+        } else {
+          setCurrent(url);
+          startAudio(url, {
+            loop:false,
+            fade:true,
+            fadeOut:false,
+            skipFadeOut:true,
+            onEnd: () => runPracticeRepeatCues(url),
+          });
+        }
+      } else {
+        const bellUrl = getRoleUrl("bell");
+        // bell -> song -> applause -> background (loop)
+        const steps = [];
+        if (bellUrl) steps.push(bellUrl);
+        steps.push(url);
+        steps.push("applause_role");
+        steps.push("background_role");
+        playSequence(steps);
+      }
       refreshState();
     }
 
@@ -480,11 +507,16 @@
       return Object.values(library).find(s => (s.roles||[]).includes(role))?.url || "";
     }
 
+    function queueSongPaused(url) {
+      window.PageShared.queueSongPaused({url, getSongVolume, setCurrent});
+    }
+
+    function runPracticeRepeatCues(url) {
+      queueSongPaused(url);
+    }
+
     function normalizeVolume(val) {
-      let v = parseFloat(val);
-      if (!Number.isFinite(v)) return 1;
-      if (v <= 1) return Math.max(0, Math.min(1, v));
-      return Math.max(0, Math.min(1, v / 200));
+      return window.PageShared.normalizeVolume(val);
     }
 
     function getSongVolume(url) {
@@ -495,14 +527,7 @@
     }
 
     function getAudioPlayer() {
-      if (window.top && window.top !== window) {
-        const gp = window.top.document.getElementById("globalPlayer");
-        if (gp) return gp;
-      }
-      if (!window._sharedAudio) {
-        window._sharedAudio = new Audio();
-      }
-      return window._sharedAudio;
+      return window.PageShared.getGlobalAudioPlayer();
     }
 
     function setCurrent(url) {

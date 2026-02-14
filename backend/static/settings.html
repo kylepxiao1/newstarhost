@@ -18,6 +18,37 @@
     th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #1f2937; }
     th { font-size: 12px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; }
     .status { font-weight: 600; color: #94a3b8; }
+    .switch { position: relative; display: inline-block; width: 48px; height: 26px; }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      padding: 0;
+      margin: 0;
+      border: 0;
+    }
+    .slider {
+      position: absolute;
+      cursor: pointer;
+      inset: 0;
+      background-color: #334155;
+      transition: .2s;
+      border-radius: 999px;
+      border: 1px solid #475569;
+    }
+    .slider:before {
+      position: absolute;
+      content: "";
+      height: 20px;
+      width: 20px;
+      left: 2px;
+      top: 2px;
+      background-color: #e2e8f0;
+      transition: .2s;
+      border-radius: 50%;
+    }
+    .switch input:checked + .slider { background-color: #22c55e; border-color: #16a34a; }
+    .switch input:checked + .slider:before { transform: translateX(22px); }
   </style>
 </head>
 <body>
@@ -30,6 +61,20 @@
       <div class="row">
         <label><input type="checkbox" id="fadeInToggle"> Fade in 0.5s</label>
         <label><input type="checkbox" id="fadeOutToggle"> Fade out 0.5s</label>
+      </div>
+    </section>
+
+    <section>
+      <h2>Practice Mode</h2>
+      <div class="row">
+        <label class="switch">
+          <input type="checkbox" id="practiceModeToggle">
+          <span class="slider"></span>
+        </label>
+        <span>Enabled</span>
+      </div>
+      <div class="row">
+        <span class="status">When enabled, song end rewinds the same song and leaves it paused.</span>
       </div>
     </section>
 
@@ -52,18 +97,13 @@
     </div>
   </main>
 
+  <script src="/static/page_shared.js"></script>
   <script>
-    const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
+    const api = window.PageShared.api;
     const ROLE_OPTIONS = ["", "bell", "applause", "attention", "background", "win", "mvp", "closing"];
     const DIGITS = ["1","2","3","4","5","6","7","8","9","0"];
-    let settings = { fade_in: true, fade_out: true, hotkeys: {} };
+    let settings = { fade_in: true, fade_out: true, loop_same_song_after_finish: false, hotkeys: {} };
     let hotkeyMap = {};
-
-    function isTypingTarget(target) {
-      if (!target) return false;
-      const tag = (target.tagName || "").toLowerCase();
-      return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
-    }
 
     function getRoleUrl(role) {
       const entry = Object.values(songsLibrary || {}).find(s => (s.roles || []).includes(role));
@@ -84,7 +124,7 @@
     function handleHotkey(evt) {
       if (evt.defaultPrevented) return;
       if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
-      if (isTypingTarget(evt.target)) return;
+      if (window.PageShared.isTypingTarget(evt.target)) return;
       const key = evt.key;
       if (!/^\d$/.test(key)) return;
       const role = hotkeyMap[key];
@@ -137,38 +177,39 @@
     }
 
     async function loadSettings() {
-      try {
-        const res = await api("/settings/data");
-        const data = await res.json();
-        settings = {
-          fade_in: data.fade_in !== false,
-          fade_out: data.fade_out !== false,
-          hotkeys: data.hotkeys || {}
-        };
-        hotkeyMap = settings.hotkeys || {};
-      } catch (e) {}
+      settings = await window.PageShared.fetchAppSettings(api);
+      hotkeyMap = settings.hotkeys || {};
       const fadeIn = document.getElementById("fadeInToggle");
       const fadeOut = document.getElementById("fadeOutToggle");
+      const practiceMode = document.getElementById("practiceModeToggle");
       if (fadeIn) fadeIn.checked = !!settings.fade_in;
       if (fadeOut) fadeOut.checked = !!settings.fade_out;
+      if (practiceMode) practiceMode.checked = !!settings.loop_same_song_after_finish;
       renderHotkeys();
     }
 
     async function saveSettings() {
       const fadeIn = document.getElementById("fadeInToggle")?.checked ?? true;
       const fadeOut = document.getElementById("fadeOutToggle")?.checked ?? true;
+      const practiceMode = document.getElementById("practiceModeToggle")?.checked === true;
       const hotkeys = {};
       document.querySelectorAll("#hotkeyRows select").forEach(sel => {
         const key = sel.dataset.key;
         const role = sel.value;
         if (key && role) hotkeys[key] = role;
       });
-      const payload = { fade_in: fadeIn, fade_out: fadeOut, hotkeys };
+      const payload = {
+        fade_in: fadeIn,
+        fade_out: fadeOut,
+        loop_same_song_after_finish: practiceMode,
+        hotkeys,
+      };
       const status = document.getElementById("statusText");
       if (status) status.textContent = "Saving...";
       try {
         const res = await api("/settings/data", {method:"POST", body: payload});
         await res.json();
+        window.PageShared.writePracticeModeLocal(practiceMode);
         if (status) status.textContent = "Saved";
         if (window.top && window.top !== window) {
           window.top.postMessage({type:"settings-updated"}, "*");

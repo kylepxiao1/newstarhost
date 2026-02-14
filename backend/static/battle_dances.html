@@ -143,8 +143,9 @@
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
   <script>
-    const api = (path, opts={}) => fetch(path, {method: opts.method||"GET", headers: {"Content-Type":"application/json"}, body: opts.body ? JSON.stringify(opts.body) : undefined});
+    const api = window.PageShared.api;
     let state = {};
     let currentTab = "";
     let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"" };
@@ -165,31 +166,24 @@
     let hotkeyMap = {};
     let settingsFadeIn = true;
     let settingsFadeOut = true;
+    let settingsLoopSameSongAfterFinish = false;
 
     async function loadSettings() {
-      try {
-        const res = await api("/settings/data");
-        const data = await res.json();
-        settingsFadeIn = data.fade_in !== false;
-        settingsFadeOut = data.fade_out !== false;
-        hotkeyMap = data.hotkeys || {};
-        const fadeInToggle = document.getElementById("fadeToggle");
-        const fadeOutToggle = document.getElementById("fadeOutToggle");
-        if (fadeInToggle) fadeInToggle.checked = settingsFadeIn;
-        if (fadeOutToggle) fadeOutToggle.checked = settingsFadeOut;
-      } catch (e) {}
-    }
-
-    function isTypingTarget(target) {
-      if (!target) return false;
-      const tag = (target.tagName || "").toLowerCase();
-      return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
+      const data = await window.PageShared.fetchAppSettings(api);
+      settingsFadeIn = data.fade_in !== false;
+      settingsFadeOut = data.fade_out !== false;
+      settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
+      hotkeyMap = data.hotkeys || {};
+      const fadeInToggle = document.getElementById("fadeToggle");
+      const fadeOutToggle = document.getElementById("fadeOutToggle");
+      if (fadeInToggle) fadeInToggle.checked = settingsFadeIn;
+      if (fadeOutToggle) fadeOutToggle.checked = settingsFadeOut;
     }
 
     function handleHotkey(evt) {
       if (evt.defaultPrevented) return;
       if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
-      if (isTypingTarget(evt.target)) return;
+      if (window.PageShared.isTypingTarget(evt.target)) return;
       const key = evt.key;
       if (!/^\d$/.test(key)) return;
       const role = hotkeyMap[key];
@@ -1228,6 +1222,7 @@
         const ok = await unlockAudio();
         if (!ok) return alert("Click anywhere on the page once to enable audio.");
       }
+      await loadSettings();
       // cancel routine if user manually picks music
       cancelRoutine();
       await api("/songs/play", {method:"POST", body:{target: currentTab, url, context: "battle"}});
@@ -1235,9 +1230,13 @@
       songs.current = url;
       songs[currentTab] = url;
       state.songs = songs;
-      // bell -> selected -> applause -> background
+      // bell -> selected -> (loop selected OR applause -> background)
       playSequence(["bell"], false, () => {
         startAudio(url, {loop:false, onEnd: () => {
+          if (settingsLoopSameSongAfterFinish) {
+            runPracticeRepeatCues(url);
+            return;
+          }
           playSequence(["applause"], false, () => {
             const bg = state.songs?.background;
             if (bg) startAudio(bg, {loop:true});
@@ -1252,6 +1251,7 @@
         const ok = await unlockAudio();
         if (!ok) return alert("Click anywhere on the page once to enable audio.");
       }
+      await loadSettings();
       const slotOne = (state.slot_one || "").trim();
       const slotTwo = (state.slot_two || "").trim();
       if (!slotOne || !slotTwo) {
@@ -1283,6 +1283,10 @@
       state.songs = songs;
       playSequence(["bell"], false, () => {
         startAudio(url, {loop:false, onEnd: () => {
+          if (settingsLoopSameSongAfterFinish) {
+            runPracticeRepeatCues(url);
+            return;
+          }
           playSequence(["applause"], false, () => {
             const bg = state.songs?.background;
             if (bg) startAudio(bg, {loop:true});
@@ -1293,14 +1297,7 @@
     }
 
     function getAudioPlayer() {
-      if (window.top && window.top !== window) {
-        const gp = window.top.document.getElementById("globalPlayer");
-        if (gp) return gp;
-      }
-      if (!window._sharedAudio) {
-        window._sharedAudio = new Audio();
-      }
-      return window._sharedAudio;
+      return window.PageShared.getGlobalAudioPlayer();
     }
 
     function startAudio(url, opts={}) {
@@ -1325,6 +1322,10 @@
         player.onended = () => {
           if (typeof opts.onEnd === "function") {
             opts.onEnd();
+            return;
+          }
+          if (!opts.isRole && settingsLoopSameSongAfterFinish) {
+            runPracticeRepeatCues(url);
             return;
           }
           const bg = state.songs?.background;
@@ -1387,10 +1388,7 @@
     }
 
     function normalizeVolume(val) {
-      let v = parseFloat(val);
-      if (!Number.isFinite(v)) return 1;
-      if (v <= 1) return Math.max(0, Math.min(1, v));
-      return Math.max(0, Math.min(1, v / 200));
+      return window.PageShared.normalizeVolume(val);
     }
 
     function getSongVolume(url) {
@@ -1403,6 +1401,14 @@
         }
       }
       return 1;
+    }
+
+    function queueSongPaused(url) {
+      window.PageShared.queueSongPaused({url, getSongVolume, setCurrent});
+    }
+
+    function runPracticeRepeatCues(url) {
+      queueSongPaused(url);
     }
 
     function ensureBackground() {
