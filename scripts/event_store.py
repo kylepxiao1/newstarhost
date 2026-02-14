@@ -1048,6 +1048,128 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log goal update event")
 
+    async def log_social(
+        self,
+        payload: dict,
+        event,
+        tiktok_username: str,
+        raw_id: Optional[int] = None,
+    ) -> None:
+        now_dt = datetime.now(timezone.utc)
+        ts = now_dt.isoformat()
+        unix_ts = int(now_dt.timestamp())
+
+        base_message = payload.get("baseMessage") if isinstance(payload, dict) else None
+        if base_message is None and isinstance(payload, dict):
+            base_message = payload.get("base_message")
+        if not isinstance(base_message, dict):
+            base_message = {}
+
+        user = payload.get("user") if isinstance(payload, dict) else None
+        if not isinstance(user, dict):
+            user = {}
+
+        public_area = payload.get("publicAreaMessageCommon") if isinstance(payload, dict) else None
+        if public_area is None and isinstance(payload, dict):
+            public_area = payload.get("public_area_message_common")
+        if not isinstance(public_area, dict):
+            public_area = {}
+
+        portrait = public_area.get("portraitInfo")
+        if portrait is None:
+            portrait = public_area.get("portrait_info")
+        if not isinstance(portrait, dict):
+            portrait = {}
+
+        portrait_tags = portrait.get("portraitTag")
+        if portrait_tags is None:
+            portrait_tags = portrait.get("portrait_tag")
+        if not isinstance(portrait_tags, list):
+            portrait_tags = []
+        portrait_tag_0 = portrait_tags[0] if portrait_tags else None
+
+        display_text = base_message.get("displayText")
+        if display_text is None:
+            display_text = base_message.get("display_text")
+        if not isinstance(display_text, dict):
+            display_text = {}
+        display_key = str(_get_any(display_text, "key") or "")
+        default_pattern = str(_get_any(display_text, "defaultPattern", "default_pattern") or "")
+        lower_key = display_key.lower()
+        lower_pattern = default_pattern.lower()
+        if "follow" in lower_key or "followed" in lower_pattern:
+            social_type = "follow"
+        elif "share" in lower_key or "shared" in lower_pattern:
+            social_type = "share"
+        else:
+            social_type = default_pattern or display_key
+
+        row = {
+            "id": raw_id if raw_id is not None else self._next_row_id(),
+            "iso_ts": ts,
+            "unix_ts": unix_ts,
+            "method": _get_any(payload, "method") or _get_any(base_message, "method") or "WebcastSocialMessage",
+            "message_id": _get_any(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_any(base_message, "messageId", "message_id"),
+            "room_id": _get_any(payload, "room_id", "roomId") or _get_any(base_message, "roomId", "room_id"),
+            "create_time_ms": _get_any(payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_any(base_message, "createTime", "create_time"),
+            "user_id": _get_any(user, "id", "userId", "user_id"),
+            "user_nickname": _get_any(user, "nickName", "nick_name", "nickname"),
+            "user_username": _get_any(user, "username", "unique_id", "display_id"),
+            "user_sec_uid": _get_any(user, "secUid", "sec_uid", "user_sec_uid"),
+            "action": _get_any(payload, "action"),
+            "share_type": _get_any(payload, "shareType", "share_type"),
+            "share_target": _get_any(payload, "shareTarget", "share_target"),
+            "follow_count": _get_any(payload, "followCount", "follow_count"),
+            "share_count": _get_any(payload, "shareCount", "share_count"),
+            "signature": _get_any(payload, "signature"),
+            "signature_version": _get_any(payload, "signatureVersion", "signature_version"),
+            "show_duration_ms": _get_any(payload, "showDurationMs", "show_duration_ms"),
+            "social_type": social_type,
+            "portrait_tags_count": len(portrait_tags),
+            "portrait_tag_0": portrait_tag_0,
+            "public_area_message_common": public_area,
+            "tiktok_username": tiktok_username,
+        }
+        values = [_normalize_db_value(v) for v in row.values()]
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping social_events insert")
+                    return
+                row_data = dict(zip(row.keys(), values))
+                # Keep json/jsonb fields as native JSON for PostgREST.
+                row_data["portrait_tag_0"] = portrait_tag_0
+                row_data["public_area_message_common"] = public_area
+                # Normalize known numeric fields for bigint/int columns.
+                for key in (
+                    "message_id",
+                    "room_id",
+                    "create_time_ms",
+                    "user_id",
+                    "action",
+                    "share_type",
+                    "share_target",
+                    "follow_count",
+                    "share_count",
+                    "show_duration_ms",
+                    "portrait_tags_count",
+                ):
+                    if key in row_data:
+                        coerced = self._to_int(row_data.get(key))
+                        if coerced is not None:
+                            row_data[key] = coerced
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action_name = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("social_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("social_events", row_data)
+                    action_name = "insert-fallback"
+                self._log_result("social_events", action_name, resp)
+            except Exception:
+                logger.exception("Failed to log social event")
+
     async def log_comment(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
