@@ -980,13 +980,10 @@ class SupabaseEventStore:
                         coerced = self._to_int(row_data.get(key))
                         if coerced is not None:
                             row_data[key] = coerced
-                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
-                action_name = "upsert" if on_conflict else "insert"
-                resp = await self._post_row("room_update_events", row_data, on_conflict=on_conflict)
-                if on_conflict and self._response_missing_unique(resp):
-                    resp = await self._post_row("room_update_events", row_data)
-                    action_name = "insert-fallback"
-                self._log_result("room_update_events", action_name, resp)
+                # RoomUserSeq snapshots can legitimately repeat message_id values;
+                # always insert and let the table retain the full event stream.
+                resp = await self._post_row("room_update_events", row_data)
+                self._log_result("room_update_events", "insert", resp)
             except Exception:
                 logger.exception("Failed to log room update event")
 
@@ -1127,77 +1124,129 @@ class SupabaseEventStore:
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
 
-        base_message = payload.get("baseMessage") if isinstance(payload, dict) else None
-        if base_message is None and isinstance(payload, dict):
-            base_message = payload.get("base_message")
-        if not isinstance(base_message, dict):
-            base_message = {}
+        def _get_child(obj, *names):
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return _get_any(obj, *names)
+            return _get_attr_any(obj, *names)
 
-        user = payload.get("user") if isinstance(payload, dict) else None
-        if not isinstance(user, dict):
-            user = {}
+        def _as_jsonable(obj, default):
+            if obj is None:
+                return default
+            if isinstance(obj, (dict, list)):
+                return obj
+            for method in ("to_dict", "as_dict"):
+                try:
+                    fn = getattr(obj, method, None)
+                    if callable(fn):
+                        converted = fn()
+                        if isinstance(converted, (dict, list)):
+                            return converted
+                except Exception:
+                    pass
+            try:
+                converted = json.loads(_safe_json(obj))
+                if isinstance(converted, (dict, list)):
+                    return converted
+            except Exception:
+                pass
+            return default
 
-        public_area = payload.get("publicAreaMessageCommon") if isinstance(payload, dict) else None
-        if public_area is None and isinstance(payload, dict):
-            public_area = payload.get("public_area_message_common")
-        if not isinstance(public_area, dict):
-            public_area = {}
+        base_message = _get_child(payload, "baseMessage", "base_message")
+        if base_message is None:
+            base_message = _get_attr_any(event, "base_message", "baseMessage")
 
-        portrait = public_area.get("portraitInfo")
-        if portrait is None:
-            portrait = public_area.get("portrait_info")
-        if not isinstance(portrait, dict):
-            portrait = {}
+        user = _get_child(payload, "user")
+        if user is None:
+            user = _safe_event_user(event) or _get_attr_any(event, "user", "from_user", "fromUser")
+        if user is None and base_message is not None:
+            display_text_from_base = _get_child(base_message, "displayText", "display_text")
+            pieces = _get_child(display_text_from_base, "pieces")
+            if isinstance(pieces, list):
+                for piece in pieces:
+                    piece_user = _get_child(_get_child(piece, "userValue", "user_value"), "user")
+                    if piece_user is not None:
+                        user = piece_user
+                        break
 
-        portrait_tags = portrait.get("portraitTag")
-        if portrait_tags is None:
-            portrait_tags = portrait.get("portrait_tag")
+        public_area = _get_child(payload, "publicAreaMessageCommon", "public_area_message_common")
+        if public_area is None:
+            public_area = _get_attr_any(event, "public_area_message_common", "publicAreaMessageCommon")
+        if public_area is None:
+            public_area = _get_child(base_message, "publicAreaMessageCommon", "public_area_message_common")
+        public_area_json = _as_jsonable(public_area, {})
+
+        portrait = _get_child(public_area_json, "portraitInfo", "portrait_info")
+        portrait_json = _as_jsonable(portrait, {})
+        portrait_tags = _get_child(portrait_json, "portraitTag", "portrait_tag")
+        if isinstance(portrait_tags, tuple):
+            portrait_tags = list(portrait_tags)
         if not isinstance(portrait_tags, list):
             portrait_tags = []
         portrait_tag_0 = portrait_tags[0] if portrait_tags else None
+        portrait_tag_0_json = _as_jsonable(portrait_tag_0, None)
 
-        display_text = base_message.get("displayText")
+        display_text = _get_child(base_message, "displayText", "display_text")
         if display_text is None:
-            display_text = base_message.get("display_text")
-        if not isinstance(display_text, dict):
-            display_text = {}
-        display_key = str(_get_any(display_text, "key") or "")
-        default_pattern = str(_get_any(display_text, "defaultPattern", "default_pattern") or "")
+            display_text = _get_child(payload, "displayText", "display_text")
+        display_text_json = _as_jsonable(display_text, {})
+        display_key = str(_get_child(display_text_json, "key") or "")
+        default_pattern = str(_get_child(display_text_json, "defaultPattern", "default_pattern") or "")
         lower_key = display_key.lower()
         lower_pattern = default_pattern.lower()
+        action_raw = _get_child(payload, "action") or _get_attr_any(event, "action")
+        show_duration_ms_raw = (
+            _get_child(payload, "showDurationMs", "show_duration_ms", "showDuration", "show_duration")
+            or _get_child(base_message, "showDurationMs", "show_duration_ms", "showDuration", "show_duration")
+            or _get_child(display_text_json, "showDurationMs", "show_duration_ms", "showDuration", "show_duration")
+            or _get_attr_any(event, "show_duration_ms", "showDurationMs", "show_duration", "showDuration")
+        )
+        show_duration_ms_value = self._to_int(show_duration_ms_raw)
+        if show_duration_ms_value is None:
+            # Not all Social payloads include duration; use 0 instead of null for consistency.
+            show_duration_ms_value = 0
         if "follow" in lower_key or "followed" in lower_pattern:
             social_type = "follow"
         elif "share" in lower_key or "shared" in lower_pattern:
             social_type = "share"
         else:
-            social_type = default_pattern or display_key
+            social_type = default_pattern or display_key or (f"action_{action_raw}" if action_raw is not None else "unknown")
 
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
-            "method": _get_any(payload, "method") or _get_any(base_message, "method") or "WebcastSocialMessage",
-            "message_id": _get_any(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
-            or _get_any(base_message, "messageId", "message_id"),
-            "room_id": _get_any(payload, "room_id", "roomId") or _get_any(base_message, "roomId", "room_id"),
-            "create_time_ms": _get_any(payload, "create_time", "create_time_ms", "createTime", "timestamp")
-            or _get_any(base_message, "createTime", "create_time"),
-            "user_id": _get_any(user, "id", "userId", "user_id"),
-            "user_nickname": _get_any(user, "nickName", "nick_name", "nickname"),
-            "user_username": _get_any(user, "username", "unique_id", "display_id"),
-            "user_sec_uid": _get_any(user, "secUid", "sec_uid", "user_sec_uid"),
-            "action": _get_any(payload, "action"),
-            "share_type": _get_any(payload, "shareType", "share_type"),
-            "share_target": _get_any(payload, "shareTarget", "share_target"),
-            "follow_count": _get_any(payload, "followCount", "follow_count"),
-            "share_count": _get_any(payload, "shareCount", "share_count"),
-            "signature": _get_any(payload, "signature"),
-            "signature_version": _get_any(payload, "signatureVersion", "signature_version"),
-            "show_duration_ms": _get_any(payload, "showDurationMs", "show_duration_ms"),
+            "method": _get_child(payload, "method")
+            or _get_child(base_message, "method")
+            or _get_attr_any(event, "method")
+            or "WebcastSocialMessage",
+            "message_id": _get_child(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_child(base_message, "messageId", "message_id")
+            or _get_attr_any(event, "msg_id", "msgId", "message_id", "messageId", "event_id", "_ws_msg_id"),
+            "room_id": _get_child(payload, "room_id", "roomId")
+            or _get_child(base_message, "roomId", "room_id")
+            or _get_attr_any(event, "room_id", "roomId"),
+            "create_time_ms": _get_child(payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_child(base_message, "createTime", "create_time")
+            or _get_attr_any(event, "create_time", "createTime", "timestamp"),
+            "user_id": _get_child(user, "id", "userId", "user_id", "idStr"),
+            "user_nickname": _get_child(user, "nickName", "nick_name", "nickname"),
+            "user_username": _get_child(user, "username", "unique_id", "display_id") or _extract_handle(user),
+            "user_sec_uid": _get_child(user, "secUid", "sec_uid", "user_sec_uid"),
+            "action": action_raw,
+            "share_type": _get_child(payload, "shareType", "share_type") or _get_attr_any(event, "share_type", "shareType"),
+            "share_target": _get_child(payload, "shareTarget", "share_target") or _get_attr_any(event, "share_target", "shareTarget"),
+            "follow_count": _get_child(payload, "followCount", "follow_count") or _get_attr_any(event, "follow_count", "followCount"),
+            "share_count": _get_child(payload, "shareCount", "share_count") or _get_attr_any(event, "share_count", "shareCount"),
+            "signature": _get_child(payload, "signature") or _get_attr_any(event, "signature"),
+            "signature_version": _get_child(payload, "signatureVersion", "signature_version")
+            or _get_attr_any(event, "signature_version", "signatureVersion"),
+            "show_duration_ms": show_duration_ms_value,
             "social_type": social_type,
             "portrait_tags_count": len(portrait_tags),
-            "portrait_tag_0": portrait_tag_0,
-            "public_area_message_common": public_area,
+            "portrait_tag_0": portrait_tag_0_json,
+            "public_area_message_common": public_area_json,
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
@@ -1208,8 +1257,8 @@ class SupabaseEventStore:
                     return
                 row_data = dict(zip(row.keys(), values))
                 # Keep json/jsonb fields as native JSON for PostgREST.
-                row_data["portrait_tag_0"] = portrait_tag_0
-                row_data["public_area_message_common"] = public_area
+                row_data["portrait_tag_0"] = portrait_tag_0_json
+                row_data["public_area_message_common"] = public_area_json
                 # Normalize known numeric fields for bigint/int columns.
                 for key in (
                     "message_id",

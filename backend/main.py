@@ -815,7 +815,7 @@ async def live_battle_end(body: LiveBattleEndRequest) -> JSONResponse:
         "end_iso_ts": end_dt.isoformat(),
         "end_unix_ts": int(end_dt.timestamp()),
     }
-    err = await _insert_supabase_row("battle_events", row)
+    err = await _insert_supabase_row("battle_results", row)
     if err:
         logger.warning("Battle event insert failed: %s", err)
         return JSONResponse({"ok": False, "error": err}, status_code=500)
