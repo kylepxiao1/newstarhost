@@ -998,71 +998,142 @@ class SupabaseEventStore:
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
 
-        base_message = payload.get("baseMessage") if isinstance(payload, dict) else None
-        if base_message is None and isinstance(payload, dict):
-            base_message = payload.get("base_message")
-        if not isinstance(base_message, dict):
-            base_message = {}
+        def _get_child(obj, *names):
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return _get_any(obj, *names)
+            return _get_attr_any(obj, *names)
 
-        indicator = payload.get("indicator") if isinstance(payload, dict) else None
-        if not isinstance(indicator, dict):
-            indicator = {}
+        def _as_jsonable(obj, default):
+            if obj is None:
+                return default
+            if isinstance(obj, (dict, list)):
+                return obj
+            for method in ("to_dict", "as_dict"):
+                try:
+                    fn = getattr(obj, method, None)
+                    if callable(fn):
+                        converted = fn()
+                        if isinstance(converted, (dict, list)):
+                            return converted
+                except Exception:
+                    pass
+            try:
+                converted = json.loads(_safe_json(obj))
+                if isinstance(converted, (dict, list)):
+                    return converted
+            except Exception:
+                pass
+            return default
 
-        goal = payload.get("goal") if isinstance(payload, dict) else None
-        if not isinstance(goal, dict):
-            goal = {}
+        ws_payload = getattr(event, "_ws_message_dict", None)
+        if not isinstance(ws_payload, dict):
+            ws_payload = {}
 
-        subgoals = goal.get("subGoals")
-        if subgoals is None:
-            subgoals = goal.get("sub_goals")
+        base_message = _get_child(payload, "baseMessage", "base_message")
+        if base_message is None:
+            base_message = _get_child(ws_payload, "baseMessage", "base_message")
+        if base_message is None:
+            base_message = _get_attr_any(event, "base_message", "baseMessage")
+        base_message_json = _as_jsonable(base_message, {})
+
+        indicator = _get_child(payload, "indicator")
+        if indicator is None:
+            indicator = _get_child(ws_payload, "indicator")
+        if indicator is None:
+            indicator = _get_attr_any(event, "indicator")
+        indicator_json = _as_jsonable(indicator, {})
+
+        goal = _get_child(payload, "goal")
+        if goal is None:
+            goal = _get_child(ws_payload, "goal")
+        if goal is None:
+            goal = _get_attr_any(event, "goal")
+        goal_json = _as_jsonable(goal, {})
+
+        subgoals = _get_child(goal_json, "subGoals", "sub_goals")
+        if isinstance(subgoals, tuple):
+            subgoals = list(subgoals)
         if not isinstance(subgoals, list):
             subgoals = []
+        if not subgoals:
+            contribute_subgoal = _get_child(payload, "contributeSubgoal", "contribute_subgoal")
+            if contribute_subgoal is None:
+                contribute_subgoal = _get_child(ws_payload, "contributeSubgoal", "contribute_subgoal")
+            if contribute_subgoal is None:
+                contribute_subgoal = _get_attr_any(event, "contribute_subgoal", "contributeSubgoal")
+            contribute_subgoal_json = _as_jsonable(contribute_subgoal, {})
+            if isinstance(contribute_subgoal_json, dict) and contribute_subgoal_json:
+                subgoals = [contribute_subgoal_json]
+
         subgoal_0 = subgoals[0] if subgoals else {}
         if not isinstance(subgoal_0, dict):
-            subgoal_0 = {}
-        subgoal_0_gift = subgoal_0.get("gift")
+            subgoal_0 = _as_jsonable(subgoal_0, {})
+        subgoal_0_gift = _get_child(subgoal_0, "gift")
         if not isinstance(subgoal_0_gift, dict):
-            subgoal_0_gift = {}
+            subgoal_0_gift = _as_jsonable(subgoal_0_gift, {})
 
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": ts,
             "unix_ts": unix_ts,
-            "method": _get_any(payload, "method") or _get_any(base_message, "method") or "WebcastGoalUpdateMessage",
-            "room_id": _get_any(payload, "room_id", "roomId") or _get_any(base_message, "roomId", "room_id"),
-            "create_time_ms": _get_any(payload, "create_time", "create_time_ms", "createTime", "timestamp")
-            or _get_any(base_message, "createTime", "create_time"),
-            "message_id": _get_any(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
-            or _get_any(base_message, "messageId", "message_id"),
-            "goal_id": _get_any(goal, "id"),
-            "goal_id_str": _get_any(goal, "idStr", "id_str"),
-            "goal_description": _get_any(goal, "description"),
-            "goal_type": _get_any(goal, "type"),
-            "goal_status": _get_any(goal, "status"),
-            "goal_audit_status": _get_any(goal, "auditStatus", "audit_status"),
-            "goal_cycle_type": _get_any(goal, "cycleType", "cycle_type"),
-            "goal_start_time": _get_any(goal, "startTime", "start_time"),
-            "goal_expire_time": _get_any(goal, "expireTime", "expire_time"),
-            "goal_real_finish_time": _get_any(goal, "realFinishTime", "real_finish_time"),
-            "goal_contributors_length": _get_any(goal, "contributorsLength", "contributors_length"),
-            "goal_audit_description": _get_any(goal, "auditDescription", "audit_description"),
-            "goal_challenge_type": _get_any(goal, "challengeType", "challenge_type"),
-            "contributor_id": _get_any(payload, "contributorId", "contributor_id"),
-            "contributor_id_str": _get_any(payload, "contributorIdStr", "contributor_id_str"),
-            "contributor_display_id": _get_any(payload, "contributorDisplayId", "contributor_display_id"),
-            "contribute_count": _get_any(payload, "contributeCount", "contribute_count"),
-            "contribute_score": _get_any(payload, "contributeScore", "contribute_score"),
-            "gift_repeat_count": _get_any(payload, "giftRepeatCount", "gift_repeat_count"),
-            "update_source": _get_any(payload, "updateSource", "update_source"),
-            "goal_extra": _get_any(payload, "goalExtra", "goal_extra"),
+            "method": _get_child(payload, "method")
+            or _get_child(ws_payload, "method")
+            or _get_child(base_message_json, "method")
+            or _get_attr_any(event, "method")
+            or "WebcastGoalUpdateMessage",
+            "room_id": _get_child(payload, "room_id", "roomId")
+            or _get_child(ws_payload, "room_id", "roomId")
+            or _get_child(base_message_json, "roomId", "room_id")
+            or _get_attr_any(event, "room_id", "roomId"),
+            "create_time_ms": _get_child(payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_child(ws_payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_child(base_message_json, "createTime", "create_time")
+            or _get_attr_any(event, "create_time", "createTime", "timestamp"),
+            "message_id": _get_child(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_child(ws_payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_child(base_message_json, "messageId", "message_id")
+            or _get_attr_any(event, "msg_id", "msgId", "message_id", "messageId", "event_id", "_ws_msg_id"),
+            "goal_id": _get_child(goal_json, "id"),
+            "goal_id_str": _get_child(goal_json, "idStr", "id_str"),
+            "goal_description": _get_child(goal_json, "description"),
+            "goal_type": _get_child(goal_json, "type"),
+            "goal_status": _get_child(goal_json, "status"),
+            "goal_audit_status": _get_child(goal_json, "auditStatus", "audit_status"),
+            "goal_cycle_type": _get_child(goal_json, "cycleType", "cycle_type"),
+            "goal_start_time": _get_child(goal_json, "startTime", "start_time"),
+            "goal_expire_time": _get_child(goal_json, "expireTime", "expire_time"),
+            "goal_real_finish_time": _get_child(goal_json, "realFinishTime", "real_finish_time"),
+            "goal_contributors_length": _get_child(goal_json, "contributorsLength", "contributors_length")
+            or (len(_get_child(goal_json, "contributors") or []) if isinstance(_get_child(goal_json, "contributors"), list) else None),
+            "goal_audit_description": _get_child(goal_json, "auditDescription", "audit_description")
+            or _get_child(goal_json, "description"),
+            "goal_challenge_type": _get_child(goal_json, "challengeType", "challenge_type"),
+            "contributor_id": _get_child(payload, "contributorId", "contributor_id")
+            or _get_child(ws_payload, "contributorId", "contributor_id"),
+            "contributor_id_str": _get_child(payload, "contributorIdStr", "contributor_id_str")
+            or _get_child(ws_payload, "contributorIdStr", "contributor_id_str"),
+            "contributor_display_id": _get_child(payload, "contributorDisplayId", "contributor_display_id")
+            or _get_child(ws_payload, "contributorDisplayId", "contributor_display_id"),
+            "contribute_count": _get_child(payload, "contributeCount", "contribute_count")
+            or _get_child(ws_payload, "contributeCount", "contribute_count"),
+            "contribute_score": _get_child(payload, "contributeScore", "contribute_score")
+            or _get_child(ws_payload, "contributeScore", "contribute_score"),
+            "gift_repeat_count": _get_child(payload, "giftRepeatCount", "gift_repeat_count")
+            or _get_child(ws_payload, "giftRepeatCount", "gift_repeat_count"),
+            "update_source": _get_child(payload, "updateSource", "update_source")
+            or _get_child(ws_payload, "updateSource", "update_source"),
+            "goal_extra": _get_child(payload, "goalExtra", "goal_extra")
+            or _get_child(ws_payload, "goalExtra", "goal_extra"),
             "subgoals_count": len(subgoals),
-            "subgoal_0_id": _get_any(subgoal_0, "id"),
-            "subgoal_0_target": _get_any(subgoal_0, "target"),
-            "subgoal_0_progress": _get_any(subgoal_0, "progress"),
-            "subgoal_0_gift_name": _get_any(subgoal_0_gift, "name"),
-            "subgoal_0_gift_diamond_count": _get_any(subgoal_0_gift, "diamondCount", "diamond_count"),
-            "indicator_key": _get_any(indicator, "key"),
-            "indicator_op": _get_any(indicator, "op"),
+            "subgoal_0_id": _get_child(subgoal_0, "id"),
+            "subgoal_0_target": _get_child(subgoal_0, "target"),
+            "subgoal_0_progress": _get_child(subgoal_0, "progress"),
+            "subgoal_0_gift_name": _get_child(subgoal_0_gift, "name"),
+            "subgoal_0_gift_diamond_count": _get_child(subgoal_0_gift, "diamondCount", "diamond_count"),
+            "indicator_key": _get_child(indicator_json, "key"),
+            "indicator_op": _get_child(indicator_json, "op"),
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
@@ -1196,6 +1267,8 @@ class SupabaseEventStore:
         lower_key = display_key.lower()
         lower_pattern = default_pattern.lower()
         action_raw = _get_child(payload, "action") or _get_attr_any(event, "action")
+        share_type_raw = _get_child(payload, "shareType", "share_type") or _get_attr_any(event, "share_type", "shareType")
+        share_type_text = str(share_type_raw).lower() if share_type_raw is not None else ""
         show_duration_ms_raw = (
             _get_child(payload, "showDurationMs", "show_duration_ms", "showDuration", "show_duration")
             or _get_child(base_message, "showDurationMs", "show_duration_ms", "showDuration", "show_duration")
@@ -1206,7 +1279,9 @@ class SupabaseEventStore:
         if show_duration_ms_value is None:
             # Not all Social payloads include duration; use 0 instead of null for consistency.
             show_duration_ms_value = 0
-        if "follow" in lower_key or "followed" in lower_pattern:
+        if "repost" in lower_key or "reposted" in lower_pattern or "repost" in share_type_text:
+            social_type = "repost"
+        elif "follow" in lower_key or "followed" in lower_pattern:
             social_type = "follow"
         elif "share" in lower_key or "shared" in lower_pattern:
             social_type = "share"
@@ -1235,7 +1310,7 @@ class SupabaseEventStore:
             "user_username": _get_child(user, "username", "unique_id", "display_id") or _extract_handle(user),
             "user_sec_uid": _get_child(user, "secUid", "sec_uid", "user_sec_uid"),
             "action": action_raw,
-            "share_type": _get_child(payload, "shareType", "share_type") or _get_attr_any(event, "share_type", "shareType"),
+            "share_type": share_type_raw,
             "share_target": _get_child(payload, "shareTarget", "share_target") or _get_attr_any(event, "share_target", "shareTarget"),
             "follow_count": _get_child(payload, "followCount", "follow_count") or _get_attr_any(event, "follow_count", "followCount"),
             "share_count": _get_child(payload, "shareCount", "share_count") or _get_attr_any(event, "share_count", "shareCount"),
