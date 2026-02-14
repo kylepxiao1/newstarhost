@@ -1129,7 +1129,9 @@ class SupabaseEventStore:
             "subgoals_count": len(subgoals),
             "subgoal_0_id": _get_child(subgoal_0, "id"),
             "subgoal_0_target": _get_child(subgoal_0, "target"),
-            "subgoal_0_progress": _get_child(subgoal_0, "progress"),
+            "subgoal_0_progress": _get_child(subgoal_0, "progress")
+            or _get_child(payload, "contributeCount", "contribute_count")
+            or _get_child(ws_payload, "contributeCount", "contribute_count"),
             "subgoal_0_gift_name": _get_child(subgoal_0_gift, "name"),
             "subgoal_0_gift_diamond_count": _get_child(subgoal_0_gift, "diamondCount", "diamond_count"),
             "indicator_key": _get_child(indicator_json, "key"),
@@ -1140,7 +1142,7 @@ class SupabaseEventStore:
         async with self._lock:
             try:
                 if not self._client:
-                    logger.debug("Supabase client unavailable; skipping goal_update_event insert")
+                    logger.debug("Supabase client unavailable; skipping goal_update_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
                 # Normalize known numeric fields for bigint/int columns.
@@ -1176,11 +1178,11 @@ class SupabaseEventStore:
                             row_data[key] = coerced
                 on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
                 action_name = "upsert" if on_conflict else "insert"
-                resp = await self._post_row("goal_update_event", row_data, on_conflict=on_conflict)
+                resp = await self._post_row("goal_update_events", row_data, on_conflict=on_conflict)
                 if on_conflict and self._response_missing_unique(resp):
-                    resp = await self._post_row("goal_update_event", row_data)
+                    resp = await self._post_row("goal_update_events", row_data)
                     action_name = "insert-fallback"
-                self._log_result("goal_update_event", action_name, resp)
+                self._log_result("goal_update_events", action_name, resp)
             except Exception:
                 logger.exception("Failed to log goal update event")
 

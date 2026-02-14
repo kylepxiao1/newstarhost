@@ -323,6 +323,7 @@ class TikTokLiveListener:
                     pass
 
         self.client = TikTokLiveClient(unique_id=username)
+        self._patch_broken_event_mappings()
         self._patch_ws_parser()
         self._apply_client_cookies()
         if not self._device_id:
@@ -335,6 +336,23 @@ class TikTokLiveListener:
             self._device_id = pinned
             _persist_device_id(pinned)
         self._wire_events()
+
+    def _patch_broken_event_mappings(self) -> None:
+        """
+        TikTokLive currently maps WebcastCompetitionMessage -> CompetitionEvent.
+        That class has a betterproto field/property collision on `type` and emits noisy
+        "property 'type' ... has no setter" broken-payload errors. We rely on
+        WebsocketResponseEvent for competition ingestion, so disable this one mapping.
+        """
+        try:
+            mapped = proto_events.EVENT_MAPPINGS.get("WebcastCompetitionMessage")
+            if mapped and getattr(mapped, "__name__", "") == "CompetitionEvent":
+                proto_events.EVENT_MAPPINGS.pop("WebcastCompetitionMessage", None)
+                logger.info(
+                    "Disabled WebcastCompetitionMessage mapping (CompetitionEvent parse bug); using websocket payload fallback."
+                )
+        except Exception as exc:
+            logger.debug("Could not patch WebcastCompetitionMessage mapping: %s", exc)
 
     def _patch_ws_parser(self) -> None:
         original = self.client._parse_webcast_response_message
