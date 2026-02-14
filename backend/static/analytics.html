@@ -31,6 +31,7 @@
       <tbody id="rows"></tbody>
     </table>
   </main>
+  <script src="/static/state_ws_helper.js"></script>
   <script>
     let ws = null;
     let lastState = null;
@@ -72,23 +73,25 @@
     }
 
     function connectWs() {
-      try { if (ws) ws.close(); } catch (e) {}
-      ws = new WebSocket((location.origin.replace(/^http/, "ws")) + "/ws/state");
-      ws.onmessage = evt => {
-        try {
-          const data = JSON.parse(evt.data);
-          if (data.type === "state") {
-            lastState = data.payload;
-            fetch("/analytics/data")
-              .then(res => res.json())
-              .then(payload => renderFromData(payload, lastState))
-              .catch(() => {});
-          }
-        } catch (e) {
+      function refreshFromServer() {
+        fetch("/analytics/data")
+          .then(res => res.json())
+          .then(payload => renderFromData(payload, lastState))
+          .catch(() => {});
+      }
+      if (!window.StateWsHelper?.connect) return;
+      try { ws?.close(); } catch (e) {}
+      ws = window.StateWsHelper.connect({
+        onOpen: () => { loadData(); },
+        onWake: () => { loadData(); },
+        onState: (payload) => {
+          lastState = payload;
+          refreshFromServer();
+        },
+        onParseError: (e) => {
           console.error("ws parse error", e);
-        }
-      };
-      ws.onclose = () => setTimeout(connectWs, 2000);
+        },
+      });
     }
 
     loadData();

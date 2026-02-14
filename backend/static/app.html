@@ -50,6 +50,7 @@
     <span>Global Audio</span>
     <audio id="globalPlayer" controls></audio>
   </div>
+  <script src="/static/state_ws_helper.js"></script>
   <script>
     const tabs = Array.from(document.querySelectorAll(".nav a"));
     const frames = {
@@ -109,18 +110,17 @@
       } catch (e) {}
     }
 
+    let stateWsConn = null;
     function connectStateWs() {
-      let ws;
-      try { ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state"); } catch (e) { return; }
-      ws.onmessage = evt => {
-        try {
-          const data = JSON.parse(evt.data);
-          if (data.type === "state") {
-            libraryCache = (data.payload?.songs?.library) || libraryCache;
-          }
-        } catch (e) {}
-      };
-      ws.onclose = () => setTimeout(connectStateWs, 2000);
+      if (!window.StateWsHelper?.connect) return;
+      try { stateWsConn?.close(); } catch (e) {}
+      stateWsConn = window.StateWsHelper.connect({
+        onOpen: () => { refreshLibrary(); },
+        onWake: () => { refreshLibrary(); },
+        onState: (payload) => {
+          libraryCache = (payload?.songs?.library) || libraryCache;
+        },
+      });
     }
 
     refreshLibrary();

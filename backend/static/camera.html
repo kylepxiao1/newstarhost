@@ -44,6 +44,7 @@
     </section>
   </main>
 
+  <script src="/static/state_ws_helper.js"></script>
   <script>
     const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
     let state = {};
@@ -286,19 +287,16 @@
     }
 
     function connectWs() {
-      try { if (ws) ws.close(); } catch (e) {}
-      ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
-      ws.onmessage = evt => {
-        try {
-          const data = JSON.parse(evt.data);
-          if (data.type === "state") {
-            state = data.payload;
-            renderOverlays();
-          }
-        } catch (e) {}
-      };
-      ws.onclose = () => setTimeout(connectWs, 2000);
-      ws.onerror = () => {};
+      if (!window.StateWsHelper?.connect) return;
+      try { ws?.close(); } catch (e) {}
+      ws = window.StateWsHelper.connect({
+        onOpen: () => { refreshState(); },
+        onWake: () => { refreshState(); },
+        onState: (payload) => {
+          state = payload;
+          renderOverlays();
+        },
+      });
     }
 
     refreshState();

@@ -182,6 +182,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json", lifespan=lifespan)
+app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 app.mount("/dist", StaticFiles(directory=str(DIST_DIR), check_dir=False), name="dist")
 app.add_middleware(

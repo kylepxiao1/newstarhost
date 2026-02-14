@@ -16,6 +16,7 @@
 <body>
   <div id="centerLine"></div>
   <div id="wrap"></div>
+  <script src="/static/state_ws_helper.js"></script>
   <script>
     (() => {
       const wsUrl = (location.origin.replace(/^http/, "ws")) + "/ws/state";
@@ -65,20 +66,16 @@
         fetch("/state").then(r => r.json()).then(render).catch(()=>{});
       }
 
-      let ws;
       function connect() {
-        ws = new WebSocket(wsUrl);
-        ws.onopen = () => ws.send("ready");
-        ws.onmessage = evt => {
-          try {
-            const data = JSON.parse(evt.data);
-            if (data?.type === "state") {
-              render(data.payload);
-            }
-          } catch (e) {}
-        };
-        ws.onclose = () => setTimeout(connect, 2000);
+        if (!window.StateWsHelper?.connect) return;
+        window.StateWsHelper.connect({
+          wsUrl: wsUrl,
+          onOpen: () => { bootstrap(); },
+          onWake: () => { bootstrap(); },
+          onState: (payload) => { render(payload); },
+        });
       }
+
       connect();
       bootstrap();
     })();

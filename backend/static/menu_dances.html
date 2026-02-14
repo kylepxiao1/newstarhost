@@ -65,6 +65,7 @@
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/static/state_ws_helper.js"></script>
   <script>
     const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
     let library = {};
@@ -621,17 +622,25 @@
     refreshState();
     refreshSongs();
     function connectWs() {
-      const ws = new WebSocket((location.origin.replace(/^http/,"ws")) + "/ws/state");
-      ws.onopen = () => { const d=document.getElementById("wsDot"); const t=document.getElementById("statusText"); if(d){d.style.background="#22c55e"; d.style.boxShadow="0 0 8px #22c55e";} if(t) t.textContent="Live"; };
-      const markDown = () => {
-        const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");
-        if(d){d.style.background="#ef4444"; d.style.boxShadow="0 0 8px #ef4444";}
-        if(t) t.textContent="Disconnected";
-        setTimeout(connectWs, 2000);
-      };
-      ws.onerror = markDown;
-      ws.onclose = markDown;
-      ws.onmessage = evt => { try { const data = JSON.parse(evt.data); if(data.type==="state"){ state = data.payload; renderState(); }} catch(e){} };
+      if (!window.StateWsHelper?.connect) return;
+      window.StateWsHelper.connect({
+        onConnected: () => {
+          const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");
+          if(d){d.style.background="#22c55e"; d.style.boxShadow="0 0 8px #22c55e";}
+          if(t) t.textContent="Live";
+        },
+        onDisconnected: () => {
+          const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");
+          if(d){d.style.background="#ef4444"; d.style.boxShadow="0 0 8px #ef4444";}
+          if(t) t.textContent="Disconnected";
+        },
+        onOpen: () => { refreshState(); },
+        onWake: () => { refreshState(); },
+        onState: (payload) => {
+          state = payload;
+          renderState();
+        },
+      });
     }
     connectWs();
     restoreAudio(document.getElementById("player"));
