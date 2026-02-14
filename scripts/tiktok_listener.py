@@ -47,7 +47,6 @@ SUPABASE_SECRET_KEY = _env("SUPABASE_SECRET_KEY")
 SUPABASE_DEBUG = _env_flag("SUPABASE_DEBUG", False)
 DEFAULT_SLOT_ONE = "Performer One"
 DEFAULT_SLOT_TWO = "Performer Two"
-ENABLE_SCORE_UPDATES = _env_flag("ENABLE_SCORE_UPDATES", False)
 
 if WHITELIST_AUTHENTICATED_SESSION_ID_HOST:
     os.environ.setdefault(
@@ -88,24 +87,6 @@ def _payload(evt) -> dict:
         return vars(evt)
     except Exception:
         return {"repr": repr(evt)}
-
-
-def looks_like_battle_start(comment: Optional[str], gift_name: Optional[str]) -> bool:
-    text = (comment or "").lower()
-    if "!battle" in text or "start battle" in text:
-        return True
-    if gift_name and "battle" in gift_name.lower():
-        return True
-    return False
-
-
-def looks_like_battle_end(comment: Optional[str], gift_name: Optional[str]) -> bool:
-    text = (comment or "").lower()
-    if "!end" in text or "end battle" in text or "gg" == text.strip():
-        return True
-    if gift_name and "whistle" in gift_name.lower():
-        return True
-    return False
 
 
 def _load_netscape_cookies(path: Path) -> dict:
@@ -707,91 +688,6 @@ class TikTokLiveListener:
         async def on_disconnect(_: ttevents.DisconnectEvent) -> None:
             logger.warning("Disconnected from TikTok LIVE. Reconnecting...")
 
-        @self.client.on(ttevents.LinkMicBattleEvent)
-        async def on_battle(event: ttevents.LinkMicBattleEvent) -> None:
-            if self._is_duplicate(event, "battle"):
-                return
-            logger.info("LinkMicBattleEvent")
-            self._last_scores = {"slot_one": 0, "slot_two": 0}
-            await self.trigger_start("linkmic_battle_event")
-
-        @self.client.on(ttevents.LinkmicBattleNoticeEvent)
-        async def on_battle_notice(event: ttevents.LinkmicBattleNoticeEvent) -> None:
-            if self._is_duplicate(event, "battle_notice"):
-                return
-            logger.info("LinkmicBattleNoticeEvent")
-            await self.trigger_start("linkmic_battle_notice")
-
-        @self.client.on(ttevents.LinkMicBattleVictoryLapEvent)
-        async def on_battle_victory(event: ttevents.LinkMicBattleVictoryLapEvent) -> None:
-            if self._is_duplicate(event, "battle_victory"):
-                return
-            logger.info("LinkMicBattleVictoryLapEvent")
-            await self.trigger_end("linkmic_battle_victory")
-
-        @self.client.on(ttevents.LinkMicArmiesEvent)
-        async def on_armies(event: ttevents.LinkMicArmiesEvent) -> None:
-            if self._is_duplicate(event, "armies"):
-                return
-            logger.info("LinkMicArmiesEvent")
-            data = _payload(event)
-            armies = data.get("armies") or data.get("army_list") or data.get("battle_armies") or []
-            if isinstance(armies, dict):
-                armies = armies.get("armies") or armies.get("army_list") or list(armies.values())
-            slot_one_score = self._last_scores["slot_one"]
-            slot_two_score = self._last_scores["slot_two"]
-            if isinstance(armies, list):
-                if len(armies) > 0:
-                    slot_one_score = armies[0].get("points") or armies[0].get("score") or slot_one_score
-                if len(armies) > 1:
-                    slot_two_score = armies[1].get("points") or armies[1].get("score") or slot_two_score
-            # If we see armies before an explicit battle start, treat this as the start signal.
-            now = datetime.now(timezone.utc)
-            if now - self._last_start > self._cooldown:
-                await self.trigger_start("armies_event")
-            await self._update_scores(slot_one_score, slot_two_score)
-
-        @self.client.on(ttevents.LinkMicBattlePunishFinishEvent)
-        async def on_battle_punish_finish(event: ttevents.LinkMicBattlePunishFinishEvent) -> None:
-            if self._is_duplicate(event, "battle_end"):
-                return
-            logger.info("LinkMicBattlePunishFinishEvent")
-            await self.trigger_end("linkmic_battle_punish_finish")
-
-        @self.client.on(ttevents.LinkStateEvent)
-        async def on_link_state(event: ttevents.LinkStateEvent) -> None:
-            if self._is_duplicate(event, "link_state"):
-                return
-            payload = _payload(event)
-            state_val = ""
-            try:
-                state_val = str(payload.get("state") or payload.get("link_state") or "")
-            except Exception:
-                state_val = ""
-            state_lower = state_val.lower()
-            logger.info("LinkStateEvent: %s", state_val)
-            if "battle" in state_lower and ("start" in state_lower or "enter" in state_lower or "begin" in state_lower):
-                await self.trigger_start("link_state")
-            elif "battle" in state_lower and ("end" in state_lower or "finish" in state_lower or "exit" in state_lower):
-                await self.trigger_end("link_state")
-
-        @self.client.on(ttevents.ControlEvent)
-        async def on_control(event: ttevents.ControlEvent) -> None:
-            if self._is_duplicate(event, "control"):
-                return
-            payload = _payload(event)
-            action = ""
-            try:
-                action = str(payload.get("action") or "")
-            except Exception:
-                action = ""
-            action_lower = action.lower()
-            logger.info("ControlEvent: %s", action)
-            if "battle" in action_lower and ("start" in action_lower or "begin" in action_lower):
-                await self.trigger_start("control")
-            elif "battle" in action_lower and ("end" in action_lower or "finish" in action_lower or "stop" in action_lower):
-                await self.trigger_end("control")
-
         @self.client.on(ttevents.GiftEvent)
         async def on_gift(event: ttevents.GiftEvent) -> None:
             if self._is_duplicate(event, "gift"):
@@ -970,8 +866,6 @@ class TikTokLiveListener:
                 _format_handle(gift_from, gift_from_handle) or "unknown",
                 _format_handle(display_to, display_to) or self.username or "host",
             )
-            name = event.gift.name if hasattr(event, "gift") else None
-            await self._maybe_trigger(comment=None, gift_name=name)
             if gift_value:
                 recipient = _clean_recipient(gift_to, gift_to_handle)
                 if not recipient:
@@ -1023,8 +917,6 @@ class TikTokLiveListener:
                 first = parts[0].strip() if parts and parts[0].strip() else DEFAULT_SLOT_ONE
                 second = parts[1].strip() if len(parts) > 1 and parts[1].strip() else DEFAULT_SLOT_TWO
                 await self.import_slots(first, second)
-            else:
-                await self._maybe_trigger(comment=text, gift_name=None)
 
         @self.client.on(ttevents.JoinEvent)
         async def on_join(event: ttevents.JoinEvent) -> None:
@@ -1068,13 +960,6 @@ class TikTokLiveListener:
                 await self._event_store.log_like(payload, event, self.username, raw_id=raw_id)
             return
 
-    async def _maybe_trigger(self, comment: Optional[str], gift_name: Optional[str]) -> None:
-        now = datetime.now(timezone.utc)
-        if looks_like_battle_start(comment, gift_name) and now - self._last_start > self._cooldown:
-            await self.trigger_start("heuristic")
-        elif looks_like_battle_end(comment, gift_name) and now - self._last_end > self._cooldown:
-            await self.trigger_end("heuristic")
-
     async def trigger_start(self, reason: str) -> None:
         self._last_start = datetime.now(timezone.utc)
         self._last_scores = {"slot_one": 0, "slot_two": 0}
@@ -1097,18 +982,6 @@ class TikTokLiveListener:
             self._slots["slot_one"] = slot_one or self._slots["slot_one"]
             self._slots["slot_two"] = slot_two or self._slots["slot_two"]
         await self._sync_slots()
-
-    async def _update_scores(self, slot_one_score: int, slot_two_score: int) -> dict:
-        delta_one = max(0, int(slot_one_score) - self._last_scores.get("slot_one", 0))
-        delta_two = max(0, int(slot_two_score) - self._last_scores.get("slot_two", 0))
-        self._last_scores["slot_one"] = int(slot_one_score)
-        self._last_scores["slot_two"] = int(slot_two_score)
-        if ENABLE_SCORE_UPDATES:
-            if delta_one:
-                await self._safe_post(f"{self.api_base}/score/slot_one/add", {"amount": delta_one})
-            if delta_two:
-                await self._safe_post(f"{self.api_base}/score/slot_two/add", {"amount": delta_two})
-        return self._last_scores
 
     def _slot_for_recipient(self, recipient: str) -> str:
         try:

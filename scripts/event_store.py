@@ -652,7 +652,7 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping gift_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                on_conflict = "message_id" if row_data.get("message_id") else None
                 action = "upsert" if on_conflict else "insert"
                 resp = await self._post_row("gift_events", row_data, on_conflict=on_conflict)
                 if on_conflict and self._response_missing_unique(resp):
