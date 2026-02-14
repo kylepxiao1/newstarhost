@@ -922,6 +922,132 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log room update event")
 
+    async def log_goal_update(
+        self,
+        payload: dict,
+        event,
+        tiktok_username: str,
+        raw_id: Optional[int] = None,
+    ) -> None:
+        now_dt = datetime.now(timezone.utc)
+        ts = now_dt.isoformat()
+        unix_ts = int(now_dt.timestamp())
+
+        base_message = payload.get("baseMessage") if isinstance(payload, dict) else None
+        if base_message is None and isinstance(payload, dict):
+            base_message = payload.get("base_message")
+        if not isinstance(base_message, dict):
+            base_message = {}
+
+        indicator = payload.get("indicator") if isinstance(payload, dict) else None
+        if not isinstance(indicator, dict):
+            indicator = {}
+
+        goal = payload.get("goal") if isinstance(payload, dict) else None
+        if not isinstance(goal, dict):
+            goal = {}
+
+        subgoals = goal.get("subGoals")
+        if subgoals is None:
+            subgoals = goal.get("sub_goals")
+        if not isinstance(subgoals, list):
+            subgoals = []
+        subgoal_0 = subgoals[0] if subgoals else {}
+        if not isinstance(subgoal_0, dict):
+            subgoal_0 = {}
+        subgoal_0_gift = subgoal_0.get("gift")
+        if not isinstance(subgoal_0_gift, dict):
+            subgoal_0_gift = {}
+
+        row = {
+            "id": raw_id if raw_id is not None else self._next_row_id(),
+            "iso_ts": ts,
+            "unix_ts": unix_ts,
+            "method": _get_any(payload, "method") or _get_any(base_message, "method") or "WebcastGoalUpdateMessage",
+            "room_id": _get_any(payload, "room_id", "roomId") or _get_any(base_message, "roomId", "room_id"),
+            "create_time_ms": _get_any(payload, "create_time", "create_time_ms", "createTime", "timestamp")
+            or _get_any(base_message, "createTime", "create_time"),
+            "message_id": _get_any(payload, "msg_id", "msgId", "message_id", "messageId", "event_id")
+            or _get_any(base_message, "messageId", "message_id"),
+            "goal_id": _get_any(goal, "id"),
+            "goal_id_str": _get_any(goal, "idStr", "id_str"),
+            "goal_description": _get_any(goal, "description"),
+            "goal_type": _get_any(goal, "type"),
+            "goal_status": _get_any(goal, "status"),
+            "goal_audit_status": _get_any(goal, "auditStatus", "audit_status"),
+            "goal_cycle_type": _get_any(goal, "cycleType", "cycle_type"),
+            "goal_start_time": _get_any(goal, "startTime", "start_time"),
+            "goal_expire_time": _get_any(goal, "expireTime", "expire_time"),
+            "goal_real_finish_time": _get_any(goal, "realFinishTime", "real_finish_time"),
+            "goal_contributors_length": _get_any(goal, "contributorsLength", "contributors_length"),
+            "goal_audit_description": _get_any(goal, "auditDescription", "audit_description"),
+            "goal_challenge_type": _get_any(goal, "challengeType", "challenge_type"),
+            "contributor_id": _get_any(payload, "contributorId", "contributor_id"),
+            "contributor_id_str": _get_any(payload, "contributorIdStr", "contributor_id_str"),
+            "contributor_display_id": _get_any(payload, "contributorDisplayId", "contributor_display_id"),
+            "contribute_count": _get_any(payload, "contributeCount", "contribute_count"),
+            "contribute_score": _get_any(payload, "contributeScore", "contribute_score"),
+            "gift_repeat_count": _get_any(payload, "giftRepeatCount", "gift_repeat_count"),
+            "update_source": _get_any(payload, "updateSource", "update_source"),
+            "goal_extra": _get_any(payload, "goalExtra", "goal_extra"),
+            "subgoals_count": len(subgoals),
+            "subgoal_0_id": _get_any(subgoal_0, "id"),
+            "subgoal_0_target": _get_any(subgoal_0, "target"),
+            "subgoal_0_progress": _get_any(subgoal_0, "progress"),
+            "subgoal_0_gift_name": _get_any(subgoal_0_gift, "name"),
+            "subgoal_0_gift_diamond_count": _get_any(subgoal_0_gift, "diamondCount", "diamond_count"),
+            "indicator_key": _get_any(indicator, "key"),
+            "indicator_op": _get_any(indicator, "op"),
+            "tiktok_username": tiktok_username,
+        }
+        values = [_normalize_db_value(v) for v in row.values()]
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping goal_update_event insert")
+                    return
+                row_data = dict(zip(row.keys(), values))
+                # Normalize known numeric fields for bigint/int columns.
+                for key in (
+                    "room_id",
+                    "create_time_ms",
+                    "message_id",
+                    "goal_id",
+                    "goal_id_str",
+                    "goal_type",
+                    "goal_status",
+                    "goal_cycle_type",
+                    "goal_start_time",
+                    "goal_expire_time",
+                    "goal_real_finish_time",
+                    "goal_contributors_length",
+                    "goal_challenge_type",
+                    "contributor_id",
+                    "contributor_id_str",
+                    "contribute_count",
+                    "contribute_score",
+                    "gift_repeat_count",
+                    "subgoals_count",
+                    "subgoal_0_id",
+                    "subgoal_0_target",
+                    "subgoal_0_progress",
+                    "subgoal_0_gift_diamond_count",
+                    "indicator_op",
+                ):
+                    if key in row_data:
+                        coerced = self._to_int(row_data.get(key))
+                        if coerced is not None:
+                            row_data[key] = coerced
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action_name = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("goal_update_event", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("goal_update_event", row_data)
+                    action_name = "insert-fallback"
+                self._log_result("goal_update_event", action_name, resp)
+            except Exception:
+                logger.exception("Failed to log goal update event")
+
     async def log_comment(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
