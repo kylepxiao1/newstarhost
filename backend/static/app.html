@@ -31,7 +31,7 @@
     <a href="#audio" data-target="audio">Audio Tools</a>
     <a href="#camera" data-target="camera">Camera</a>
     <a href="#settings" data-target="settings">Settings</a>
-    <a href="#analytics" data-target="analytics">Analytics</a>
+    <a href="https://newstarhost.grafana.net/goto/efdcjfk76r474e?orgId=stacks-1526098" target="_blank" rel="noopener noreferrer">Analytics</a>
   </div>
   <div class="shell">
     <div class="frames">
@@ -43,7 +43,6 @@
       <iframe id="frame-audio" src="/audio/tools"></iframe>
       <iframe id="frame-camera" src="/camera/manage"></iframe>
       <iframe id="frame-settings" src="/settings"></iframe>
-      <iframe id="frame-analytics" src="/analytics"></iframe>
     </div>
   </div>
   <div class="player">
@@ -52,7 +51,7 @@
   </div>
   <script src="/static/state_ws_helper.js"></script>
   <script>
-    const tabs = Array.from(document.querySelectorAll(".nav a"));
+    const tabs = Array.from(document.querySelectorAll(".nav a[data-target]"));
     const frames = {
       intro: document.getElementById("frame-intro"),
       battle: document.getElementById("frame-battle"),
@@ -62,7 +61,6 @@
       audio: document.getElementById("frame-audio"),
       camera: document.getElementById("frame-camera"),
       settings: document.getElementById("frame-settings"),
-      analytics: document.getElementById("frame-analytics"),
     };
     let libraryCache = {};
 
