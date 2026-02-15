@@ -127,14 +127,6 @@
       <div class="row">
         <span>Current song: <span id="currentSongLabel">-</span></span>
       </div>
-      <div class="row" style="align-items:center;">
-        <label style="display:flex;gap:6px;align-items:center;">
-          <input type="checkbox" id="fadeToggle" checked> Fade in 0.5s
-        </label>
-        <label style="display:flex;gap:6px;align-items:center;">
-          <input type="checkbox" id="fadeOutToggle" checked> Fade out 0.5s
-        </label>
-      </div>
       
       <div id="songsEmpty" class="songs-empty"></div>
       <div id="songsContainer" class="songs"></div>
@@ -161,6 +153,7 @@
     let battleListenerActive = false;
     let battleListenerStarting = false;
     let battleListenerStopping = false;
+    let emptySlotScoreResetInFlight = false;
     const handledCompetitionStartIds = new Set();
     let latestBattleStartKey = 0;
     let hotkeyMap = {};
@@ -174,10 +167,6 @@
       settingsFadeOut = data.fade_out !== false;
       settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
       hotkeyMap = data.hotkeys || {};
-      const fadeInToggle = document.getElementById("fadeToggle");
-      const fadeOutToggle = document.getElementById("fadeOutToggle");
-      if (fadeInToggle) fadeInToggle.checked = settingsFadeIn;
-      if (fadeOutToggle) fadeOutToggle.checked = settingsFadeOut;
     }
 
     function handleHotkey(evt) {
@@ -890,7 +879,46 @@
       saveLastSong(url);
     }
 
+    function hasEmptySlotsWithStaleScores(snapshot) {
+      const s = snapshot || state || {};
+      const slotOne = (s.slot_one || "").trim();
+      const slotTwo = (s.slot_two || "").trim();
+      const scores = s.scores || {};
+      const a = Number(scores.slot_one || 0);
+      const b = Number(scores.slot_two || 0);
+      return !slotOne && !slotTwo && (a !== 0 || b !== 0);
+    }
+
+    function resetScoresForEmptySlots(reason) {
+      if (emptySlotScoreResetInFlight) return;
+      if (!hasEmptySlotsWithStaleScores(state)) return;
+      emptySlotScoreResetInFlight = true;
+      console.warn("[battle-fix] Resetting stale scores because slots are empty", {
+        reason: reason || "",
+        slot_one: state?.slot_one || "",
+        slot_two: state?.slot_two || "",
+        scores: state?.scores || {},
+      });
+      api("/battle/scores/import", {method:"POST", body:{slot_one:0, slot_two:0}})
+        .then(() => api("/state"))
+        .then(r => r.json())
+        .then(s => {
+          state = s;
+          renderState();
+        })
+        .catch((e) => {
+          console.error("[battle-fix] Failed to reset stale scores for empty slots", e);
+        })
+        .finally(() => {
+          emptySlotScoreResetInFlight = false;
+        });
+    }
+
     function renderState() {
+      if (hasEmptySlotsWithStaleScores(state)) {
+        resetScoresForEmptySlots("renderState");
+        state = {...state, scores: {slot_one: 0, slot_two: 0}};
+      }
       const slotOneRaw = (state.slot_one || "").trim();
       const slotTwoRaw = (state.slot_two || "").trim();
       const slotOne = slotOneRaw || "-";
@@ -1315,8 +1343,8 @@
         console.trace("[battle-debug] startAudio trace");
       } catch (e) {}
       const targetVolume = normalizeVolume((typeof opts.volume === "number") ? opts.volume : getSongVolume(url));
-      const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? true;
-      const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? true;
+      const fadeIn = opts.fade ?? settingsFadeIn;
+      const fadeOut = opts.fadeOut ?? settingsFadeOut;
       const doPlay = () => {
         player.loop = !!opts.loop;
         player.onended = () => {
