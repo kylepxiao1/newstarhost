@@ -339,6 +339,7 @@ class SpoofStartBattleRequest(BaseModel):
 class LiveBattleEndRequest(BaseModel):
     start_ms: int
     end_ms: Optional[int] = None
+    competition_id: Optional[str] = None
 
 
 class SettingsRequest(BaseModel):
@@ -810,8 +811,12 @@ async def live_battle_end(body: LiveBattleEndRequest) -> JSONResponse:
     end_dt = datetime.fromtimestamp(end_ms / 1000, timezone.utc)
 
     row_id = int(time.time() * 1000) * 1000 + random.randint(0, 999)
+    competition_id = str(body.competition_id or "").strip()
+    if not competition_id:
+        competition_id = f"DUMMY-{row_id}"
     row = {
         "id": row_id,
+        "competition_id": competition_id,
         "slot_one_name": slot_one_name,
         "slot_two_name": slot_two_name,
         "slot_one_handle": dancer_one.get("handle"),

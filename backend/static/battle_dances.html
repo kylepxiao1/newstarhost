@@ -140,7 +140,7 @@
     const api = window.PageShared.api;
     let state = {};
     let currentTab = "";
-    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"" };
+    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win","closing"];
     let playCounts = loadPlayCounts();
@@ -154,6 +154,7 @@
     let battleListenerStarting = false;
     let battleListenerStopping = false;
     let emptySlotScoreResetInFlight = false;
+    const spoofCompetitionIds = new Set();
     const handledCompetitionStartIds = new Set();
     let latestBattleStartKey = 0;
     let hotkeyMap = {};
@@ -775,7 +776,11 @@
         return;
       }
       const cid = normalizeId(payload?.competition_id);
-      if (cid) routine.competitionId = cid;
+      if (cid) {
+        routine.competitionId = cid;
+        spoofCompetitionIds.add(cid);
+      }
+      routine.isSpoofBattle = true;
       battleListenerLog("spoof start inserted", payload);
     }
 
@@ -1805,6 +1810,7 @@
       routine.startedLive = false;
       routine.logged = false;
       routine.competitionId = normalizeId(competitionId);
+      routine.isSpoofBattle = false;
       const timing = resolveRoutineTiming(durationMs, absoluteEndMs);
       routine.startTime = timing.startTime;
       routine.endTime = timing.endTime;
@@ -1838,6 +1844,7 @@
       routine.startedLive = true;
       routine.logged = false;
       routine.competitionId = normalizeId(competitionId);
+      routine.isSpoofBattle = spoofCompetitionIds.has(routine.competitionId);
       const timing = resolveRoutineTiming(durationMs, absoluteEndMs);
       routine.startTime = timing.startTime;
       routine.endTime = timing.endTime;
@@ -1876,6 +1883,7 @@
       routine.startedLive = false;
       routine.logged = false;
       routine.competitionId = "";
+      routine.isSpoofBattle = false;
       routine.warned = false;
       routine.playedSongs = new Set();
       clearRoutineTimers();
@@ -1894,7 +1902,20 @@
       if (!routine.startedLive || routine.logged) return;
       routine.logged = true;
       const startMs = routine.startTime || Date.now();
-      const payload = { start_ms: Math.floor(startMs), end_ms: Math.floor(endMs || Date.now()) };
+      const cid = normalizeId(routine.competitionId);
+      let resultCompetitionId = cid;
+      if (routine.isSpoofBattle) {
+        if (!resultCompetitionId) {
+          resultCompetitionId = `DUMMY-${Date.now()}`;
+        } else if (!resultCompetitionId.startsWith("DUMMY-")) {
+          resultCompetitionId = `DUMMY-${resultCompetitionId}`;
+        }
+      }
+      const payload = {
+        start_ms: Math.floor(startMs),
+        end_ms: Math.floor(endMs || Date.now()),
+        competition_id: resultCompetitionId,
+      };
       api("/battle/battle_end", {method:"POST", body: payload}).catch(() => {});
     }
 
@@ -1909,6 +1930,7 @@
         routine.live = false;
         routine.startedLive = false;
         routine.competitionId = "";
+        routine.isSpoofBattle = false;
         stopPointsInterval();
         stopSwitchInterval();
         stopLiveSubscription();
@@ -2087,6 +2109,7 @@
          routine.live = false;
          routine.startedLive = false;
          routine.competitionId = "";
+         routine.isSpoofBattle = false;
          routine.warned = false;
          stopTimerInterval();
           stopPointsInterval();
