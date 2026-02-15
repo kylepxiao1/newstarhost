@@ -135,3 +135,11 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_ffmpeg.ps1
 $env:FFMPEG_BIN="C:\Users\kylep\OneDrive\Desktop\newstarhost\scripts\ffmpeg-bin\...\ffmpeg.exe"
 ```
 If the default URLs fail, set `FFMPEG_URL` to a working archive (zip or 7z). 7z archives require 7-Zip on PATH.
+
+## Analytics Notebooks
+Jupyter notebooks are in `analytics/notebooks`
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r analytics/requirements.txt
+.\.venv\Scripts\python.exe -m jupyter lab analytics/notebooks
+```

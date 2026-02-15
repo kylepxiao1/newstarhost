@@ -211,6 +211,8 @@ __marimo__/
 # Project artifacts
 media/
 testing/
+.ssh/
+device_id.txt
 scripts/ffmpeg-bin/
 scripts/ffmpeg-download*
 *.cookies
