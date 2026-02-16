@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Dancer Registry</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
@@ -14,9 +15,20 @@
     input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     table { width: 100%; border-collapse: collapse; }
+    .table-wrap { width: 100%; overflow-x: auto; }
     th, td { padding: 8px; border-bottom: 1px solid #1f2937; text-align: left; }
     .actions { display: flex; gap: 6px; flex-wrap: wrap; }
     select, option { color: #0b1222; }
+    @media (max-width: 900px) {
+      header { padding: 12px; }
+      h1 { font-size: 18px; }
+      main { padding: 12px; }
+      section { padding: 12px; }
+      .row { flex-wrap: wrap; }
+      .row input, .row button { flex: 1 1 220px; }
+      .table-wrap table { min-width: 980px; }
+      .actions select { min-width: 180px; }
+    }
     
   </style>
 </head>
@@ -35,12 +47,14 @@
       <button onclick="addDancer()">Add</button>
     </div>
   </section>
-    <section>
+  <section>
     <h2>Registered Dancers</h2>
-    <table>
-      <thead><tr><th>Name</th><th>Handle</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Actions</th></tr></thead>
-      <tbody id="dancerTable"></tbody>
-    </table>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Handle</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Actions</th></tr></thead>
+        <tbody id="dancerTable"></tbody>
+      </table>
+    </div>
   </section>
   </main>
 

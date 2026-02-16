@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Battle Control</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
   <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
@@ -46,6 +47,17 @@
     .card div { word-break: break-word; }
     .card button { margin-top: auto; }
     .songs-empty { color: #94a3b8; font-style: italic; margin-top: 8px; }
+    @media (max-width: 900px) {
+      header { padding: 12px; flex-direction: column; align-items: flex-start; gap: 8px; }
+      h1 { font-size: 18px; }
+      #statusText { display: none; }
+      main { padding: 12px; grid-template-columns: 1fr; gap: 12px; }
+      section { padding: 12px; }
+      .row { flex-wrap: wrap; }
+      .row button { flex: 1 1 220px; }
+      .grid-2 { grid-template-columns: 1fr; }
+      .card { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -62,14 +74,14 @@
   <main>
     <section>
       <h2>Battle</h2>
-      <div class="row">
-        <button class="secondary" onclick="startRoutine(120000)">Simulate 2m Battle</button>
-        <button class="secondary" onclick="startRoutine(60000)">Simulate 1m Battle</button>
-        <button class="danger" onclick="cancelRoutine()">Cancel Battle</button>
-      </div>
-      <div class="row">
+      <div class="row" id="battleControlRow">
         <button class="secondary" id="battleListenerBtn" onclick="toggleBattleListener()">Start Battle Listener</button>
         <button class="secondary" onclick="skipSong()">Skip to Next Song</button>
+        <button class="danger" id="cancelBattleBtn" onclick="cancelRoutine()">Cancel Battle</button>
+      </div>
+      <div class="row" id="battleSimRow">
+        <button class="secondary" onclick="startRoutine(120000)">Simulate 2m Battle</button>
+        <button class="secondary" onclick="startRoutine(60000)">Simulate 1m Battle</button>
       </div>
       <div class="grid-2" style="margin-bottom:10px; align-items:center;">
         <label style="display:flex;gap:6px;align-items:center;">
@@ -180,6 +192,19 @@
       if (!role) return;
       evt.preventDefault();
       playRoleHotkey(role);
+    }
+
+    function positionCancelBattleButton() {
+      const cancelBtn = document.getElementById("cancelBattleBtn");
+      const controlRow = document.getElementById("battleControlRow");
+      const simRow = document.getElementById("battleSimRow");
+      if (!cancelBtn || !controlRow || !simRow) return;
+      const isMobile = window.matchMedia("(max-width: 900px)").matches;
+      if (isMobile) {
+        if (cancelBtn.parentElement !== simRow) simRow.appendChild(cancelBtn);
+      } else {
+        if (cancelBtn.parentElement !== controlRow) controlRow.appendChild(cancelBtn);
+      }
     }
 
     let _randSeed = (Date.now() % 2147483647) || 1;
@@ -2199,8 +2224,11 @@
         loadSettings();
       }
     });
+    window.addEventListener("resize", positionCancelBattleButton);
+    window.addEventListener("orientationchange", positionCancelBattleButton);
 
     loadSettings();
+    positionCancelBattleButton();
     setBattleListenerButton();
     refreshState();
     refreshSongs();

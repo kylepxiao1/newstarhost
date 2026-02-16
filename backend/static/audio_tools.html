@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Audio Tools</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
@@ -15,6 +16,19 @@
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     label { font-weight: 600; display: block; margin-bottom: 6px; }
     #result { margin-top: 10px; }
+    textarea { box-sizing: border-box; }
+    @media (max-width: 900px) {
+      header { padding: 12px; }
+      h1 { font-size: 18px; }
+      main { padding: 12px; }
+      section { padding: 12px; }
+      .row { flex-wrap: wrap; }
+      .row > * { flex: 1 1 220px; }
+      .row button { width: 100%; }
+      .action-buttons { display: flex; flex-direction: column; }
+      .action-buttons button + button { margin-top: 6px; }
+      #preview { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -73,7 +87,7 @@
       </div>
     </div>
     <div class="row">
-      <div style="align-self:flex-end;">
+      <div class="action-buttons" style="align-self:flex-end;">
         <button onclick="processAudio()">Preview</button>
         <button onclick="saveSong()">Save Song</button>
       </div>

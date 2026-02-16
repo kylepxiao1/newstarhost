@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Settings</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
@@ -15,6 +16,7 @@
     select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; }
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     table { width: 100%; border-collapse: collapse; }
+    .table-wrap { width: 100%; overflow-x: auto; }
     th, td { text-align: left; padding: 6px 4px; border-bottom: 1px solid #1f2937; }
     th { font-size: 12px; text-transform: uppercase; color: #94a3b8; letter-spacing: 0.05em; }
     .status { font-weight: 600; color: #94a3b8; }
@@ -49,6 +51,15 @@
     }
     .switch input:checked + .slider { background-color: #22c55e; border-color: #16a34a; }
     .switch input:checked + .slider:before { transform: translateX(22px); }
+    @media (max-width: 900px) {
+      header { padding: 12px; }
+      h1 { font-size: 18px; }
+      main { padding: 12px; }
+      section { padding: 12px; }
+      .row { gap: 8px; }
+      .table-wrap table { min-width: 440px; }
+      #hotkeyRows select, #hotkeyRows button { width: 100%; }
+    }
   </style>
 </head>
 <body>
@@ -83,12 +94,14 @@
       <div class="row" style="margin-bottom:12px;">
         <span class="status">Map number keys to role SFX.</span>
       </div>
-      <table>
-        <thead>
-          <tr><th>Key</th><th>Role</th><th>Preview</th></tr>
-        </thead>
-        <tbody id="hotkeyRows"></tbody>
-      </table>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Key</th><th>Role</th><th>Preview</th></tr>
+          </thead>
+          <tbody id="hotkeyRows"></tbody>
+        </table>
+      </div>
     </section>
 
     <div class="row">

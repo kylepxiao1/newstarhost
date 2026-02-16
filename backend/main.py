@@ -1144,7 +1144,7 @@ async def dancers_page() -> FileResponse:
 
 @app.get("/group/dances")
 async def group_dances_page() -> FileResponse:
-    return _static_file("intro_dances.html")
+    return _static_file("group_dances.html")
 
 
 @app.get("/dances/menu")

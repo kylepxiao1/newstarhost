@@ -2,11 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Group Dances</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
     header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
     h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px; }
     section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
     h2 { margin: 0 0 10px 0; font-size: 16px; letter-spacing: 0.02em; }
     .row { display: flex; gap: 8px; margin-bottom: 10px; }
@@ -27,19 +29,31 @@
     .formation-canvas { background:#0b1222; border:1px solid #1f2937; border-radius:8px; }
     .formation-list { font-size: 13px; line-height: 1.5; }
     .formation-enabled { display:flex; flex-wrap:wrap; gap:10px 14px; }
+    @media (max-width: 900px) {
+      header { padding: 12px; flex-direction: column; align-items: flex-start; gap: 8px; }
+      h1 { font-size: 18px; }
+      #statusText { display: none; }
+      main { padding: 12px !important; }
+      section { padding: 12px; }
+      .row { flex-wrap: wrap; }
+      .row > * { flex: 1 1 220px; }
+      .card { width: 100%; }
+      .formation-wrap { grid-template-columns: 1fr; }
+      #formationCanvas { width: 100%; max-width: 360px; height: auto; }
+    }
   </style>
 </head>
 <body>
   <header>
     <div style="display:flex;align-items:center;gap:10px;">
       <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
-      <h1>TikTok Intro Dances Control</h1>
+      <h1>TikTok Group Dances Control</h1>
     </div>
     <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;">
       <span id="statusText">Connecting</span>
     </div>
   </header>
-  <main style="padding:20px;">
+  <main>
   <section>
     <h2>Select Front Dancer</h2>
     <div class="row">

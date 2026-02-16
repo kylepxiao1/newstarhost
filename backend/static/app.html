@@ -2,40 +2,141 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>TikTok Control Suite</title>
   <link rel="icon" href="/favicon.ico" type="image/x-icon">
   <style>
-    :root { --bg:#0f172a; --panel:#111827; --border:#1f2937; --text:#e2e8f0; --nav:#0b1222; }
+    :root {
+      --bg:#0f172a;
+      --panel:#111827;
+      --border:#1f2937;
+      --text:#e2e8f0;
+      --nav:#0b1222;
+      --desktop-chrome-h: 108px;
+      --mobile-chrome-h: 190px;
+      --mobile-player-h: 136px;
+    }
     body { margin:0; font-family:"Segoe UI", Arial, sans-serif; background:var(--bg); color:var(--text); }
-    header { padding:16px 24px; background:#1e293b; box-shadow:0 2px 6px rgba(0,0,0,.3); display:flex; align-items:center; justify-content:space-between; }
-    h1 { margin:0; font-size:20px; }
-    .nav { display:flex; gap:12px; padding:10px 16px; background:#0b1222; border-bottom:1px solid #1f2937; position:sticky; top:0; z-index:5; flex-wrap:wrap; align-items:center; }
-    .nav a { color:var(--text); text-decoration:none; padding:6px 0; font-weight:600; border-bottom:2px solid transparent; }
-    .nav a.active { border-bottom-color:#2563eb; color:#fff; }
+    .nav { padding:10px 16px; background:#0b1222; border-bottom:1px solid #1f2937; position:sticky; top:0; z-index:20; }
+    .nav-backdrop { display:none; }
+    .nav-links { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .nav-links a { color:var(--text); text-decoration:none; padding:6px 0; font-weight:600; border-bottom:2px solid transparent; }
+    .nav-links a.active { border-bottom-color:#2563eb; color:#fff; }
     .shell { padding:0; }
-    .frames { position:relative; width:100%; height: calc(100vh - 190px); }
+    .frames { position:relative; width:100%; height: calc(100vh - var(--desktop-chrome-h)); }
     iframe { position:absolute; top:0; left:0; width:100%; height:100%; border:none; display:none; background:var(--bg); overflow:auto; }
     iframe.active { display:block; }
     .player { padding:10px 16px; background:var(--panel); border-top:1px solid var(--border); display:flex; align-items:center; gap:12px; }
     .player span { font-weight:600; }
-    audio { width:100%; }
+    .player audio { width:100%; }
+
+    @media (max-width: 900px) {
+      .nav {
+        position:fixed;
+        top:0;
+        left:0;
+        right:0;
+        height:0;
+        z-index:80;
+        padding:0;
+        background:transparent;
+        border-bottom:0;
+        pointer-events:none;
+      }
+      .nav.open { pointer-events:auto; }
+      .nav-backdrop {
+        display:block;
+        position:fixed;
+        inset:0;
+        background:rgba(2, 6, 23, 0.5);
+        opacity:0;
+        pointer-events:none;
+        transition:opacity .2s ease;
+      }
+      .nav.open .nav-backdrop {
+        opacity:1;
+        pointer-events:auto;
+      }
+      .nav-links {
+        display:flex;
+        position:fixed;
+        top:calc(env(safe-area-inset-top) + 56px);
+        right:10px;
+        left:10px;
+        flex-direction:column;
+        align-items:stretch;
+        gap:6px;
+        max-height:70dvh;
+        overflow:auto;
+        margin-top:0;
+        padding:10px;
+        border:1px solid #334155;
+        border-radius:10px;
+        background:#0b1222;
+        box-shadow:0 14px 36px rgba(0,0,0,.45);
+        transform:translateY(-8px);
+        opacity:0;
+        pointer-events:none;
+        transition:transform .22s ease, opacity .22s ease;
+      }
+      .nav.open .nav-links {
+        transform:translateY(0);
+        opacity:1;
+        pointer-events:auto;
+      }
+      .nav-links a {
+        border:1px solid #334155;
+        border-radius:8px;
+        background:#111827;
+        border-bottom-width:1px;
+        padding:10px 12px;
+        font-size:14px;
+        line-height:1;
+      }
+      .nav-links a.active {
+        border-color:#2563eb;
+        background:#1d4ed8;
+        color:#fff;
+      }
+      .player {
+        position:fixed;
+        left:0;
+        right:0;
+        bottom:0;
+        z-index:50;
+        display:grid;
+        grid-template-columns:1fr;
+        gap:8px;
+        padding:10px 12px calc(10px + env(safe-area-inset-bottom));
+        background:rgba(17,24,39,.98);
+        backdrop-filter:blur(4px);
+      }
+      .player span { font-size:16px; }
+      .player span { display:none; }
+      .player audio { height:62px; }
+      .shell { padding-bottom:var(--mobile-player-h); }
+      .frames { height: calc(100dvh - var(--mobile-player-h)); }
+    }
   </style>
 </head>
 <body>
   <div class="nav">
-    <a href="#intro" data-target="intro" class="active">Group Dances</a>
-    <a href="#battle" data-target="battle">Battle Control</a>
-    <a href="#menu" data-target="menu">Dance Menu</a>
-    <a href="#dancers" data-target="dancers">Dancers</a>
-    <a href="#songs" data-target="songs">Songs</a>
-    <a href="#audio" data-target="audio">Audio Tools</a>
-    <a href="#camera" data-target="camera">Camera</a>
-    <a href="#settings" data-target="settings">Settings</a>
-    <a href="https://newstarhost.grafana.net/goto/efdcjfk76r474e?orgId=stacks-1526098" target="_blank" rel="noopener noreferrer">Analytics</a>
+    <div id="navBackdrop" class="nav-backdrop"></div>
+    <div id="navLinks" class="nav-links">
+      <a href="#group" data-target="group" class="active">Group Dances</a>
+      <a href="#battle" data-target="battle">Battle Control</a>
+      <a href="#menu" data-target="menu">Dance Menu</a>
+      <a href="#dancers" data-target="dancers">Dancers</a>
+      <a href="#songs" data-target="songs">Songs</a>
+      <a href="#audio" data-target="audio">Audio Tools</a>
+      <a href="#camera" data-target="camera">Camera</a>
+      <a href="#settings" data-target="settings">Settings</a>
+      <a href="https://newstarhost.grafana.net/goto/efdcjfk76r474e?orgId=stacks-1526098" target="_blank" rel="noopener noreferrer">Analytics</a>
+    </div>
   </div>
   <div class="shell">
     <div class="frames">
-      <iframe id="frame-intro" class="active" src="/group/dances"></iframe>
+      <iframe id="frame-group" class="active" src="/group/dances"></iframe>
       <iframe id="frame-battle" src="/battle/dances"></iframe>
       <iframe id="frame-menu" src="/dances/menu"></iframe>
       <iframe id="frame-dancers" src="/dancers/register"></iframe>
@@ -51,9 +152,12 @@
   </div>
   <script src="/static/state_ws_helper.js"></script>
   <script>
-    const tabs = Array.from(document.querySelectorAll(".nav a[data-target]"));
+    const navEl = document.querySelector(".nav");
+    const navBackdrop = document.getElementById("navBackdrop");
+    const tabs = Array.from(document.querySelectorAll(".nav-links a[data-target]"));
+    const navLinks = Array.from(document.querySelectorAll(".nav-links a"));
     const frames = {
-      intro: document.getElementById("frame-intro"),
+      group: document.getElementById("frame-group"),
       battle: document.getElementById("frame-battle"),
       menu: document.getElementById("frame-menu"),
       dancers: document.getElementById("frame-dancers"),
@@ -63,6 +167,116 @@
       settings: document.getElementById("frame-settings"),
     };
     let libraryCache = {};
+
+    function updateFrameHeights() {
+      const navEl = document.querySelector(".nav");
+      const playerEl = document.querySelector(".player");
+      const navH = navEl ? navEl.offsetHeight : 0;
+      const playerH = playerEl ? playerEl.offsetHeight : 0;
+      const chromeH = Math.max(1, navH + playerH);
+      const mobileChromeH = Math.max(1, playerH);
+      document.documentElement.style.setProperty("--desktop-chrome-h", `${chromeH}px`);
+      document.documentElement.style.setProperty("--mobile-chrome-h", `${mobileChromeH}px`);
+      document.documentElement.style.setProperty("--mobile-player-h", `${Math.max(1, playerH)}px`);
+    }
+
+    function isMobileNav() {
+      return window.matchMedia("(max-width: 900px)").matches;
+    }
+
+    function updateEmbeddedNavButtons() {
+      const open = !!navEl?.classList.contains("open");
+      Object.values(frames).forEach((frame) => {
+        try {
+          const doc = frame?.contentDocument;
+          if (!doc) return;
+          const btn = doc.getElementById("__appNavToggleBtn");
+          if (!btn) return;
+          btn.innerHTML = open ? "&#10005;" : "&#9776;";
+          btn.setAttribute("aria-label", open ? "Close navigation menu" : "Open navigation menu");
+          btn.setAttribute("aria-expanded", open ? "true" : "false");
+        } catch (e) {}
+      });
+    }
+
+    function ensureFrameNavButton(frame) {
+      try {
+        const doc = frame?.contentDocument;
+        if (!doc) return;
+        const header = doc.querySelector("header");
+        if (!header) return;
+
+        let style = doc.getElementById("__appNavToggleStyle");
+        if (!style) {
+          style = doc.createElement("style");
+          style.id = "__appNavToggleStyle";
+          (doc.head || doc.documentElement).appendChild(style);
+        }
+        style.textContent = [
+          "#__appNavToggleBtn{display:none;}",
+          "@media (max-width:900px){",
+          "  header{position:sticky;top:0;z-index:120;padding-top:4px !important;padding-bottom:0px !important;}",
+          "  header > :first-child{width:100%;}",
+          "  #__appNavToggleBtn{",
+          "    display:inline-flex;",
+          "    align-items:center;",
+          "    justify-content:center;",
+          "    width:46px;",
+          "    height:36px;",
+          "    min-width:46px;",
+          "    padding:0;",
+          "    border:1px solid #334155;",
+          "    border-radius:11px;",
+          "    background:#111827;",
+          "    color:#e2e8f0;",
+          "    font-size:20px;",
+          "    font-weight:700;",
+          "    line-height:1;",
+          "    cursor:pointer;",
+          "    margin-left:auto;",
+          "    flex:0 0 auto;",
+          "  }",
+          "}",
+        ].join("");
+
+        let btn = doc.getElementById("__appNavToggleBtn");
+        const h1 = header.querySelector("h1");
+        let host = (h1 && h1.parentElement) ? h1.parentElement : header;
+        if (!host || host === doc.body || host === doc.documentElement) host = header;
+        if (!btn) {
+          btn = doc.createElement("button");
+          btn.id = "__appNavToggleBtn";
+          btn.type = "button";
+          btn.setAttribute("aria-controls", "navLinks");
+          btn.addEventListener("click", (evt) => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            setNavOpen(!navEl.classList.contains("open"));
+          });
+        }
+        if (btn.parentElement !== host) host.appendChild(btn);
+        updateEmbeddedNavButtons();
+      } catch (e) {}
+    }
+
+    function installFrameNavButtons() {
+      Object.values(frames).forEach((frame) => {
+        if (!frame) return;
+        frame.addEventListener("load", () => ensureFrameNavButton(frame));
+        ensureFrameNavButton(frame);
+      });
+    }
+
+    function setNavOpen(open) {
+      if (!navEl) return;
+      navEl.classList.toggle("open", !!open);
+      updateEmbeddedNavButtons();
+      updateFrameHeights();
+    }
+
+    window.toggleAppNavMenu = () => {
+      setNavOpen(!navEl.classList.contains("open"));
+    };
 
     function pauseAllAudio() {
       try { globalPlayer.pause(); } catch (e) {}
@@ -74,12 +288,41 @@
         if (f) f.classList.toggle("active", k === tab);
       });
       history.replaceState(null, "", `/app#${tab}`);
+      const activeFrame = frames[tab];
+      if (activeFrame) ensureFrameNavButton(activeFrame);
+      if (isMobileNav()) setNavOpen(false);
     }
 
     tabs.forEach(a => a.onclick = (e) => { e.preventDefault(); show(a.dataset.target); });
+    navLinks.forEach((a) => {
+      if (a.dataset.target) return;
+      a.addEventListener("click", () => {
+        if (isMobileNav()) setNavOpen(false);
+      });
+    });
+    if (navBackdrop) {
+      navBackdrop.addEventListener("click", () => setNavOpen(false));
+    }
+    document.addEventListener("keydown", (evt) => {
+      if (evt.key === "Escape" && navEl.classList.contains("open")) {
+        setNavOpen(false);
+      }
+    });
 
-    const hash = (location.hash || "").replace("#","") || "intro";
+    const hash = (location.hash || "").replace("#","") || "group";
     if (frames[hash]) show(hash);
+    installFrameNavButtons();
+    updateFrameHeights();
+    requestAnimationFrame(updateFrameHeights);
+    requestAnimationFrame(() => {
+      Object.values(frames).forEach((f) => ensureFrameNavButton(f));
+    });
+    window.addEventListener("load", updateFrameHeights);
+    window.addEventListener("resize", () => {
+      if (!isMobileNav()) setNavOpen(false);
+      updateFrameHeights();
+    });
+    window.addEventListener("orientationchange", updateFrameHeights);
 
     // Global audio: if any iframe posts a "play-audio" message, play it here.
     const globalPlayer = document.getElementById("globalPlayer");
