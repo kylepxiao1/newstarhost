@@ -109,6 +109,7 @@
       settingsFadeOut = data.fade_out !== false;
       settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
       hotkeyMap = data.hotkeys || {};
+      window.PageShared.setPracticeModeHeader(settingsLoopSameSongAfterFinish);
     }
 
     function handleHotkey(evt) {
@@ -391,35 +392,15 @@
       if (!songsState) songsState = {};
       songsState.current = url;
       if (settingsLoopSameSongAfterFinish) {
-        const bellUrl = getRoleUrl("bell");
-        if (bellUrl) {
-          startAudio(bellUrl, {
-            loop:false,
-            isRole:true,
-            fade:false,
-            fadeOut:false,
-            skipFadeOut:true,
-            onEnd: () => {
-              setCurrent(url);
-              startAudio(url, {
-                loop:false,
-                fade:true,
-                fadeOut:false,
-                skipFadeOut:true,
-                onEnd: () => runPracticeRepeatCues(url),
-              });
-            }
-          });
-        } else {
-          setCurrent(url);
-          startAudio(url, {
-            loop:false,
-            fade:true,
-            fadeOut:false,
-            skipFadeOut:true,
-            onEnd: () => runPracticeRepeatCues(url),
-          });
-        }
+        // Practice mode: no bell cue before the selected song.
+        setCurrent(url);
+        startAudio(url, {
+          loop:false,
+          fade:true,
+          fadeOut:false,
+          skipFadeOut:true,
+          onEnd: () => runPracticeRepeatCues(url),
+        });
       } else {
         const bellUrl = getRoleUrl("bell");
         // bell -> song -> applause -> background (loop)
@@ -619,6 +600,7 @@
       if (best) best.el.classList.add("active");
     }
 
+    window.PageShared.initPracticeModeHeader({apiFn: api});
     loadSettings();
     refreshData();
     refreshState();

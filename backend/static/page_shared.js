@@ -68,6 +68,65 @@
     return out;
   }
 
+  function stripPracticeModeSuffix(text) {
+    return String(text || "").replace(/\s*- Practice Mode\s*$/i, "").trim();
+  }
+
+  function setPracticeModeHeader(enabled, options) {
+    var cfg = options || {};
+    var selector = cfg.headerSelector || "header h1";
+    var headerTitle = document.querySelector(selector);
+    if (!headerTitle) return;
+    var base = headerTitle.getAttribute("data-base-title");
+    if (!base) {
+      base = stripPracticeModeSuffix(headerTitle.textContent);
+      headerTitle.setAttribute("data-base-title", base);
+    }
+    var suffix = cfg.practiceSuffix || " - Practice Mode";
+    headerTitle.textContent = enabled ? (base + suffix) : base;
+  }
+
+  async function refreshPracticeModeHeader(options) {
+    var cfg = options || {};
+    var localEnabled = readPracticeModeLocal();
+    setPracticeModeHeader(localEnabled, cfg);
+    var callApi = cfg.apiFn || api;
+    try {
+      var res = await callApi("/settings/data");
+      var data = await res.json();
+      var enabled = data.loop_same_song_after_finish === true;
+      writePracticeModeLocal(enabled);
+      setPracticeModeHeader(enabled, cfg);
+      return enabled;
+    } catch (e) {
+      return localEnabled;
+    }
+  }
+
+  function initPracticeModeHeader(options) {
+    var cfg = options || {};
+    if (window.__practiceModeHeaderInit) return window.__practiceModeHeaderInit;
+    var refresh = function () {
+      refreshPracticeModeHeader(cfg);
+    };
+    refresh();
+    var onMessage = function (evt) {
+      if (evt && evt.data && evt.data.type === "settings-updated") {
+        refresh();
+      }
+    };
+    var onStorage = function (evt) {
+      if (!evt || evt.key !== "loop_same_song_after_finish") return;
+      setPracticeModeHeader(readPracticeModeLocal(), cfg);
+    };
+    window.addEventListener("message", onMessage);
+    window.addEventListener("storage", onStorage);
+    window.__practiceModeHeaderInit = {
+      refresh: refresh,
+    };
+    return window.__practiceModeHeaderInit;
+  }
+
   function setWsStatusUI(isConnected, cfg) {
     var options = cfg || {};
     var dotId = options.dotId || "wsDot";
@@ -230,6 +289,9 @@
     readPracticeModeLocal: readPracticeModeLocal,
     writePracticeModeLocal: writePracticeModeLocal,
     fetchAppSettings: fetchAppSettings,
+    setPracticeModeHeader: setPracticeModeHeader,
+    refreshPracticeModeHeader: refreshPracticeModeHeader,
+    initPracticeModeHeader: initPracticeModeHeader,
     connectWsStatus: connectWsStatus,
     queueSongPaused: queueSongPaused,
     startAudio: startAudio,

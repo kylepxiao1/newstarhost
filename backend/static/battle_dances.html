@@ -180,6 +180,7 @@
       settingsFadeOut = data.fade_out !== false;
       settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
       hotkeyMap = data.hotkeys || {};
+      window.PageShared.setPracticeModeHeader(settingsLoopSameSongAfterFinish);
     }
 
     function handleHotkey(evt) {
@@ -1288,19 +1289,20 @@
       songs.current = url;
       songs[currentTab] = url;
       state.songs = songs;
-      // bell -> selected -> (loop selected OR applause -> background)
-      playSequence(["bell"], false, () => {
-        startAudio(url, {loop:false, onEnd: () => {
-          if (settingsLoopSameSongAfterFinish) {
-            runPracticeRepeatCues(url);
-            return;
-          }
-          playSequence(["applause"], false, () => {
-            const bg = state.songs?.background;
-            if (bg) startAudio(bg, {loop:true});
-          });
-        }});
-      });
+      if (settingsLoopSameSongAfterFinish) {
+        // Practice mode: no bell cue before the selected song.
+        startAudio(url, {loop:false, onEnd: () => runPracticeRepeatCues(url)});
+      } else {
+        // bell -> selected -> applause -> background
+        playSequence(["bell"], false, () => {
+          startAudio(url, {loop:false, onEnd: () => {
+            playSequence(["applause"], false, () => {
+              const bg = state.songs?.background;
+              if (bg) startAudio(bg, {loop:true});
+            });
+          }});
+        });
+      }
       refreshState();
     }
 
@@ -1339,18 +1341,19 @@
       const songs = state.songs || {};
       songs.current = url;
       state.songs = songs;
-      playSequence(["bell"], false, () => {
-        startAudio(url, {loop:false, onEnd: () => {
-          if (settingsLoopSameSongAfterFinish) {
-            runPracticeRepeatCues(url);
-            return;
-          }
-          playSequence(["applause"], false, () => {
-            const bg = state.songs?.background;
-            if (bg) startAudio(bg, {loop:true});
-          });
-        }});
-      });
+      if (settingsLoopSameSongAfterFinish) {
+        // Practice mode: no bell cue before the selected song.
+        startAudio(url, {loop:false, onEnd: () => runPracticeRepeatCues(url)});
+      } else {
+        playSequence(["bell"], false, () => {
+          startAudio(url, {loop:false, onEnd: () => {
+            playSequence(["applause"], false, () => {
+              const bg = state.songs?.background;
+              if (bg) startAudio(bg, {loop:true});
+            });
+          }});
+        });
+      }
       refreshState();
     }
 
@@ -2218,6 +2221,7 @@
     window.addEventListener("resize", positionCancelBattleButton);
     window.addEventListener("orientationchange", positionCancelBattleButton);
 
+    window.PageShared.initPracticeModeHeader({apiFn: api});
     loadSettings();
     positionCancelBattleButton();
     setBattleListenerButton();

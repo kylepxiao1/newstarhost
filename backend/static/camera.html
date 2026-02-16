@@ -319,6 +319,7 @@
 
     refreshState();
     connectWs();
+    window.PageShared.initPracticeModeHeader({apiFn: api});
     refreshCameras(false);
     window.addEventListener("pagehide", stopPreview);
     window.addEventListener("beforeunload", stopPreview);

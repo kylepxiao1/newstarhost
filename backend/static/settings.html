@@ -200,6 +200,7 @@
     async function loadSettings() {
       settings = await window.PageShared.fetchAppSettings(api);
       hotkeyMap = settings.hotkeys || {};
+      window.PageShared.setPracticeModeHeader(settings.loop_same_song_after_finish === true);
       const fadeIn = document.getElementById("fadeInToggle");
       const fadeOut = document.getElementById("fadeOutToggle");
       const practiceMode = document.getElementById("practiceModeToggle");
@@ -247,6 +248,7 @@
       connectedText: "Live",
       disconnectedText: "Disconnected",
     });
+    window.PageShared.initPracticeModeHeader({apiFn: api});
     loadLibrary();
     loadSettings();
     document.addEventListener("keydown", handleHotkey);
