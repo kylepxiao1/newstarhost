@@ -87,6 +87,89 @@
     }
   }
 
+  function startAudio(cfg) {
+    if (!cfg || !cfg.url) return null;
+    var player = cfg.player || getGlobalAudioPlayer();
+    if (!player) return null;
+    var url = cfg.url;
+    var opts = cfg.opts || {};
+    var getRoleUrlFn = cfg.getRoleUrl;
+    var getSongVolumeFn = cfg.getSongVolume;
+    var bellUrl = (typeof getRoleUrlFn === "function") ? getRoleUrlFn("bell") : "";
+    var applauseUrl = (typeof getRoleUrlFn === "function") ? getRoleUrlFn("applause") : "";
+    var isBellOrApplause = !!url && (url === bellUrl || url === applauseUrl);
+    var rawVolume = (typeof opts.volume === "number")
+      ? opts.volume
+      : ((typeof getSongVolumeFn === "function") ? getSongVolumeFn(url) : 1);
+    var targetVolume = normalizeVolume(rawVolume);
+    var fadeIn = isBellOrApplause ? false : (opts.fade ?? cfg.settingsFadeIn ?? true);
+    var fadeOut = isBellOrApplause ? false : (opts.fadeOut ?? cfg.settingsFadeOut ?? true);
+
+    var doPlay = function () {
+      try { player.pause(); } catch (e) {}
+      player.loop = !!opts.loop;
+      player.onended = function () {
+        if (typeof opts.onEnd === "function") {
+          opts.onEnd();
+          return;
+        }
+        if (typeof cfg.onEndedDefault === "function") {
+          cfg.onEndedDefault({player: player, url: url, opts: opts});
+        }
+      };
+      player.src = url;
+      if (!opts.isRole && typeof cfg.onTrackPlay === "function") {
+        cfg.onTrackPlay({player: player, url: url, opts: opts});
+      }
+      if (fadeIn) {
+        var vol = 0.0;
+        player.volume = 0;
+        var p1 = player.play();
+        if (p1 && typeof p1.catch === "function") p1.catch(function () {});
+        var steps = 10;
+        var stepMs = 50;
+        var inc = targetVolume / steps;
+        var count = 0;
+        var intv = setInterval(function () {
+          count += 1;
+          vol = Math.min(targetVolume, vol + inc);
+          player.volume = vol;
+          if (count >= steps) clearInterval(intv);
+        }, stepMs);
+      } else {
+        player.volume = targetVolume;
+        var p2 = player.play();
+        if (p2 && typeof p2.catch === "function") p2.catch(function () {});
+      }
+    };
+
+    if (fadeOut && !opts.skipFadeOut && !player.paused && player.src) {
+      var volOut = player.volume;
+      var stepsOut = 10;
+      var stepMsOut = 50;
+      var dec = volOut / stepsOut;
+      var countOut = 0;
+      var outv = setInterval(function () {
+        countOut += 1;
+        volOut = Math.max(0, volOut - dec);
+        player.volume = volOut;
+        if (countOut >= stepsOut) {
+          clearInterval(outv);
+          try { player.pause(); } catch (e) {}
+          doPlay();
+        }
+      }, stepMsOut);
+    } else {
+      doPlay();
+    }
+
+    if (typeof cfg.onAfterStart === "function") {
+      cfg.onAfterStart({player: player, url: url, opts: opts});
+    }
+
+    return player;
+  }
+
   window.PageShared = {
     api: api,
     isTypingTarget: isTypingTarget,
@@ -96,5 +179,6 @@
     writePracticeModeLocal: writePracticeModeLocal,
     fetchAppSettings: fetchAppSettings,
     queueSongPaused: queueSongPaused,
+    startAudio: startAudio,
   };
 })();

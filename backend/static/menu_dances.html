@@ -443,64 +443,22 @@
     function startAudio(url, opts={}) {
       const player = getAudioPlayer();
       if (!player) return;
-      const targetVolume = normalizeVolume((typeof opts.volume === "number") ? opts.volume : getSongVolume(url));
-      const fadeIn = opts.fade ?? document.getElementById("fadeToggle")?.checked ?? settingsFadeIn;
-      const fadeOut = opts.fadeOut ?? document.getElementById("fadeOutToggle")?.checked ?? settingsFadeOut;
-      const doPlay = () => {
-        try { player.pause(); } catch(e){}
-        player.loop = !!opts.loop;
-        player.onended = () => {
-          if (typeof opts.onEnd === "function") {
-            opts.onEnd();
-            return;
-          }
-        };
-        player.src = url;
-        if (!opts.isRole) {
-          notePlay(url);
-        }
-        persistAudio(player);
-        if (fadeIn) {
-          let vol = 0.0;
-          player.volume = 0;
-          player.play().catch(()=>{});
-          const steps = 10;
-          const stepMs = 50;
-          const inc = targetVolume / steps;
-          let count = 0;
-          const intv = setInterval(()=>{
-            count += 1;
-            vol = Math.min(targetVolume, vol + inc);
-            player.volume = vol;
-            if (count >= steps) clearInterval(intv);
-          }, stepMs);
-        } else {
-          player.volume = targetVolume;
-          player.play().catch(()=>{});
-        }
-      };
-      if (fadeOut && !opts.skipFadeOut && !player.paused && player.src) {
-        let vol = player.volume;
-        const steps = 10;
-        const stepMs = 50;
-        const dec = vol/steps;
-        let count = 0;
-        const outv = setInterval(()=>{
-          count += 1;
-          vol = Math.max(0, vol - dec);
-          player.volume = vol;
-          if (count >= steps) {
-            clearInterval(outv);
-            player.pause();
-            doPlay();
-          }
-        }, stepMs);
-      } else {
-        doPlay();
-      }
-      player.onplay = () => persistAudio(player);
-      player.onpause = () => persistAudio(player);
-      player.ontimeupdate = () => persistAudio(player);
+      window.PageShared.startAudio({
+        player,
+        url,
+        opts,
+        getRoleUrl,
+        getSongVolume,
+        settingsFadeIn,
+        settingsFadeOut,
+        onTrackPlay: () => { notePlay(url); },
+        onAfterStart: ({player: p}) => {
+          persistAudio(p);
+          p.onplay = () => persistAudio(p);
+          p.onpause = () => persistAudio(p);
+          p.ontimeupdate = () => persistAudio(p);
+        },
+      });
     }
 
     function getRoleUrl(role) {
