@@ -1282,8 +1282,8 @@
         if (!ok) return alert("Click anywhere on the page once to enable audio.");
       }
       await loadSettings();
-      // cancel routine if user manually picks music
-      cancelRoutine();
+      // Cancel routine if user manually picks music, but do not force-switch to background.
+      cancelRoutine({forceBackground:false});
       await api("/songs/play", {method:"POST", body:{target: currentTab, url, context: "battle"}});
       const songs = state.songs || {};
       songs.current = url;
@@ -1336,7 +1336,7 @@
         alert("No suggested song found.");
         return;
       }
-      cancelRoutine();
+      cancelRoutine({forceBackground:false});
       await api("/songs/play", {method:"POST", body:{target: "group", url, context: "battle"}});
       const songs = state.songs || {};
       songs.current = url;
@@ -1863,7 +1863,8 @@
       });
     }
 
-    function cancelRoutine() {
+    function cancelRoutine(opts = {}) {
+      const forceBackground = opts.forceBackground !== false;
       routine.active = false;
       routine.live = false;
       routine.startedLive = false;
@@ -1878,7 +1879,9 @@
       stopLiveSubscription();
       const player = document.getElementById("player");
       try { player.pause(); } catch(e){}
-      ensureBackground();
+      if (forceBackground) {
+        ensureBackground();
+      }
       stopTimerInterval();
       setCenterLine(false);
       renderTimer(true);
