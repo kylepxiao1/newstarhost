@@ -154,7 +154,10 @@
     if (!window.StateWsHelper || typeof window.StateWsHelper.connect !== "function") {
       return null;
     }
-    return window.StateWsHelper.connect({
+    var isConnected = false;
+    var dotId = cfg.dotId || "wsDot";
+    var dot = dotId ? document.getElementById(dotId) : null;
+    var conn = window.StateWsHelper.connect({
       wsUrl: cfg.wsUrl,
       staleMs: cfg.staleMs,
       checkIntervalMs: cfg.checkIntervalMs,
@@ -162,10 +165,12 @@
       maxDelayMs: cfg.maxDelayMs,
       jitterMs: cfg.jitterMs,
       onConnected: function (ws) {
+        isConnected = true;
         setWsStatusUI(true, cfg);
         if (typeof cfg.onConnected === "function") cfg.onConnected(ws);
       },
       onDisconnected: function () {
+        isConnected = false;
         setWsStatusUI(false, cfg);
         if (typeof cfg.onDisconnected === "function") cfg.onDisconnected();
       },
@@ -177,6 +182,21 @@
       onError: cfg.onError,
       onClose: cfg.onClose,
     });
+    if (dot) {
+      dot.style.cursor = "pointer";
+      dot.title = "Tap to reconnect if disconnected";
+      dot.onclick = function (evt) {
+        if (evt) {
+          evt.preventDefault();
+          evt.stopPropagation();
+        }
+        if (isConnected) return;
+        if (conn && typeof conn.nudge === "function") {
+          conn.nudge();
+        }
+      };
+    }
+    return conn;
   }
 
   function queueSongPaused(cfg) {
