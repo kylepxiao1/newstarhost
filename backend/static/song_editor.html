@@ -6,7 +6,7 @@
   <title>Song Editor</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    header { padding: 16px 24px 16px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
     h1 { margin: 0; font-size: 20px; }
     main { padding: 20px; }
     section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
@@ -18,7 +18,8 @@
     input[type="checkbox"] { flex: 0 0 auto; width: 16px; height: 16px; padding: 0; margin: 0; accent-color: #2563eb; }
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
     @media (max-width: 900px) {
-      header { padding: 12px; }
+      header { padding: 12px 12px 8px; }
+      header .status { display: none !important; }
       h1 { font-size: 18px; }
       main { padding: 12px; }
       section { padding: 12px; }
@@ -34,7 +35,11 @@
 <body>
   <header>
     <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
       <h1>Song Editor</h1>
+    </div>
+    <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;">
+      <span id="statusText">Connecting</span>
     </div>
   </header>
   <main>
@@ -116,6 +121,8 @@
   </section>
   </main>
 
+  <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
   <script>
   const api = (p,o={})=>fetch(p,{method:o.method||"GET",headers:{"Content-Type":"application/json"},body:o.body?JSON.stringify(o.body):undefined});
   let songs = {};
@@ -504,6 +511,10 @@
       if (best) best.el.classList.add("active");
     }
 
+    window.PageShared?.connectWsStatus?.({
+      connectedText: "Live",
+      disconnectedText: "Disconnected",
+    });
     loadDancers();
     highlightNav();
   </script>

@@ -68,6 +68,58 @@
     return out;
   }
 
+  function setWsStatusUI(isConnected, cfg) {
+    var options = cfg || {};
+    var dotId = options.dotId || "wsDot";
+    var textId = options.textId === undefined ? "statusText" : options.textId;
+    var connectedColor = options.connectedColor || "#22c55e";
+    var disconnectedColor = options.disconnectedColor || "#ef4444";
+    var connectedShadow = options.connectedShadow || "0 0 8px " + connectedColor;
+    var disconnectedShadow = options.disconnectedShadow || "0 0 8px " + disconnectedColor;
+    var connectedText = options.connectedText || "Live";
+    var disconnectedText = options.disconnectedText || "Disconnected";
+    var dot = dotId ? document.getElementById(dotId) : null;
+    if (dot) {
+      dot.style.background = isConnected ? connectedColor : disconnectedColor;
+      dot.style.boxShadow = isConnected ? connectedShadow : disconnectedShadow;
+    }
+    if (options.updateText === false) return;
+    var label = textId ? document.getElementById(textId) : null;
+    if (label) {
+      label.textContent = isConnected ? connectedText : disconnectedText;
+    }
+  }
+
+  function connectWsStatus(options) {
+    var cfg = options || {};
+    if (!window.StateWsHelper || typeof window.StateWsHelper.connect !== "function") {
+      return null;
+    }
+    return window.StateWsHelper.connect({
+      wsUrl: cfg.wsUrl,
+      staleMs: cfg.staleMs,
+      checkIntervalMs: cfg.checkIntervalMs,
+      minDelayMs: cfg.minDelayMs,
+      maxDelayMs: cfg.maxDelayMs,
+      jitterMs: cfg.jitterMs,
+      onConnected: function (ws) {
+        setWsStatusUI(true, cfg);
+        if (typeof cfg.onConnected === "function") cfg.onConnected(ws);
+      },
+      onDisconnected: function () {
+        setWsStatusUI(false, cfg);
+        if (typeof cfg.onDisconnected === "function") cfg.onDisconnected();
+      },
+      onOpen: cfg.onOpen,
+      onWake: cfg.onWake,
+      onState: cfg.onState,
+      onMessage: cfg.onMessage,
+      onParseError: cfg.onParseError,
+      onError: cfg.onError,
+      onClose: cfg.onClose,
+    });
+  }
+
   function queueSongPaused(cfg) {
     if (!cfg || !cfg.url) return;
     var player = cfg.player || getGlobalAudioPlayer();
@@ -178,6 +230,7 @@
     readPracticeModeLocal: readPracticeModeLocal,
     writePracticeModeLocal: writePracticeModeLocal,
     fetchAppSettings: fetchAppSettings,
+    connectWsStatus: connectWsStatus,
     queueSongPaused: queueSongPaused,
     startAudio: startAudio,
   };

@@ -6,7 +6,7 @@
   <title>Settings</title>
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    header { padding: 16px 24px 16px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
     h1 { margin: 0; font-size: 20px; }
     main { padding: 20px; }
     section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
@@ -52,7 +52,8 @@
     .switch input:checked + .slider { background-color: #22c55e; border-color: #16a34a; }
     .switch input:checked + .slider:before { transform: translateX(22px); }
     @media (max-width: 900px) {
-      header { padding: 12px; }
+      header { padding: 12px 12px 8px; }
+      header .status { display: none !important; }
       h1 { font-size: 18px; }
       main { padding: 12px; }
       section { padding: 12px; }
@@ -64,7 +65,13 @@
 </head>
 <body>
   <header>
-    <h1>Settings</h1>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
+      <h1>Settings</h1>
+    </div>
+    <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;">
+      <span id="statusText">Connecting</span>
+    </div>
   </header>
   <main>
     <section>
@@ -106,10 +113,11 @@
 
     <div class="row">
       <button onclick="saveSettings()">Save Settings</button>
-      <span id="statusText" class="status"></span>
+      <span id="saveStatusText" class="status"></span>
     </div>
   </main>
 
+  <script src="/static/state_ws_helper.js"></script>
   <script src="/static/page_shared.js"></script>
   <script>
     const api = window.PageShared.api;
@@ -217,7 +225,7 @@
         loop_same_song_after_finish: practiceMode,
         hotkeys,
       };
-      const status = document.getElementById("statusText");
+      const status = document.getElementById("saveStatusText");
       if (status) status.textContent = "Saving...";
       try {
         const res = await api("/settings/data", {method:"POST", body: payload});
@@ -235,6 +243,10 @@
       }
     }
 
+    window.PageShared?.connectWsStatus?.({
+      connectedText: "Live",
+      disconnectedText: "Disconnected",
+    });
     loadLibrary();
     loadSettings();
     document.addEventListener("keydown", handleHotkey);

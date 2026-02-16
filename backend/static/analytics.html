@@ -6,7 +6,7 @@
   <title>Analytics</title>
   <style>
     body { margin:0; font-family:"Segoe UI", Arial, sans-serif; background:#0f172a; color:#e2e8f0; }
-    header { padding:16px 24px; background:#1e293b; box-shadow:0 2px 6px rgba(0,0,0,.3); display:flex; align-items:center; justify-content:space-between; }
+    header { padding:16px 24px 16px; background:#1e293b; box-shadow:0 2px 6px rgba(0,0,0,.3); display:flex; align-items:center; justify-content:space-between; }
     h1 { margin:0; font-size:20px; }
     main { padding:20px; }
     .table-wrap { width: 100%; overflow-x: auto; }
@@ -15,7 +15,8 @@
     th { background:#111827; }
     button { cursor:pointer; background:#2563eb; color:#fff; border:none; border-radius:6px; padding:8px 12px; font-weight:600; }
     @media (max-width: 900px) {
-      header { padding: 12px; flex-direction: column; align-items: flex-start; gap: 8px; }
+      header { padding: 12px 12px 8px; flex-direction: column; align-items: flex-start; gap: 8px; }
+      header .status { display: none !important; }
       h1 { font-size: 18px; }
       header > div { width: 100%; flex-wrap: wrap; gap: 8px !important; }
       header > div > button { flex: 1 1 200px; }
@@ -26,7 +27,13 @@
 </head>
 <body>
   <header>
-    <h1>Analytics</h1>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
+      <h1>Analytics</h1>
+    </div>
+    <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;">
+      <span id="statusText">Connecting</span>
+    </div>
     <div style="display:flex; gap:10px; align-items:center;">
       <button onclick="loadData()">Refresh</button>
       <button onclick="window.open('/analytics/plays?limit=200','_blank')">View Plays JSON</button>
@@ -44,6 +51,7 @@
     </div>
   </main>
   <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
   <script>
     let ws = null;
     let lastState = null;
@@ -91,9 +99,11 @@
           .then(payload => renderFromData(payload, lastState))
           .catch(() => {});
       }
-      if (!window.StateWsHelper?.connect) return;
+      if (!window.PageShared?.connectWsStatus) return;
       try { ws?.close(); } catch (e) {}
-      ws = window.StateWsHelper.connect({
+      ws = window.PageShared.connectWsStatus({
+        connectedText: "Live",
+        disconnectedText: "Disconnected",
         onOpen: () => { loadData(); },
         onWake: () => { loadData(); },
         onState: (payload) => {

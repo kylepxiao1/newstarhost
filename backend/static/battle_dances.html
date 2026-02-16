@@ -8,7 +8,7 @@
   <link rel="shortcut icon" href="/favicon.ico" type="image/x-icon">
   <style>
     body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
-    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    header { padding: 16px 24px 16px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
     h1 { margin: 0; font-size: 20px; }
     main { padding: 20px 24px; display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
     section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
@@ -48,7 +48,7 @@
     .card button { margin-top: auto; }
     .songs-empty { color: #94a3b8; font-style: italic; margin-top: 8px; }
     @media (max-width: 900px) {
-      header { padding: 12px; flex-direction: column; align-items: flex-start; gap: 8px; }
+      header { padding: 12px 12px 0px; flex-direction: column; align-items: flex-start; gap: 8px; }
       h1 { font-size: 18px; }
       #statusText { display: none; }
       main { padding: 12px; grid-template-columns: 1fr; gap: 12px; }
@@ -64,7 +64,7 @@
   <header>
     <div style="display:flex;align-items:center;gap:10px;">
       <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
-      <h1>TikTok Battle Control</h1>
+      <h1>Battle Control</h1>
     </div>
     <div style="display:flex;align-items:center;gap:8px;">
       <div class="status"><span id="statusText">Connecting</span></div>
@@ -2193,20 +2193,11 @@
       const origin = (typeof window !== "undefined" && window.location && window.location.origin)
         ? window.location.origin
         : "";
-      if (!origin) return;
-      if (!window.StateWsHelper?.connect) return;
-      window.StateWsHelper.connect({
-        wsUrl: (origin.replace(/^http/,"ws")) + "/ws/state",
-        onConnected: () => {
-          const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");
-          if(d){d.style.background="#22c55e"; d.style.boxShadow="0 0 8px #22c55e";}
-          if(t) t.textContent="Live";
-        },
-        onDisconnected: () => {
-          const d=document.getElementById("wsDot"); const t=document.getElementById("statusText");
-          if(d){d.style.background="#ef4444"; d.style.boxShadow="0 0 8px #ef4444";}
-          if(t) t.textContent="Disconnected";
-        },
+      if (!window.PageShared?.connectWsStatus) return;
+      window.PageShared.connectWsStatus({
+        wsUrl: origin ? (origin.replace(/^http/,"ws")) + "/ws/state" : undefined,
+        connectedText: "Live",
+        disconnectedText: "Disconnected",
         onOpen: () => { refreshState(); },
         onWake: () => { refreshState(); },
         onState: (payload) => {
