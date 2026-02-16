@@ -25,6 +25,28 @@ from utils import (
 
 logger = logging.getLogger("tiktok-listener")
 
+_ROOM_UPDATE_STATE_FIELDS = (
+    "viewer_count_m_total",
+    "viewer_count_total_user",
+    "anonymous",
+    "contributors_count",
+    "rank_1_contributor_id",
+    "rank_1_contributor_username",
+    "rank_1_contributor_score",
+    "rank_2_contributor_id",
+    "rank_2_contributor_username",
+    "rank_2_contributor_score",
+    "rank_3_contributor_id",
+    "rank_3_contributor_username",
+    "rank_3_contributor_score",
+    "rank_4_contributor_id",
+    "rank_4_contributor_username",
+    "rank_4_contributor_score",
+    "rank_5_contributor_id",
+    "rank_5_contributor_username",
+    "rank_5_contributor_score",
+)
+
 
 class SupabaseEventStore:
     def __init__(self, url: str, key: str, debug: bool = False) -> None:
@@ -33,6 +55,9 @@ class SupabaseEventStore:
         self._client: Optional[httpx.AsyncClient] = None
         self._rest_url = ""
         self._raw_id_seq = int(time.time() * 1000) % 1000
+        # In-memory cache keyed by (tiktok_username, room_id) to skip unchanged
+        # room_update snapshots before write.
+        self._room_update_last_state = {}
         self._write_tiktok_events_raw = _env("SUPABASE_WRITE_TIKTOK_EVENTS_RAW", "").strip().lower() in {
             "1",
             "true",
@@ -155,6 +180,22 @@ class SupabaseEventStore:
         if not parts:
             return value
         return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+
+    def _room_update_partition_key(self, row_data: dict) -> tuple:
+        username = row_data.get("tiktok_username")
+        room_id = row_data.get("room_id")
+        try:
+            username = str(username).strip().lower() if username is not None else ""
+        except Exception:
+            username = ""
+        try:
+            room_id = str(room_id).strip() if room_id is not None else ""
+        except Exception:
+            room_id = ""
+        return (username, room_id)
+
+    def _room_update_state_tuple(self, row_data: dict) -> tuple:
+        return tuple(row_data.get(field) for field in _ROOM_UPDATE_STATE_FIELDS)
 
     async def log_competition_event(
         self,
@@ -913,6 +954,15 @@ class SupabaseEventStore:
                 }
             )
 
+        # Build rank lookup from contributor payload for rank_2..rank_5.
+        rank_lookup = {}
+        for item in m_contributors:
+            rank_val = self._to_int(item.get("mRank"))
+            if rank_val is None or rank_val < 1 or rank_val > 5:
+                continue
+            if rank_val not in rank_lookup:
+                rank_lookup[rank_val] = item
+
         def _rank_value(item) -> int:
             rank = self._to_int(_get_child(item, "mRank", "m_rank", "rank"))
             if rank is None:
@@ -925,6 +975,21 @@ class SupabaseEventStore:
             if _rank_value(top) >= 10**9:
                 top = contributors[0]
         top_user = _get_child(top, "mUser", "m_user", "user")
+
+        top_id = _get_child(top_user, "id", "user_id", "userId", "idStr")
+        top_username = _get_child(top_user, "username", "unique_id", "display_id", "userName")
+        top_score = _get_child(top, "mScore", "m_score", "score")
+
+        rank_1_fallback = rank_lookup.get(1, {})
+        rank_1 = {
+            "id": top_id if _is_valid_value(top_id) else rank_1_fallback.get("mUserId"),
+            "username": top_username if _is_valid_value(top_username) else rank_1_fallback.get("mUsername"),
+            "score": top_score if _is_valid_value(top_score) else rank_1_fallback.get("mScore"),
+        }
+        rank_2 = rank_lookup.get(2, {})
+        rank_3 = rank_lookup.get(3, {})
+        rank_4 = rank_lookup.get(4, {})
+        rank_5 = rank_lookup.get(5, {})
 
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
@@ -947,12 +1012,21 @@ class SupabaseEventStore:
             "viewer_count_total_user": _get_child(payload, "totalUser", "total_user"),
             "anonymous": _get_child(payload, "anonymous"),
             "contributors_count": len(m_contributors),
-            "m_contributors": m_contributors,
-            "top_contributor_id": _get_child(top_user, "id", "user_id", "userId", "idStr"),
-            "top_contributor_nickname": _get_child(top_user, "nickName", "nick_name", "nickname"),
-            "top_contributor_username": _get_child(top_user, "username", "unique_id", "display_id", "userName"),
-            "top_contributor_rank": _get_child(top, "mRank", "m_rank", "rank"),
-            "top_contributor_score": _get_child(top, "mScore", "m_score", "score"),
+            "rank_1_contributor_id": rank_1.get("id"),
+            "rank_1_contributor_username": rank_1.get("username"),
+            "rank_1_contributor_score": rank_1.get("score"),
+            "rank_2_contributor_id": rank_2.get("mUserId"),
+            "rank_2_contributor_username": rank_2.get("mUsername"),
+            "rank_2_contributor_score": rank_2.get("mScore"),
+            "rank_3_contributor_id": rank_3.get("mUserId"),
+            "rank_3_contributor_username": rank_3.get("mUsername"),
+            "rank_3_contributor_score": rank_3.get("mScore"),
+            "rank_4_contributor_id": rank_4.get("mUserId"),
+            "rank_4_contributor_username": rank_4.get("mUsername"),
+            "rank_4_contributor_score": rank_4.get("mScore"),
+            "rank_5_contributor_id": rank_5.get("mUserId"),
+            "rank_5_contributor_username": rank_5.get("mUsername"),
+            "rank_5_contributor_score": rank_5.get("mScore"),
             "tiktok_username": tiktok_username,
         }
         values = [_normalize_db_value(v) for v in row.values()]
@@ -962,8 +1036,6 @@ class SupabaseEventStore:
                     logger.debug("Supabase client unavailable; skipping room_update_events insert")
                     return
                 row_data = dict(zip(row.keys(), values))
-                # Keep json/jsonb fields as native JSON for PostgREST.
-                row_data["m_contributors"] = m_contributors
                 # Ensure numeric text is normalized for bigint/integer columns when present.
                 for key in (
                     "room_id",
@@ -972,18 +1044,37 @@ class SupabaseEventStore:
                     "viewer_count_m_total",
                     "viewer_count_total_user",
                     "anonymous",
-                    "top_contributor_id",
-                    "top_contributor_rank",
-                    "top_contributor_score",
+                    "rank_1_contributor_id",
+                    "rank_1_contributor_score",
+                    "rank_2_contributor_id",
+                    "rank_2_contributor_score",
+                    "rank_3_contributor_id",
+                    "rank_3_contributor_score",
+                    "rank_4_contributor_id",
+                    "rank_4_contributor_score",
+                    "rank_5_contributor_id",
+                    "rank_5_contributor_score",
                 ):
                     if key in row_data:
                         coerced = self._to_int(row_data.get(key))
                         if coerced is not None:
                             row_data[key] = coerced
-                # RoomUserSeq snapshots can legitimately repeat message_id values;
-                # always insert and let the table retain the full event stream.
+
+                partition_key = self._room_update_partition_key(row_data)
+                state_tuple = self._room_update_state_tuple(row_data)
+                if self._room_update_last_state.get(partition_key) == state_tuple:
+                    logger.debug(
+                        "Skipping unchanged room_update snapshot for @%s room_id=%s message_id=%s",
+                        row_data.get("tiktok_username"),
+                        row_data.get("room_id"),
+                        row_data.get("message_id"),
+                    )
+                    return
+
                 resp = await self._post_row("room_update_events", row_data)
                 self._log_result("room_update_events", "insert", resp)
+                if resp is not None and resp.is_success:
+                    self._room_update_last_state[partition_key] = state_tuple
             except Exception:
                 logger.exception("Failed to log room update event")
 
