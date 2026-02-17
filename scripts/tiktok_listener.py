@@ -901,15 +901,14 @@ class TikTokLiveListener:
                     recipient = self.username or ""
                 await self._score_gift(gift_value, recipient)
             if should_log:
-                if raw_id is not None:
-                    await self._event_store.log_gift(
-                        payload,
-                        event,
-                        self.username,
-                        gift_value_raw,
-                        gift_value_log_total,
-                        raw_id=raw_id,
-                    )
+                await self._event_store.log_gift(
+                    payload,
+                    event,
+                    self.username,
+                    gift_value_raw,
+                    gift_value_log_total,
+                    raw_id=raw_id,
+                )
             logger.info("Current battle score: %s", self._score_by_id)
 
         @self.client.on(ttevents.CommentEvent)
@@ -934,8 +933,7 @@ class TikTokLiveListener:
                 commenter = ""
             commenter = _format_handle(commenter, commenter)
             logger.info("Comment event: %s (by %s)", getattr(event, "comment", None), commenter or "unknown")
-            if raw_id is not None:
-                await self._event_store.log_comment(payload, event, self.username, raw_id=raw_id)
+            await self._event_store.log_comment(payload, event, self.username, raw_id=raw_id)
             text = event.comment or ""
             if text.startswith("!battle"):
                 await self.trigger_start("command")
@@ -985,8 +983,7 @@ class TikTokLiveListener:
                 return
             payload = _payload(event)
             raw_id = await self._raw_id_for_event(event, payload, "like")
-            if raw_id is not None:
-                await self._event_store.log_like(payload, event, self.username, raw_id=raw_id)
+            await self._event_store.log_like(payload, event, self.username, raw_id=raw_id)
             return
 
     async def trigger_start(self, reason: str) -> None:

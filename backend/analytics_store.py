@@ -197,7 +197,7 @@ class AnalyticsStore:
             "play_events",
             {
                 "select": "id,song_url,song_name,unix_ts,iso_ts,date,time,assigned_dancers,slot_one,slot_two,"
-                "score_slot_one,score_slot_two,battle_active,battle_mode,group_name,context",
+                "score_slot_one,score_slot_two,battle_active,battle_mode,group_name,tiktok_username,context",
                 "order": "id.desc",
                 "limit": limit,
                 "offset": offset,
@@ -224,6 +224,7 @@ class AnalyticsStore:
             "battle_active",
             "battle_mode",
             "group_name",
+            "tiktok_username",
             "context",
         ]
         rows = [header]
@@ -273,6 +274,7 @@ class AnalyticsStore:
         battle_active: bool,
         battle_mode: str,
         group_name: str,
+        tiktok_username: str,
         context: str,
         duration_sec: Optional[int],
         play_count: Optional[int] = None,
@@ -296,6 +298,7 @@ class AnalyticsStore:
             "battle_active": 1 if battle_active else 0,
             "battle_mode": battle_mode,
             "group_name": group_name,
+            "tiktok_username": tiktok_username,
             "context": context,
             "duration": duration_sec,
         }

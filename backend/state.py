@@ -606,6 +606,17 @@ class BattleStateManager:
                 score_one = int(self._state.scores.get("slot_one", 0))
                 score_two = int(self._state.scores.get("slot_two", 0))
                 points_count = int(self._state.points_counts.get(url, 0))
+                group_name = self._state.group_name or ""
+                group_key = group_name.strip().lower()
+                group_match = next(
+                    (
+                        d
+                        for d in (self._state.dancers or [])
+                        if (d.get("name") or "").strip().lower() == group_key
+                    ),
+                    None,
+                )
+                tiktok_username = str((group_match or {}).get("handle") or "").strip().lstrip("@")
                 self._analytics.increment_play(
                     url,
                     song_name,
@@ -620,7 +631,8 @@ class BattleStateManager:
                     score_two,
                     bool(self._state.active),
                     self._state.battle_mode,
-                    self._state.group_name or "",
+                    group_name,
+                    tiktok_username,
                     context,
                     duration_sec,
                     play_count=int(plays.get(url, 0)),
