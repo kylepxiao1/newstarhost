@@ -2,9 +2,11 @@ import asyncio
 import base64
 import json
 import logging
+import random
 import re
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import betterproto
@@ -47,6 +49,28 @@ _ROOM_UPDATE_STATE_FIELDS = (
     "rank_5_contributor_score",
 )
 
+_RETRYABLE_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+
+
+def _env_int(key: str, default: int) -> int:
+    value = _env(key, "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    value = _env(key, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
 
 class SupabaseEventStore:
     def __init__(self, url: str, key: str, debug: bool = False) -> None:
@@ -58,6 +82,22 @@ class SupabaseEventStore:
         # In-memory cache keyed by (tiktok_username, room_id) to skip unchanged
         # room_update snapshots before write.
         self._room_update_last_state = {}
+        self._post_retry_attempts = max(0, _env_int("SUPABASE_POST_RETRY_ATTEMPTS", 4))
+        self._post_retry_base_seconds = max(0.1, _env_float("SUPABASE_POST_RETRY_BASE_SECONDS", 0.5))
+        self._post_retry_max_seconds = max(
+            self._post_retry_base_seconds,
+            _env_float("SUPABASE_POST_RETRY_MAX_SECONDS", 10.0),
+        )
+        self._buffer_failed_rows = _env("SUPABASE_BUFFER_FAILED_ROWS", "1").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "y",
+            "on",
+        }
+        self._failed_rows_max = max(0, _env_int("SUPABASE_FAILED_ROWS_MAX", 2000))
+        self._failed_rows = []
+        self._failed_rows_file = _env("SUPABASE_FAILED_ROWS_FILE", "").strip()
         self._write_tiktok_events_raw = _env("SUPABASE_WRITE_TIKTOK_EVENTS_RAW", "").strip().lower() in {
             "1",
             "true",
@@ -76,7 +116,9 @@ class SupabaseEventStore:
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }
-        self._client = httpx.AsyncClient(base_url=self._rest_url, headers=headers, timeout=30.0)
+        timeout = httpx.Timeout(connect=8.0, read=30.0, write=30.0, pool=8.0)
+        limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
+        self._client = httpx.AsyncClient(base_url=self._rest_url, headers=headers, timeout=timeout, limits=limits)
         logger.info("Supabase REST client initialized for %s", self._rest_url)
         if self._write_tiktok_events_raw:
             logger.info("Supabase raw event writes enabled for tiktok_events_raw")
@@ -84,13 +126,107 @@ class SupabaseEventStore:
             logger.info(
                 "Supabase raw event writes disabled for tiktok_events_raw (set SUPABASE_WRITE_TIKTOK_EVENTS_RAW=1 to enable)"
             )
+        if self._buffer_failed_rows:
+            self._load_failed_rows_from_disk()
+            if self._failed_rows:
+                logger.warning("Loaded %s buffered Supabase row writes from disk", len(self._failed_rows))
 
-    async def _post_row(
+    def _retry_delay(self, attempt_idx: int) -> float:
+        delay = min(self._post_retry_base_seconds * (2 ** max(0, attempt_idx)), self._post_retry_max_seconds)
+        jitter = random.uniform(0.8, 1.2)
+        return max(0.1, delay * jitter)
+
+    def _load_failed_rows_from_disk(self) -> None:
+        if not self._failed_rows_file:
+            return
+        path = Path(self._failed_rows_file)
+        if not path.exists():
+            return
+        loaded = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    item = json.loads(line)
+                except Exception:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                table = item.get("table")
+                row_data = item.get("row_data")
+                if not isinstance(table, str) or not isinstance(row_data, dict):
+                    continue
+                loaded.append(
+                    {
+                        "table": table,
+                        "row_data": row_data,
+                        "on_conflict": item.get("on_conflict"),
+                        "prefer": item.get("prefer"),
+                        "retries": int(item.get("retries") or 0),
+                        "next_try_ts": float(item.get("next_try_ts") or 0),
+                    }
+                )
+            if loaded:
+                self._failed_rows.extend(loaded[-self._failed_rows_max :])
+        except Exception:
+            logger.exception("Failed to load buffered Supabase rows from %s", path)
+        finally:
+            try:
+                path.write_text("", encoding="utf-8")
+            except Exception:
+                logger.debug("Could not clear buffered Supabase rows file %s", path)
+
+    def _persist_failed_rows_to_disk(self) -> None:
+        if not self._failed_rows_file:
+            return
+        path = Path(self._failed_rows_file)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            lines = []
+            for item in self._failed_rows:
+                lines.append(
+                    _safe_json(
+                        {
+                            "table": item.get("table"),
+                            "row_data": item.get("row_data"),
+                            "on_conflict": item.get("on_conflict"),
+                            "prefer": item.get("prefer"),
+                            "retries": item.get("retries", 0),
+                            "next_try_ts": item.get("next_try_ts", 0),
+                        }
+                    )
+                )
+            path.write_text("\n".join(lines), encoding="utf-8")
+        except Exception:
+            logger.debug("Failed to persist buffered Supabase rows to %s", path)
+
+    def _queue_failed_row(self, table: str, row_data: dict, on_conflict: Optional[str], prefer: Optional[str]) -> None:
+        if not self._buffer_failed_rows or self._failed_rows_max <= 0:
+            return
+        safe_row = row_data.copy() if isinstance(row_data, dict) else {}
+        entry = {
+            "table": table,
+            "row_data": safe_row,
+            "on_conflict": on_conflict,
+            "prefer": prefer,
+            "retries": 0,
+            "next_try_ts": 0.0,
+        }
+        self._failed_rows.append(entry)
+        if len(self._failed_rows) > self._failed_rows_max:
+            self._failed_rows = self._failed_rows[-self._failed_rows_max :]
+        self._persist_failed_rows_to_disk()
+
+    async def _send_post_with_retry(
         self,
         table: str,
         row_data: dict,
-        on_conflict: Optional[str] = None,
-        prefer: Optional[str] = None,
+        on_conflict: Optional[str],
+        prefer: Optional[str],
+        *,
+        queue_on_failure: bool,
+        max_attempts: Optional[int] = None,
     ) -> Optional[httpx.Response]:
         if not self._client:
             return None
@@ -101,20 +237,125 @@ class SupabaseEventStore:
             prefer_header = "resolution=merge-duplicates,return=minimal"
         if prefer:
             prefer_header = prefer
-        if self._debug:
-            logger.debug(
-                "Supabase POST %s on_conflict=%s id=%s message_id=%s",
+
+        attempts = self._post_retry_attempts if max_attempts is None else max(0, int(max_attempts))
+        for attempt in range(attempts + 1):
+            try:
+                if self._debug:
+                    logger.debug(
+                        "Supabase POST %s on_conflict=%s id=%s message_id=%s attempt=%s/%s",
+                        table,
+                        on_conflict or "none",
+                        row_data.get("id"),
+                        row_data.get("message_id"),
+                        attempt + 1,
+                        attempts + 1,
+                    )
+                resp = await self._client.post(
+                    f"/{table}",
+                    params=params,
+                    json=row_data,
+                    headers={"Prefer": prefer_header},
+                )
+            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout) as exc:
+                if attempt < attempts:
+                    delay = self._retry_delay(attempt)
+                    logger.warning(
+                        "Supabase POST %s network error (%s); retrying in %.2fs (attempt %s/%s)",
+                        table,
+                        type(exc).__name__,
+                        delay,
+                        attempt + 1,
+                        attempts + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if queue_on_failure:
+                    self._queue_failed_row(table, row_data, on_conflict, prefer)
+                return None
+
+            if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < attempts:
+                delay = self._retry_delay(attempt)
+                logger.warning(
+                    "Supabase POST %s received status=%s; retrying in %.2fs (attempt %s/%s)",
+                    table,
+                    resp.status_code,
+                    delay,
+                    attempt + 1,
+                    attempts + 1,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            if not resp.is_success and resp.status_code in _RETRYABLE_STATUS_CODES and queue_on_failure:
+                self._queue_failed_row(table, row_data, on_conflict, prefer)
+            return resp
+
+        if queue_on_failure:
+            self._queue_failed_row(table, row_data, on_conflict, prefer)
+        return None
+
+    async def _replay_failed_rows(self, limit: int = 2) -> None:
+        if not self._buffer_failed_rows or not self._failed_rows or not self._client:
+            return
+        processed = 0
+        changed = False
+        now = time.time()
+        while self._failed_rows and processed < max(1, limit):
+            entry = self._failed_rows[0]
+            table = entry.get("table")
+            row_data = entry.get("row_data")
+            if not isinstance(table, str) or not isinstance(row_data, dict):
+                self._failed_rows.pop(0)
+                changed = True
+                continue
+            next_try_ts = float(entry.get("next_try_ts") or 0)
+            if next_try_ts > now:
+                break
+            resp = await self._send_post_with_retry(
                 table,
-                on_conflict or "none",
-                row_data.get("id"),
-                row_data.get("message_id"),
+                row_data,
+                entry.get("on_conflict"),
+                entry.get("prefer"),
+                queue_on_failure=False,
+                max_attempts=1,
             )
-        return await self._client.post(
-            f"/{table}",
-            params=params,
-            json=row_data,
-            headers={"Prefer": prefer_header},
+            processed += 1
+            if resp is not None and resp.is_success:
+                self._failed_rows.pop(0)
+                changed = True
+                continue
+            retries = int(entry.get("retries") or 0) + 1
+            entry["retries"] = retries
+            entry["next_try_ts"] = time.time() + self._retry_delay(retries)
+            self._failed_rows.pop(0)
+            self._failed_rows.append(entry)
+            changed = True
+            break
+        if changed:
+            self._persist_failed_rows_to_disk()
+
+    async def _post_row(
+        self,
+        table: str,
+        row_data: dict,
+        on_conflict: Optional[str] = None,
+        prefer: Optional[str] = None,
+    ) -> Optional[httpx.Response]:
+        if not self._client:
+            return None
+        if self._failed_rows:
+            await self._replay_failed_rows(limit=2)
+        resp = await self._send_post_with_retry(
+            table,
+            row_data,
+            on_conflict,
+            prefer,
+            queue_on_failure=True,
         )
+        if resp is not None and resp.is_success and self._failed_rows:
+            await self._replay_failed_rows(limit=1)
+        return resp
 
     def _log_result(self, table: str, action: str, resp: Optional[httpx.Response]) -> None:
         if resp is None:
