@@ -9,7 +9,7 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-INTERVAL="${TRENDBOT_INTERVAL:-86400}"
+INTERVAL="${TRENDBOT_INTERVAL:-43200}"
 CMD="${TRENDBOT_CMD:-python scripts/find_viral_trends.py --topic \"dance challenges\" --videos 120 --top 25 --browser webkit --api-max-attempts 5 --api-navigation-timeout-ms 10000 --discover-scroll-rounds 12 --discover-dances-videos 180 --topic-hashtag-pages 24 --topic-hashtag-video-samples 20 --topic-max-related-videos 400}"
 
 log() {

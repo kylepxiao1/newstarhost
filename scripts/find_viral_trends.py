@@ -99,6 +99,35 @@ TOPIC_EXPANSIONS: Dict[str, Set[str]] = {
         "kpopfyp",
         "kpopedit",
     },
+    "boygroup": {
+        "boygroup",
+        "boygroups",
+        "boygroupdance",
+        "boygroupchallenge",
+        "bgdance",
+        "bgchallenge",
+        "boygrouptrend",
+        "kpopboygroup",
+        "boygroupcover",
+    },
+    "boygroups": {
+        "boygroup",
+        "boygroups",
+        "boygroupdance",
+        "boygroupchallenge",
+        "bgdance",
+        "bgchallenge",
+        "boygrouptrend",
+        "kpopboygroup",
+        "boygroupcover",
+    },
+    "bg": {
+        "bgdance",
+        "bgchallenge",
+        "boygroup",
+        "boygroupdance",
+        "boygroupchallenge",
+    },
     "fitness": {
         "fitness",
         "workout",
@@ -139,9 +168,22 @@ TOPIC_EXPANSIONS: Dict[str, Set[str]] = {
     },
 }
 
+BOYGROUP_DANCE_CHALLENGE_TERMS: Set[str] = {
+    "boygroup",
+    "boygroups",
+    "boygroupdance",
+    "boygroupchallenge",
+    "bgdance",
+    "bgchallenge",
+    "kpopboygroup",
+    "boygroupcover",
+}
+
 VERBOSE_PROGRESS = True
 VERBOSE_PROGRESS_INTERVAL_SECONDS = 20.0
 _VERBOSE_PROGRESS_LAST: Dict[str, float] = {}
+DISCOVER_NO_VIDEO_LINKS_ERROR = "no /video/ links found on rendered Discover page"
+EARLY_BLOCK_ABORT_ATTEMPTS = 2
 
 
 def set_progress_logging(enabled: bool, interval_seconds: float) -> None:
@@ -164,6 +206,33 @@ def progress_log(message: str, key: str = "", force: bool = False) -> None:
         _VERBOSE_PROGRESS_LAST[key] = now_monotonic
     utc_stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{utc_stamp} UTC] [progress] {safe_console_text(message)}", flush=True)
+
+
+def is_tiktokapi_session_block_error(message: Any) -> bool:
+    text = str(message or "").lower()
+    if not text:
+        return False
+    indicators = (
+        "failed to create minimum required sessions",
+        "page.goto: timeout",
+        "timeout 30000ms exceeded",
+        "timeout 10000ms exceeded",
+        "timeout",
+        "emptyresponseexception",
+        "zero videos returned",
+        "they are detecting you're a bot",
+        "device_blocked",
+        "rate_limit",
+        "too many connections",
+    )
+    return any(marker in text for marker in indicators)
+
+
+def is_discover_no_video_links_error(message: Any) -> bool:
+    text = str(message or "").lower()
+    if not text:
+        return False
+    return DISCOVER_NO_VIDEO_LINKS_ERROR.lower() in text
 
 
 @dataclass
@@ -666,6 +735,33 @@ def build_topic_terms(topic: str, extra_terms_csv: str = "") -> Set[str]:
         cleaned = clean_hashtag(raw)
         if cleaned:
             terms.add(cleaned)
+
+    token_set = set(base_tokens)
+    has_dance_context = bool(
+        token_set.intersection(
+            {
+                "dance",
+                "dancing",
+                "dancer",
+                "dancechallenge",
+                "dancechallenges",
+            }
+        )
+    )
+    has_challenge_context = bool(
+        token_set.intersection(
+            {
+                "challenge",
+                "challenges",
+                "dancechallenge",
+                "dancechallenges",
+                "viralchallenge",
+                "openchallenge",
+            }
+        )
+    )
+    if has_dance_context and has_challenge_context:
+        terms.update(BOYGROUP_DANCE_CHALLENGE_TERMS)
 
     return {term for term in terms if term and len(term) >= 2}
 
@@ -1558,7 +1654,7 @@ async def fetch_discover_video_urls_once(
 
     if not urls:
         progress_log(f"Discover attempt ended with zero urls: {discover_url}", force=True)
-        return [], "no /video/ links found on rendered Discover page"
+        return [], DISCOVER_NO_VIDEO_LINKS_ERROR
     progress_log(f"Discover attempt success: {discover_url} urls={len(urls)}", force=True)
     return urls, None
 
@@ -1580,6 +1676,9 @@ async def fetch_discover_video_urls(
         max_attempts=max_attempts,
     )
     attempt_errors: List[str] = []
+    no_video_link_failures = 0
+    block_signature_failures = 0
+    raw_html_fallback_attempted = False
 
     for attempt_index, (attempt_browser, attempt_headless) in enumerate(strategies, start=1):
         progress_log(
@@ -1603,13 +1702,70 @@ async def fetch_discover_video_urls(
                 force=True,
             )
             return urls, None
+        reason = error or "unknown"
         attempt_errors.append(
-            f"attempt {attempt_index} ({attempt_browser}, headless={attempt_headless}) failed: {error or 'unknown'}"
+            f"attempt {attempt_index} ({attempt_browser}, headless={attempt_headless}) failed: {reason}"
         )
         progress_log(
-            f"Discover retries failed attempt {attempt_index}: {discover_url} reason={error or 'unknown'}",
+            f"Discover retries failed attempt {attempt_index}: {discover_url} reason={reason}",
             force=True,
         )
+        if is_discover_no_video_links_error(reason):
+            no_video_link_failures += 1
+            if not raw_html_fallback_attempted:
+                raw_html_fallback_attempted = True
+                progress_log(
+                    f"Discover raw-html fallback fetch start: {discover_url}",
+                    force=True,
+                )
+                try:
+                    response = requests.get(
+                        discover_url,
+                        headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
+                        timeout=20,
+                    )
+                    if response.status_code == 200:
+                        fallback_urls = extract_discover_video_urls_from_html(
+                            html=response.text,
+                            max_urls=max(1, max_urls),
+                        )
+                        progress_log(
+                            f"Discover raw-html fallback parsed: {discover_url} urls={len(fallback_urls)}",
+                            force=True,
+                        )
+                        if fallback_urls:
+                            return fallback_urls, None
+                        attempt_errors.append(
+                            f"raw-html fallback ({discover_url}) found zero /video/ links"
+                        )
+                    else:
+                        attempt_errors.append(
+                            f"raw-html fallback ({discover_url}) returned status {response.status_code}"
+                        )
+                except Exception as exc:
+                    attempt_errors.append(
+                        f"raw-html fallback ({discover_url}) failed: {type(exc).__name__}: {exc}"
+                    )
+            if no_video_link_failures >= EARLY_BLOCK_ABORT_ATTEMPTS:
+                attempt_errors.append(
+                    "stopped Discover retries early after repeated no-video-link responses"
+                )
+                progress_log(
+                    "Discover retries early-stop: repeated no-video-link responses",
+                    force=True,
+                )
+                break
+        elif is_tiktokapi_session_block_error(reason):
+            block_signature_failures += 1
+            if block_signature_failures >= EARLY_BLOCK_ABORT_ATTEMPTS:
+                attempt_errors.append(
+                    "stopped Discover retries early after repeated timeout/block signatures"
+                )
+                progress_log(
+                    "Discover retries early-stop: repeated timeout/block signatures",
+                    force=True,
+                )
+                break
 
     return [], "Discover page scrape failed across retries: " + " | ".join(attempt_errors)
 
@@ -1807,6 +1963,7 @@ async def fetch_tiktokapi_signals(
         force=True,
     )
     attempt_errors: List[str] = []
+    block_signature_failures = 0
     for attempt_index, (attempt_browser, attempt_headless) in enumerate(strategies, start=1):
         progress_log(
             f"TikTokApi attempt {attempt_index}/{len(strategies)} starting: "
@@ -1848,6 +2005,17 @@ async def fetch_tiktokapi_signals(
                 f"TikTokApi attempt {attempt_index} failed: {reason}",
                 force=True,
             )
+            if is_tiktokapi_session_block_error(reason):
+                block_signature_failures += 1
+                if block_signature_failures >= EARLY_BLOCK_ABORT_ATTEMPTS:
+                    attempt_errors.append(
+                        "stopped retries early after repeated TikTokApi timeout/session-block signatures"
+                    )
+                    progress_log(
+                        "TikTokApi retries early-stop: repeated timeout/session-block signatures",
+                        force=True,
+                    )
+                    break
 
     return {}, {}, "TikTokApi trend feed failed across retries: " + " | ".join(attempt_errors)
 
@@ -1897,6 +2065,7 @@ async def fetch_topic_seed_signals(
         force=True,
     )
     attempt_errors: List[str] = []
+    block_signature_failures = 0
 
     for attempt_index, (attempt_browser, attempt_headless) in enumerate(strategies, start=1):
         signals: Dict[str, HashtagSignal] = {}
@@ -2029,13 +2198,25 @@ async def fetch_topic_seed_signals(
                     force=True,
                 )
         except Exception as exc:
+            reason = f"{type(exc).__name__}: {exc}"
             attempt_errors.append(
-                f"attempt {attempt_index} ({attempt_browser}, headless={attempt_headless}) failed: {type(exc).__name__}: {exc}"
+                f"attempt {attempt_index} ({attempt_browser}, headless={attempt_headless}) failed: {reason}"
             )
             progress_log(
-                f"Topic seed attempt {attempt_index} exception: {type(exc).__name__}: {exc}",
+                f"Topic seed attempt {attempt_index} exception: {reason}",
                 force=True,
             )
+            if is_tiktokapi_session_block_error(reason):
+                block_signature_failures += 1
+                if block_signature_failures >= EARLY_BLOCK_ABORT_ATTEMPTS:
+                    attempt_errors.append(
+                        "stopped topic-seed retries early after repeated timeout/session-block signatures"
+                    )
+                    progress_log(
+                        "Topic seed retries early-stop: repeated timeout/session-block signatures",
+                        force=True,
+                    )
+                    break
 
     return {}, {}, "Topic seed lookup failed across retries: " + " | ".join(attempt_errors)
 
@@ -3437,6 +3618,14 @@ def parse_args(default_history: Path, default_output: Path) -> argparse.Namespac
         help="If no emerging topic hashtags are found, still show stable/watch topic matches.",
     )
     parser.add_argument(
+        "--force-topic-seed-when-api-blocked",
+        action="store_true",
+        help=(
+            "Still run TikTokApi topic-seed lookups even when trend-feed startup appears blocked. "
+            "Default behavior skips seed retries in this case to avoid long stalls."
+        ),
+    )
+    parser.add_argument(
         "--locale",
         default="en",
         help="Creative Center locale path, e.g. en, fr, es.",
@@ -3804,6 +3993,7 @@ def main() -> None:
             force=True,
         )
 
+    api_blocked = False
     if not args.no_api:
         progress_log("Starting TikTokApi trend feed scan...", force=True)
         api_started = time.monotonic()
@@ -3826,6 +4016,8 @@ def main() -> None:
         )
         if api_error:
             source_errors.append(api_error)
+            if is_tiktokapi_session_block_error(api_error):
+                api_blocked = True
         if api_signals:
             source_status["tiktok_api"] = True
             merge_signals(combined_signals, api_signals)
@@ -3840,40 +4032,49 @@ def main() -> None:
         )
 
         if topic_terms:
-            progress_log("Starting TikTokApi topic seed scan...", force=True)
-            seed_started = time.monotonic()
-            seed_signals, seed_song_signals, seed_error = asyncio.run(
-                fetch_topic_seed_signals(
-                    repo_root=repo_root,
-                    topic_terms=topic_terms,
-                    candidate_terms=topic_candidates,
-                    browser=args.browser,
-                    headless=effective_headless,
-                    api_navigation_timeout_ms=api_navigation_timeout_ms,
-                    max_attempts=max(1, args.api_max_attempts),
-                    cookies=cookie_dict or None,
-                    headful_wait_seconds=effective_headful_wait_seconds,
-                    seed_limit=max(1, args.topic_seed_limit),
-                    lookup_delay=max(0.0, args.lookup_delay),
-                    proxy=proxy_config,
-                    topic_video_samples=max(0, args.topic_video_samples),
-                    max_video_age_hours=max_video_age_hours,
+            skip_topic_seed_due_to_api_block = api_blocked and not args.force_topic_seed_when_api_blocked
+            if skip_topic_seed_due_to_api_block:
+                note = (
+                    "Skipping TikTokApi topic seed scan because trend-feed session bootstrap appears blocked; "
+                    "relying on Discover/Creative Center topic sources."
                 )
-            )
-            if seed_error:
-                source_notes.append(seed_error)
-            if seed_signals:
-                source_status["tiktok_api"] = True
-                merge_signals(combined_signals, seed_signals)
-            if seed_song_signals:
-                source_status["tiktok_api"] = True
-                merge_song_signals(combined_song_signals, seed_song_signals)
-            progress_log(
-                "TikTokApi topic seed scan complete: "
-                f"hashtags={len(seed_signals)} songs={len(seed_song_signals)} "
-                f"elapsed={time.monotonic() - seed_started:.1f}s",
-                force=True,
-            )
+                source_notes.append(note)
+                progress_log(note, force=True)
+            else:
+                progress_log("Starting TikTokApi topic seed scan...", force=True)
+                seed_started = time.monotonic()
+                seed_signals, seed_song_signals, seed_error = asyncio.run(
+                    fetch_topic_seed_signals(
+                        repo_root=repo_root,
+                        topic_terms=topic_terms,
+                        candidate_terms=topic_candidates,
+                        browser=args.browser,
+                        headless=effective_headless,
+                        api_navigation_timeout_ms=api_navigation_timeout_ms,
+                        max_attempts=max(1, args.api_max_attempts),
+                        cookies=cookie_dict or None,
+                        headful_wait_seconds=effective_headful_wait_seconds,
+                        seed_limit=max(1, args.topic_seed_limit),
+                        lookup_delay=max(0.0, args.lookup_delay),
+                        proxy=proxy_config,
+                        topic_video_samples=max(0, args.topic_video_samples),
+                        max_video_age_hours=max_video_age_hours,
+                    )
+                )
+                if seed_error:
+                    source_notes.append(seed_error)
+                if seed_signals:
+                    source_status["tiktok_api"] = True
+                    merge_signals(combined_signals, seed_signals)
+                if seed_song_signals:
+                    source_status["tiktok_api"] = True
+                    merge_song_signals(combined_song_signals, seed_song_signals)
+                progress_log(
+                    "TikTokApi topic seed scan complete: "
+                    f"hashtags={len(seed_signals)} songs={len(seed_song_signals)} "
+                    f"elapsed={time.monotonic() - seed_started:.1f}s",
+                    force=True,
+                )
 
     if not combined_signals:
         print("No trend signals could be collected.")
@@ -4119,6 +4320,8 @@ def main() -> None:
             "topic_max_related_videos": max(1, args.topic_max_related_videos),
             "music_related_video_samples": max(0, args.music_related_video_samples),
             "allow_broad_song_fallback": bool(args.allow_broad_song_fallback),
+            "api_blocked": bool(api_blocked),
+            "force_topic_seed_when_api_blocked": bool(args.force_topic_seed_when_api_blocked),
         },
         "supabase_upload": supabase_upload_summary,
         "topic": {
