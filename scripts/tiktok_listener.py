@@ -7,7 +7,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from http.cookiejar import MozillaCookieJar
 from pathlib import Path
-from typing import Optional
+from typing import Awaitable, Callable, Optional
 
 import httpx
 from TikTokLive import TikTokLiveClient
@@ -33,6 +33,26 @@ def _env_flag(key: str, default: bool = False) -> bool:
     if not value:
         return default
     return value in {"1", "true", "yes", "y", "on"}
+
+
+def _env_int(key: str, default: int) -> int:
+    value = _env(key, "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _env_float(key: str, default: float) -> float:
+    value = _env(key, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
 
 API_BASE = _env("BATTLE_API")
 TIKTOK_USERNAMES = _env("TIKTOK_USERNAMES")
@@ -295,6 +315,16 @@ class TikTokLiveListener:
         self._last_live_status: Optional[bool] = None
         self._cookies = _gather_tiktok_cookies()
         self._device_id = _load_device_id()
+        self._store_queue_max = max(100, _env_int("TIKTOK_EVENT_STORE_QUEUE_MAX", 10000))
+        self._store_worker_count = max(1, _env_int("TIKTOK_EVENT_STORE_WORKERS", 1))
+        self._store_flush_timeout_seconds = max(
+            1.0, _env_float("TIKTOK_EVENT_STORE_FLUSH_TIMEOUT_SECONDS", 20.0)
+        )
+        self._store_queue: asyncio.Queue = asyncio.Queue(maxsize=self._store_queue_max)
+        self._store_workers: list[asyncio.Task] = []
+        self._store_workers_started = False
+        self._store_backpressure_hits = 0
+        self._last_store_backpressure_log = datetime.min.replace(tzinfo=timezone.utc)
 
         # Apply signer defaults if available
         if WebDefaults:
@@ -336,6 +366,101 @@ class TikTokLiveListener:
             self._device_id = pinned
             _persist_device_id(pinned)
         self._wire_events()
+
+    async def _start_store_workers(self) -> None:
+        if self._store_workers_started:
+            return
+        self._store_workers_started = True
+        for index in range(self._store_worker_count):
+            task = asyncio.create_task(
+                self._store_worker_loop(index + 1),
+                name=f"store-worker-{self.username}-{index + 1}",
+            )
+            self._store_workers.append(task)
+        logger.info(
+            "Started %s event-store worker(s) for @%s (queue_max=%s)",
+            self._store_worker_count,
+            self.username,
+            self._store_queue_max,
+        )
+
+    async def _store_worker_loop(self, worker_id: int) -> None:
+        while True:
+            item = await self._store_queue.get()
+            if item is None:
+                self._store_queue.task_done()
+                return
+            label, coro_factory = item
+            try:
+                await coro_factory()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception(
+                    "Event-store worker %s for @%s failed while processing %s",
+                    worker_id,
+                    self.username,
+                    label,
+                )
+            finally:
+                self._store_queue.task_done()
+
+    async def _enqueue_store_call(
+        self,
+        label: str,
+        coro_factory: Callable[[], Awaitable[None]],
+    ) -> None:
+        await self._start_store_workers()
+        item = (label, coro_factory)
+        try:
+            self._store_queue.put_nowait(item)
+            return
+        except asyncio.QueueFull:
+            pass
+
+        self._store_backpressure_hits += 1
+        now = datetime.now(timezone.utc)
+        if (now - self._last_store_backpressure_log) >= timedelta(seconds=30):
+            self._last_store_backpressure_log = now
+            logger.warning(
+                "Event-store queue backpressure for @%s (size=%s/%s, hits=%s). Waiting for capacity.",
+                self.username,
+                self._store_queue.qsize(),
+                self._store_queue_max,
+                self._store_backpressure_hits,
+            )
+        await self._store_queue.put(item)
+
+    async def _flush_store_queue(self) -> None:
+        if not self._store_workers_started:
+            return
+        queue_size = self._store_queue.qsize()
+        if queue_size <= 0:
+            return
+        try:
+            await asyncio.wait_for(
+                self._store_queue.join(),
+                timeout=self._store_flush_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "Timed out flushing event-store queue for @%s (remaining=%s).",
+                self.username,
+                self._store_queue.qsize(),
+            )
+
+    async def _stop_store_workers(self) -> None:
+        if not self._store_workers_started:
+            return
+        workers = list(self._store_workers)
+        for _ in workers:
+            await self._store_queue.put(None)
+        results = await asyncio.gather(*workers, return_exceptions=True)
+        for result in results:
+            if isinstance(result, Exception) and not isinstance(result, asyncio.CancelledError):
+                logger.warning("Event-store worker exited with error for @%s: %s", self.username, result)
+        self._store_workers.clear()
+        self._store_workers_started = False
 
     def _patch_broken_event_mappings(self) -> None:
         """
@@ -693,10 +818,14 @@ class TikTokLiveListener:
             event_type = self._raw_event_type_from_method(method, event.type or "websocket")
             raw_id = await self._log_raw_event(event_type, payload)
             if method == "WebcastCompetitionMessage":
-                await self._event_store.log_competition_event(
-                    payload=payload if isinstance(payload, dict) else {},
-                    tiktok_username=self.username,
-                    raw_id=raw_id,
+                payload_dict = payload if isinstance(payload, dict) else {}
+                await self._enqueue_store_call(
+                    "competition_events",
+                    lambda: self._event_store.log_competition_event(
+                        payload=payload_dict,
+                        tiktok_username=self.username,
+                        raw_id=raw_id,
+                    ),
                 )
 
         @self.client.on(ttevents.ConnectEvent)
@@ -901,13 +1030,16 @@ class TikTokLiveListener:
                     recipient = self.username or ""
                 await self._score_gift(gift_value, recipient)
             if should_log:
-                await self._event_store.log_gift(
-                    payload,
-                    event,
-                    self.username,
-                    gift_value_raw,
-                    gift_value_log_total,
-                    raw_id=raw_id,
+                await self._enqueue_store_call(
+                    "gift_events",
+                    lambda: self._event_store.log_gift(
+                        payload,
+                        event,
+                        self.username,
+                        gift_value_raw,
+                        gift_value_log_total,
+                        raw_id=raw_id,
+                    ),
                 )
             logger.info("Current battle score: %s", self._score_by_id)
 
@@ -933,7 +1065,10 @@ class TikTokLiveListener:
                 commenter = ""
             commenter = _format_handle(commenter, commenter)
             logger.info("Comment event: %s (by %s)", getattr(event, "comment", None), commenter or "unknown")
-            await self._event_store.log_comment(payload, event, self.username, raw_id=raw_id)
+            await self._enqueue_store_call(
+                "comment_events",
+                lambda: self._event_store.log_comment(payload, event, self.username, raw_id=raw_id),
+            )
             text = event.comment or ""
             if text.startswith("!battle"):
                 await self.trigger_start("command")
@@ -951,7 +1086,10 @@ class TikTokLiveListener:
                 return
             payload = _payload(event)
             raw_id = await self._raw_id_for_event(event, payload, "join")
-            await self._event_store.log_join(payload, event, self.username, raw_id=raw_id)
+            await self._enqueue_store_call(
+                "join_events",
+                lambda: self._event_store.log_join(payload, event, self.username, raw_id=raw_id),
+            )
 
         @self.client.on(ttevents.RoomUserSeqEvent)
         async def on_room_user_seq(event: ttevents.RoomUserSeqEvent) -> None:
@@ -959,7 +1097,10 @@ class TikTokLiveListener:
                 return
             payload = _payload(event)
             raw_id = await self._raw_id_for_event(event, payload, "room_update")
-            await self._event_store.log_room_update(payload, event, self.username, raw_id=raw_id)
+            await self._enqueue_store_call(
+                "room_update_events",
+                lambda: self._event_store.log_room_update(payload, event, self.username, raw_id=raw_id),
+            )
 
         @self.client.on(ttevents.GoalUpdateEvent)
         async def on_goal_update(event: ttevents.GoalUpdateEvent) -> None:
@@ -967,7 +1108,10 @@ class TikTokLiveListener:
                 return
             payload = _payload(event)
             raw_id = await self._raw_id_for_event(event, payload, "goal_update")
-            await self._event_store.log_goal_update(payload, event, self.username, raw_id=raw_id)
+            await self._enqueue_store_call(
+                "goal_update_events",
+                lambda: self._event_store.log_goal_update(payload, event, self.username, raw_id=raw_id),
+            )
 
         @self.client.on(ttevents.SocialEvent)
         async def on_social(event: ttevents.SocialEvent) -> None:
@@ -975,7 +1119,10 @@ class TikTokLiveListener:
                 return
             payload = _payload(event)
             raw_id = await self._raw_id_for_event(event, payload, "social")
-            await self._event_store.log_social(payload, event, self.username, raw_id=raw_id)
+            await self._enqueue_store_call(
+                "social_events",
+                lambda: self._event_store.log_social(payload, event, self.username, raw_id=raw_id),
+            )
 
         @self.client.on(ttevents.LikeEvent)
         async def on_like(event: ttevents.LikeEvent) -> None:
@@ -983,7 +1130,10 @@ class TikTokLiveListener:
                 return
             payload = _payload(event)
             raw_id = await self._raw_id_for_event(event, payload, "like")
-            await self._event_store.log_like(payload, event, self.username, raw_id=raw_id)
+            await self._enqueue_store_call(
+                "like_events",
+                lambda: self._event_store.log_like(payload, event, self.username, raw_id=raw_id),
+            )
             return
 
     async def trigger_start(self, reason: str) -> None:
@@ -1078,6 +1228,7 @@ class TikTokLiveListener:
 
     async def run(self) -> None:
         backoff = self._base_backoff
+        await self._start_store_workers()
         while True:
             live_status = await self._check_live_status()
             if live_status is False:
@@ -1182,6 +1333,8 @@ class TikTokLiveListener:
             return False
 
     async def close(self) -> None:
+        await self._flush_store_queue()
+        await self._stop_store_workers()
         try:
             await self.client.disconnect()
         except Exception:

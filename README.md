@@ -10,6 +10,7 @@ Windows-first control stack for automated TikTok LIVE battles. FastAPI backend o
 - `scripts/tiktok_listener.py` - TikTok LIVE automation listener.
 - `scripts/virtual_cam_compositor.py` - Lightweight virtual camera compositor (no OBS; overlays + camera into a virtual cam).
 - `scripts/run_all.py` - One-shot launcher for backend + virtual cam compositor.
+- `scripts/find_viral_trends.py` - Public-data TikTok topic trend/song radar with optional Supabase upload.
 - `requirements.txt` - Python dependencies.
 
 ## Quick Start (Windows)
@@ -89,6 +90,19 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 - Uses native events: `LinkMicBattleEvent` to start battles, `LinkMicArmiesEvent` to track scores, heuristics as backup.
 - Calls backend: `/battle/start`, `/battle/end`, `/battle/slots/import`, `/score/.../add`.
 
+## Viral Trend Radar
+`scripts/find_viral_trends.py` collects topic-relevant TikTok trend signals from publicly available sources and extracts song-linked trend candidates.
+
+Example:
+```powershell
+.\.venv\Scripts\python.exe scripts\find_viral_trends.py --topic "dance challenges" --videos 120 --top 25
+```
+
+Notes:
+- Browser scraping is enforced headless for all runs.
+- Videos older than 365 days are excluded by default (`--max-video-age-days` to change, `0` to disable).
+- Topic song rows can be upserted to Supabase `topic_trends` (disable with `--no-supabase-upload`).
+
 ### Fly.io Listener Machine
 Useful commands when running the listener on Fly.io:
 ```powershell
@@ -113,6 +127,20 @@ flyctl ssh sftp get -a newstarhost /path/on/machine/filename.ext C:\path\to\loca
 
 # Upload a file to the machine (one-shot)
 flyctl ssh sftp put -a newstarhost C:\path\to\local\file.ext /path/on/machine/file.ext
+```
+
+### Fly.io Trendbot Worker
+- `fly.toml` runs:
+  - `app` process: backend + `scripts/s3_sync.sh`
+  - `trendbot` process: `scripts/trendbot.sh` (separate process group)
+- The `/app/media` Fly volume is scoped to `app` machines only.
+- `scripts/trendbot.sh` defaults:
+  - `TRENDBOT_INTERVAL=86400` (24 hours)
+  - `TRENDBOT_CMD='python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --api-max-attempts 5'`
+- Optional env file for trendbot: `TRENDBOT_ENV_FILE` (default `/app/app.env`).
+- Scale process groups explicitly:
+```powershell
+fly scale count app=1 listener=1 trendbot=1 -a newstarhost
 ```
 
 ## Audio Routing (Windows)
