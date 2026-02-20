@@ -315,10 +315,10 @@ class TikTokLiveListener:
         self._last_live_status: Optional[bool] = None
         self._cookies = _gather_tiktok_cookies()
         self._device_id = _load_device_id()
-        self._store_queue_max = max(100, _env_int("TIKTOK_EVENT_STORE_QUEUE_MAX", 10000))
-        self._store_worker_count = max(1, _env_int("TIKTOK_EVENT_STORE_WORKERS", 1))
+        self._store_queue_max = max(100, _env_int("TIKTOK_EVENT_STORE_QUEUE_MAX", 20000))
+        self._store_worker_count = max(1, _env_int("TIKTOK_EVENT_STORE_WORKERS", 3))
         self._store_flush_timeout_seconds = max(
-            1.0, _env_float("TIKTOK_EVENT_STORE_FLUSH_TIMEOUT_SECONDS", 20.0)
+            1.0, _env_float("TIKTOK_EVENT_STORE_FLUSH_TIMEOUT_SECONDS", 120.0)
         )
         self._store_queue: asyncio.Queue = asyncio.Queue(maxsize=self._store_queue_max)
         self._store_workers: list[asyncio.Task] = []

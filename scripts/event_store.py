@@ -74,7 +74,11 @@ def _env_float(key: str, default: float) -> float:
 
 class SupabaseEventStore:
     def __init__(self, url: str, key: str, debug: bool = False) -> None:
-        self._lock = asyncio.Lock()
+        self._max_concurrent_writes = max(1, _env_int("SUPABASE_MAX_CONCURRENT_WRITES", 8))
+        # Shared gate for write throughput. A semaphore prevents one slow stream
+        # from serializing all writes when multiple listeners are active.
+        self._lock = asyncio.Semaphore(self._max_concurrent_writes)
+        self._replay_lock = asyncio.Lock()
         self._debug = debug
         self._client: Optional[httpx.AsyncClient] = None
         self._rest_url = ""
@@ -116,10 +120,11 @@ class SupabaseEventStore:
             "Authorization": f"Bearer {key}",
             "Content-Type": "application/json",
         }
-        timeout = httpx.Timeout(connect=8.0, read=30.0, write=30.0, pool=8.0)
-        limits = httpx.Limits(max_keepalive_connections=20, max_connections=100)
+        timeout = httpx.Timeout(connect=12.0, read=30.0, write=30.0, pool=12.0)
+        limits = httpx.Limits(max_keepalive_connections=40, max_connections=120)
         self._client = httpx.AsyncClient(base_url=self._rest_url, headers=headers, timeout=timeout, limits=limits)
         logger.info("Supabase REST client initialized for %s", self._rest_url)
+        logger.info("Supabase write concurrency=%s", self._max_concurrent_writes)
         if self._write_tiktok_events_raw:
             logger.info("Supabase raw event writes enabled for tiktok_events_raw")
         else:
@@ -351,8 +356,6 @@ class SupabaseEventStore:
     ) -> Optional[httpx.Response]:
         if not self._client:
             return None
-        if self._failed_rows:
-            await self._replay_failed_rows(limit=2)
         resp = await self._send_post_with_retry(
             table,
             row_data,
@@ -360,8 +363,11 @@ class SupabaseEventStore:
             prefer,
             queue_on_failure=True,
         )
+        # Keep fresh/live rows first; replay backlog opportunistically afterward.
         if resp is not None and resp.is_success and self._failed_rows:
-            await self._replay_failed_rows(limit=1)
+            async with self._replay_lock:
+                if self._failed_rows:
+                    await self._replay_failed_rows(limit=1)
         return resp
 
     def _log_result(self, table: str, action: str, resp: Optional[httpx.Response]) -> None:
