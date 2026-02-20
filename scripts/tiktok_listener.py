@@ -658,6 +658,11 @@ class TikTokLiveListener:
         self._next_live_check_at = time.monotonic() + max(1.0, float(delay))
         return delay
 
+    def _force_live_recheck(self) -> None:
+        # Ensure next loop iteration uses client.is_live() immediately.
+        self._last_live_status = None
+        self._next_live_check_at = 0.0
+
     async def _check_live_status(self) -> Optional[bool]:
         now = time.monotonic()
         if now < self._next_live_check_at:
@@ -845,6 +850,7 @@ class TikTokLiveListener:
         @self.client.on(ttevents.DisconnectEvent)
         async def on_disconnect(_: ttevents.DisconnectEvent) -> None:
             logger.warning("Disconnected from TikTok LIVE. Reconnecting...")
+            self._force_live_recheck()
 
         @self.client.on(ttevents.GiftEvent)
         async def on_gift(event: ttevents.GiftEvent) -> None:
@@ -1317,6 +1323,9 @@ class TikTokLiveListener:
                     await self.client.disconnect()
                 except Exception:
                     pass
+                # After any disconnect, re-enter live polling before attempting
+                # another websocket connect for this account.
+                self._force_live_recheck()
             try:
                 await self._sleep_with_jitter(backoff)
             except (asyncio.CancelledError, KeyboardInterrupt):
