@@ -257,7 +257,7 @@ class SupabaseEventStore:
                     json=row_data,
                     headers={"Prefer": prefer_header},
                 )
-            except (httpx.ConnectTimeout, httpx.ConnectError, httpx.PoolTimeout) as exc:
+            except httpx.TransportError as exc:
                 if attempt < attempts:
                     delay = self._retry_delay(attempt)
                     logger.warning(
@@ -272,6 +272,13 @@ class SupabaseEventStore:
                     continue
                 if queue_on_failure:
                     self._queue_failed_row(table, row_data, on_conflict, prefer)
+                logger.warning(
+                    "Supabase POST %s network error (%s) after %s attempts; row buffered=%s",
+                    table,
+                    type(exc).__name__,
+                    attempts + 1,
+                    bool(queue_on_failure and self._buffer_failed_rows),
+                )
                 return None
 
             if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < attempts:
