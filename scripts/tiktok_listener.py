@@ -54,7 +54,6 @@ def _env_float(key: str, default: float) -> float:
     except Exception:
         return default
 
-API_BASE = _env("BATTLE_API")
 TIKTOK_USERNAMES = _env("TIKTOK_USERNAMES")
 LOG_FILE = _env("LOG_FILE")
 EULERSTREAM_API_KEY = _env("EULERSTREAM_API_KEY")
@@ -65,8 +64,6 @@ TIKTOK_DEVICE_ID_FILE = _env("TIKTOK_DEVICE_ID_FILE")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID")
 SUPABASE_SECRET_KEY = _env("SUPABASE_SECRET_KEY")
 SUPABASE_DEBUG = _env_flag("SUPABASE_DEBUG", False)
-DEFAULT_SLOT_ONE = "Performer One"
-DEFAULT_SLOT_TWO = "Performer Two"
 
 if WHITELIST_AUTHENTICATED_SESSION_ID_HOST:
     os.environ.setdefault(
@@ -180,16 +177,6 @@ def _pin_device_id(client: TikTokLiveClient, device_id: Optional[str]) -> Option
         return None
 
 
-def _format_user(name: str, handle: str) -> str:
-    name = name.strip() if isinstance(name, str) else ""
-    handle = handle.strip("@") if isinstance(handle, str) else ""
-    if name and handle and name.lower() != handle.lower():
-        return f"{name} (@{handle})"
-    if handle:
-        return f"@{handle}"
-    return name
-
-
 def _format_handle(name: str, handle: str) -> str:
     """
     Prefer a handle; fallback to name; always prefix with @ when a handle or name exists.
@@ -278,20 +265,12 @@ def _clean_recipient(primary, fallback="") -> str:
 
 
 class TikTokLiveListener:
-    def __init__(self, username: str, api_base: str, event_store: SupabaseEventStore) -> None:
+    def __init__(self, username: str, event_store: SupabaseEventStore) -> None:
         self.username = username
-        self.api_base = api_base.rstrip("/")
-        self.http = httpx.AsyncClient(timeout=10)
         self._event_store = event_store
         self._raw_lock = asyncio.Lock()
         self._raw_event_cache: dict[int, tuple[int, float]] = {}
         self._raw_event_ttl = timedelta(minutes=5)
-        self._last_start = datetime.min.replace(tzinfo=timezone.utc)
-        self._last_end = datetime.min.replace(tzinfo=timezone.utc)
-        self._cooldown = timedelta(seconds=30)
-        self._last_scores = {"slot_one": 0, "slot_two": 0}
-        self._slots = {"slot_one": DEFAULT_SLOT_ONE, "slot_two": DEFAULT_SLOT_TWO}
-        self._score_by_id: dict[str, int] = {}
         self._base_backoff = 5
         self._max_backoff = 300
         self._rate_limit_backoff = 300  # 5 minutes
@@ -858,7 +837,6 @@ class TikTokLiveListener:
                 return
             payload = _payload(event)
             raw_id = await self._raw_id_for_event(event, payload, "gift")
-            await self._sync_slots()
             gift_name = ""
             gift_amount = ""
             gift_from = ""
@@ -1030,11 +1008,6 @@ class TikTokLiveListener:
                 _format_handle(gift_from, gift_from_handle) or "unknown",
                 _format_handle(display_to, display_to) or self.username or "host",
             )
-            if gift_value:
-                recipient = _clean_recipient(gift_to, gift_to_handle)
-                if not recipient:
-                    recipient = self.username or ""
-                await self._score_gift(gift_value, recipient)
             if should_log:
                 await self._enqueue_store_call(
                     "gift_events",
@@ -1047,7 +1020,6 @@ class TikTokLiveListener:
                         raw_id=raw_id,
                     ),
                 )
-            logger.info("Current battle score: %s", self._score_by_id)
 
         @self.client.on(ttevents.CommentEvent)
         async def on_comment(event: ttevents.CommentEvent) -> None:
@@ -1075,16 +1047,6 @@ class TikTokLiveListener:
                 "comment_events",
                 lambda: self._event_store.log_comment(payload, event, self.username, raw_id=raw_id),
             )
-            text = event.comment or ""
-            if text.startswith("!battle"):
-                await self.trigger_start("command")
-            elif text.startswith("!end"):
-                await self.trigger_end("command")
-            elif text.startswith("!slots"):
-                parts = text.replace("!slots", "", 1).strip().split("|")
-                first = parts[0].strip() if parts and parts[0].strip() else DEFAULT_SLOT_ONE
-                second = parts[1].strip() if len(parts) > 1 and parts[1].strip() else DEFAULT_SLOT_TWO
-                await self.import_slots(first, second)
 
         @self.client.on(ttevents.JoinEvent)
         async def on_join(event: ttevents.JoinEvent) -> None:
@@ -1141,96 +1103,6 @@ class TikTokLiveListener:
                 lambda: self._event_store.log_like(payload, event, self.username, raw_id=raw_id),
             )
             return
-
-    async def trigger_start(self, reason: str) -> None:
-        self._last_start = datetime.now(timezone.utc)
-        self._last_scores = {"slot_one": 0, "slot_two": 0}
-        self._score_by_id = {}
-        logger.info("Triggering battle start (%s)", reason)
-        await self._safe_post(f"{self.api_base}/battle/start", {})
-        await self._sync_slots()
-
-    async def trigger_end(self, reason: str) -> None:
-        self._last_end = datetime.now(timezone.utc)
-        logger.info("Triggering battle end (%s)", reason)
-        await self._safe_post(f"{self.api_base}/battle/end", {})
-        await self._sync_slots()
-        self._score_by_id = {}
-
-    async def import_slots(self, slot_one: Optional[str], slot_two: Optional[str]) -> None:
-        ok = await self._safe_post(f"{self.api_base}/battle/slots/import", {"slot_one": slot_one, "slot_two": slot_two})
-        if ok:
-            logger.info("Imported slots: %s vs %s", slot_one, slot_two)
-            self._slots["slot_one"] = slot_one or self._slots["slot_one"]
-            self._slots["slot_two"] = slot_two or self._slots["slot_two"]
-        await self._sync_slots()
-
-    def _slot_for_recipient(self, recipient: str) -> str:
-        try:
-            rec_val = recipient if isinstance(recipient, str) else str(recipient or "")
-        except Exception:
-            rec_val = ""
-        rec = (rec_val or "").strip().lower().lstrip("@")
-        if _is_placeholder_obj(rec_val):
-            rec = ""
-        if not rec:
-            return "slot_one"
-        for key, name in self._slots.items():
-            if not name:
-                continue
-            n = name.strip().lower().lstrip("@")
-            if not n:
-                continue
-            if rec == n:
-                return key
-        for key, name in self._slots.items():
-            if not name:
-                continue
-            n = name.strip().lower().lstrip("@")
-            if n and (rec in n or n in rec):
-                return key
-        return "slot_one"
-
-    async def _score_gift(self, amount: int, recipient: str) -> None:
-        if amount <= 0:
-            return
-        slot = self._slot_for_recipient(recipient)
-        await self._safe_post(f"{self.api_base}/score/{slot}/add", {"amount": amount})
-        self._last_scores[slot] = self._last_scores.get(slot, 0) + amount
-        rid = _normalize_user_id(recipient)
-        if not rid:
-            slot_name = self._slots.get(slot) or ""
-            rid = _normalize_user_id(slot_name) or slot
-        if rid:
-            self._score_by_id[rid] = self._score_by_id.get(rid, 0) + amount
-
-    async def _sync_slots(self) -> None:
-        """
-        Pull current slots from backend /state to improve gift->slot mapping.
-        """
-        try:
-            resp = await self.http.get(f"{self.api_base}/state", timeout=5)
-            data = resp.json()
-            slot_one_name = ""
-            slot_two_name = ""
-            if isinstance(data, dict):
-                slot_one = data.get("slot_one") or data.get("slotOne") or {}
-                slot_two = data.get("slot_two") or data.get("slotTwo") or {}
-                if isinstance(slot_one, dict):
-                    slot_one_name = slot_one.get("name") or slot_one.get("slot_one") or slot_one.get("slotOne") or ""
-                if isinstance(slot_two, dict):
-                    slot_two_name = slot_two.get("name") or slot_two.get("slot_two") or slot_two.get("slotTwo") or ""
-                # fallbacks
-                slot_one_name = slot_one_name or data.get("slot_one_name") or data.get("slotOneName") or slot_one_name
-                slot_two_name = slot_two_name or data.get("slot_two_name") or data.get("slotTwoName") or slot_two_name
-            if slot_one_name:
-                self._slots["slot_one"] = slot_one_name
-            if slot_two_name:
-                self._slots["slot_two"] = slot_two_name
-            if slot_one_name or slot_two_name:
-                logger.info("Synced slots from backend: %s vs %s", self._slots["slot_one"], self._slots["slot_two"])
-        except Exception as exc:
-            logger.debug("Failed to sync slots: %s", exc)
 
     async def run(self) -> None:
         backoff = self._base_backoff
@@ -1333,23 +1205,11 @@ class TikTokLiveListener:
                 break
             backoff = min(self._max_backoff, max(self._base_backoff, backoff * 2))
 
-    async def _safe_post(self, url: str, payload: dict) -> bool:
-        try:
-            await self.http.post(url, json=payload)
-            return True
-        except Exception as exc:
-            logger.warning("HTTP post failed to %s: %s", url, exc)
-            return False
-
     async def close(self) -> None:
         await self._flush_store_queue()
         await self._stop_store_workers()
         try:
             await self.client.disconnect()
-        except Exception:
-            pass
-        try:
-            await self.http.aclose()
         except Exception:
             pass
 
@@ -1388,7 +1248,7 @@ async def main() -> None:
         key_tail = (SUPABASE_SECRET_KEY or "")[-6:]
         logger.info("Supabase target: %s (key suffix: %s)", supabase_url, key_tail if key_tail else "n/a")
     event_store = SupabaseEventStore(supabase_url, SUPABASE_SECRET_KEY, debug=SUPABASE_DEBUG)
-    listeners = [TikTokLiveListener(u, API_BASE, event_store) for u in usernames]
+    listeners = [TikTokLiveListener(u, event_store) for u in usernames]
 
     async def run_listener(listener: TikTokLiveListener) -> None:
         try:
