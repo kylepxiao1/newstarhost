@@ -133,16 +133,12 @@ flyctl ssh sftp put -a newstarhost C:\path\to\local\file.ext /path/on/machine/fi
   - `app` process: backend + `scripts/s3_sync.sh`
   - `discord` process: `scripts/discord_worker.sh` (separate process group)
     This worker runs both:
-    `scripts/trendbot.sh` and `scripts/discord_verify_bot.py`.
+    an internal trendbot loop and `scripts/discord_verify_bot.py`.
 - The `/app/media` Fly volume is scoped to `app` machines only.
-- `scripts/trendbot.sh` defaults:
-  - `TRENDBOT_INTERVAL=86400` (24 hours)
-  - `TRENDBOT_CMD='python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --api-max-attempts 5'`
+- Trendbot defaults (inside `scripts/discord_worker.sh`):
+  - `TRENDBOT_INTERVAL=43200` (12 hours)
+  - `TRENDBOT_CMD='python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --api-max-attempts 5 --supabase-min-velocity 100'`
 - Optional env file for trendbot: `TRENDBOT_ENV_FILE` (default `/app/app.env`).
-- Optional worker overrides:
-  - `DISCORD_TRENDBOT_CMD`
-  - `DISCORD_VERIFY_BOT_CMD`
-  - `DISCORD_WORKER_ENV_FILE`
 - Scale process groups explicitly:
 ```powershell
 fly scale count app=1 listener=1 discord=1 -a newstarhost

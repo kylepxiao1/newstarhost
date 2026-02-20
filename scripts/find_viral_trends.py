@@ -3740,6 +3740,12 @@ def parse_args(default_history: Path, default_output: Path) -> argparse.Namespac
         help="Timeout in seconds for each Supabase upsert request.",
     )
     parser.add_argument(
+        "--supabase-min-velocity",
+        type=float,
+        default=0.0,
+        help="Only upload topic song rows with velocity_views_per_hour strictly greater than this value.",
+    )
+    parser.add_argument(
         "--no-api",
         action="store_true",
         help="Skip TikTokApi trending feed source and use Creative Center only.",
@@ -4223,6 +4229,8 @@ def main() -> None:
         "enabled": bool(topic_terms and not args.no_supabase_upload),
         "table": args.supabase_table,
         "on_conflict": args.supabase_on_conflict,
+        "min_velocity": float(max(0.0, args.supabase_min_velocity)),
+        "filtered_out_rows": 0,
         "prepared_rows": 0,
         "uploaded_rows": 0,
         "failed_rows": 0,
@@ -4237,8 +4245,26 @@ def main() -> None:
             supabase_upload_summary["errors"].append(msg)
         else:
             supabase_upload_summary["table"] = table_name
+            upload_source_rows = song_results
+            min_velocity = float(max(0.0, args.supabase_min_velocity))
+            if min_velocity > 0.0:
+                filtered_rows: List[Dict[str, Any]] = []
+                for row in song_results:
+                    try:
+                        velocity = float(row.get("velocity_views_per_hour") or 0.0)
+                    except Exception:
+                        velocity = 0.0
+                    if velocity > min_velocity:
+                        filtered_rows.append(row)
+                supabase_upload_summary["filtered_out_rows"] = max(0, len(song_results) - len(filtered_rows))
+                upload_source_rows = filtered_rows
+                source_notes.append(
+                    "Supabase upload velocity filter active: "
+                    f"{len(upload_source_rows)}/{len(song_results)} rows above "
+                    f"{min_velocity:.2f} views/hour."
+                )
             prepared_rows = build_supabase_topic_song_rows(
-                song_rows=song_results,
+                song_rows=upload_source_rows,
                 topic_query=args.topic,
                 generated_at_iso=timestamp_iso,
             )
