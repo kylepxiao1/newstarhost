@@ -2270,6 +2270,235 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log fan event")
 
+    async def log_privilege_advance(
+        self,
+        payload: dict,
+        event,
+        tiktok_username: str,
+        raw_id: Optional[int] = None,
+    ) -> None:
+        now_dt = datetime.now(timezone.utc)
+        ts = now_dt.isoformat()
+        unix_ts = int(now_dt.timestamp())
+
+        def _get_child(obj, *names):
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return _get_any(obj, *names)
+            return _get_attr_any(obj, *names)
+
+        def _is_missing(value) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, bool):
+                return True
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return True
+                return _is_placeholder_obj(text)
+            if isinstance(value, (dict, list, tuple, set)):
+                return len(value) == 0
+            try:
+                text = str(value).strip()
+            except Exception:
+                return True
+            if not text:
+                return True
+            return _is_placeholder_obj(text)
+
+        def _first_int(*values) -> Optional[int]:
+            for value in values:
+                if _is_missing(value):
+                    continue
+                coerced = self._to_int(value)
+                if coerced is not None:
+                    return coerced
+            return None
+
+        def _first_text(*values) -> Optional[str]:
+            for value in values:
+                if _is_missing(value):
+                    continue
+                normalized = _normalize_db_value(value)
+                if _is_missing(normalized):
+                    continue
+                return str(normalized).strip()
+            return None
+
+        def _as_json_text(obj) -> Optional[str]:
+            if obj is None:
+                return None
+            if isinstance(obj, (dict, list)):
+                return _safe_json(obj)
+            for method_name in ("to_dict", "as_dict"):
+                try:
+                    fn = getattr(obj, method_name, None)
+                    if callable(fn):
+                        converted = fn()
+                        if isinstance(converted, (dict, list)):
+                            return _safe_json(converted)
+                except Exception:
+                    pass
+            try:
+                parsed = json.loads(_safe_json(obj))
+                if isinstance(parsed, (dict, list)):
+                    return _safe_json(parsed)
+            except Exception:
+                pass
+            return _normalize_db_value(obj)
+
+        base_message = _get_child(payload, "base_message", "baseMessage")
+        if base_message is None:
+            base_message = _get_attr_any(event, "base_message", "baseMessage")
+
+        notify_obj = _get_child(payload, "notify")
+        if notify_obj is None:
+            notify_obj = _get_attr_any(event, "notify")
+
+        scene_obj = _get_child(payload, "scene")
+        if scene_obj is None:
+            scene_obj = _get_attr_any(event, "scene")
+
+        control_obj = _get_child(payload, "control")
+        if control_obj is None:
+            control_obj = _get_attr_any(event, "control")
+
+        left_icon_obj = _get_child(payload, "left_icon", "leftIcon")
+        if left_icon_obj is None:
+            left_icon_obj = _get_attr_any(event, "left_icon", "leftIcon")
+
+        right_icon_obj = _get_child(payload, "right_icon", "rightIcon")
+        if right_icon_obj is None:
+            right_icon_obj = _get_attr_any(event, "right_icon", "rightIcon")
+
+        background_obj = _get_child(payload, "background")
+        if background_obj is None:
+            background_obj = _get_attr_any(event, "background")
+
+        privilege_log_extra_obj = _get_child(payload, "privilege_log_extra", "privilegeLogExtra")
+        if privilege_log_extra_obj is None:
+            privilege_log_extra_obj = _get_attr_any(event, "privilege_log_extra", "privilegeLogExtra")
+
+        scene_text = _first_text(
+            _get_attr_any(scene_obj, "name", "key"),
+            scene_obj,
+            _get_child(payload, "scene_name", "sceneName"),
+        )
+        scene_value = _first_int(
+            _get_attr_any(scene_obj, "value", "number", "id"),
+            _get_child(payload, "scene_value", "sceneValue"),
+            scene_obj,
+        )
+
+        row = {
+            "id": raw_id if raw_id is not None else self._next_row_id(),
+            "iso_ts": ts,
+            "unix_ts": unix_ts,
+            "event_type": "privilege_advance",
+            "method": _first_text(
+                _get_child(payload, "method"),
+                _get_child(base_message, "method"),
+                _get_attr_any(event, "method"),
+                "WebcastPrivilegeAdvanceMessage",
+            ),
+            "room_id": _first_int(
+                _get_child(payload, "room_id", "roomId"),
+                _get_child(base_message, "room_id", "roomId"),
+                _get_attr_any(event, "room_id", "roomId"),
+            ),
+            "create_time_ms": _first_int(
+                _get_child(payload, "create_time", "create_time_ms", "createTime", "timestamp"),
+                _get_child(base_message, "create_time", "createTime"),
+                _get_attr_any(event, "create_time", "createTime", "timestamp"),
+                int(unix_ts * 1000),
+            ),
+            "message_id": _first_int(
+                _get_child(payload, "msg_id", "msgId", "message_id", "messageId", "event_id"),
+                _get_child(base_message, "message_id", "messageId"),
+                _get_attr_any(event, "msg_id", "msgId", "message_id", "messageId", "_ws_msg_id"),
+            ),
+            "sub_type": _first_text(
+                _get_child(payload, "sub_type", "subType"),
+                _get_attr_any(event, "sub_type", "subType"),
+            ),
+            "scene": scene_text,
+            "scene_value": scene_value,
+            "control_display_type": _first_int(
+                _get_child(control_obj, "display_type", "displayType", "type"),
+            ),
+            "control_display_status": _first_text(
+                _get_child(control_obj, "display_status", "displayStatus", "status"),
+            ),
+            "left_icon_uri": _first_text(
+                _get_child(left_icon_obj, "m_uri", "mUri", "uri"),
+            ),
+            "right_icon_uri": _first_text(
+                _get_child(right_icon_obj, "m_uri", "mUri", "uri"),
+            ),
+            "background_uri": _first_text(
+                _get_child(background_obj, "m_uri", "mUri", "uri"),
+            ),
+            "notify_type": _first_int(
+                _get_child(notify_obj, "notify_type", "notifyType", "type"),
+            ),
+            "notify_content": _first_text(
+                _get_child(notify_obj, "content", "notify_content", "notifyContent", "text"),
+            ),
+            "notify_schema": _first_text(
+                _get_child(notify_obj, "schema", "schema_url", "schemaUrl"),
+            ),
+            "privilege_id": _first_text(
+                _get_child(privilege_log_extra_obj, "privilege_id", "privilegeId"),
+            ),
+            "privilege_version": _first_text(
+                _get_child(privilege_log_extra_obj, "privilege_version", "privilegeVersion"),
+            ),
+            "privilege_level": _first_text(
+                _get_child(privilege_log_extra_obj, "level", "privilege_level", "privilegeLevel"),
+            ),
+            "privilege_data_version": _first_text(
+                _get_child(privilege_log_extra_obj, "data_version", "dataVersion"),
+            ),
+            "privilege_order_id": _first_text(
+                _get_child(privilege_log_extra_obj, "privilege_order_id", "privilegeOrderId"),
+            ),
+            "notify_json": _as_json_text(notify_obj),
+            "scene_json": _as_json_text(scene_obj),
+            "control_json": _as_json_text(control_obj),
+            "left_icon_json": _as_json_text(left_icon_obj),
+            "right_icon_json": _as_json_text(right_icon_obj),
+            "background_json": _as_json_text(background_obj),
+            "privilege_log_extra_json": _as_json_text(privilege_log_extra_obj),
+            "tiktok_username": tiktok_username,
+        }
+        values = [_normalize_db_value(v) for v in row.values()]
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping privilege_advance_events insert")
+                    return
+                row_data = dict(zip(row.keys(), values))
+                for key in (
+                    "room_id",
+                    "create_time_ms",
+                    "message_id",
+                    "scene_value",
+                    "control_display_type",
+                    "notify_type",
+                ):
+                    row_data[key] = self._to_int(row_data.get(key))
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("privilege_advance_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("privilege_advance_events", row_data)
+                    action = "insert-fallback"
+                self._log_result("privilege_advance_events", action, resp)
+            except Exception:
+                logger.exception("Failed to log privilege advance event")
+
     async def close(self) -> None:
         if not self._client:
             return

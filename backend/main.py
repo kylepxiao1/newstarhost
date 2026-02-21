@@ -1030,6 +1030,15 @@ class PointsRequest(BaseModel):
     amount: int = 1
 
 
+class StreamNoteRequest(BaseModel):
+    host: str = ""
+    group: str = ""
+    outfit_theme: str = ""
+    members_present: List[str] = []
+    stream_format: str = ""
+    additional_notes: str = ""
+
+
 @app.post("/analytics/points")
 async def add_points(req: PointsRequest) -> JSONResponse:
     # if url not provided, use current song
@@ -1041,6 +1050,38 @@ async def add_points(req: PointsRequest) -> JSONResponse:
     return JSONResponse(state)
 
 
+@app.post("/notes/stream")
+async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
+    now_dt = datetime.now(timezone.utc)
+    iso_ts = now_dt.isoformat()
+    unix_ts = int(now_dt.timestamp())
+
+    members = []
+    for item in body.members_present or []:
+        name = (item or "").strip()
+        if not name:
+            continue
+        if name in members:
+            continue
+        members.append(name)
+
+    row = {
+        "iso_ts": iso_ts,
+        "unix_ts": unix_ts,
+        "host": (body.host or "").strip(),
+        "group_name": (body.group or "").strip(),
+        "outfit_theme": (body.outfit_theme or "").strip(),
+        "members_present": members,
+        "stream_format": (body.stream_format or "").strip(),
+        "additional_notes": (body.additional_notes or "").strip(),
+    }
+    err = await _insert_supabase_row("stream_notes", row)
+    if err:
+        logger.warning("Stream note insert failed: %s", err)
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+    return JSONResponse({"ok": True, "row": row})
+
+
 @app.get("/analytics")
 async def analytics_page() -> FileResponse:
     return _static_file("analytics.html")
@@ -1049,6 +1090,11 @@ async def analytics_page() -> FileResponse:
 @app.get("/settings")
 async def settings_page() -> FileResponse:
     return _static_file("settings.html")
+
+
+@app.get("/notes")
+async def notes_page() -> FileResponse:
+    return _static_file("notes.html")
 
 
 @app.get("/analytics/plays")

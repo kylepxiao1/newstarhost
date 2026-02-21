@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Notes</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px 16px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px 24px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); max-width: 980px; }
+    h2 { margin-top: 0; font-size: 16px; letter-spacing: 0.02em; }
+    .field { margin-bottom: 12px; }
+    .field label { display: block; font-weight: 600; margin-bottom: 6px; }
+    input, select, textarea {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #334155;
+      background: #0b1222;
+      color: #e2e8f0;
+      font: inherit;
+    }
+    textarea { min-height: 110px; resize: vertical; }
+    #streamFormatInput { min-height: 180px; }
+    .members-wrap {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 12px;
+      padding: 10px;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      background: #0b1222;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .member-item { display: inline-flex; align-items: center; gap: 6px; min-width: 180px; }
+    .member-item input { width: auto; }
+    button {
+      cursor: pointer;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-weight: 600;
+    }
+    .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; text-transform: uppercase; }
+    .status-text { margin-top: 10px; min-height: 22px; color: #93c5fd; }
+    .status-text.error { color: #fca5a5; }
+    .status-text.success { color: #86efac; }
+    @media (max-width: 900px) {
+      header { padding: 12px 12px 8px; }
+      h1 { font-size: 18px; }
+      #statusText { display: none; }
+      main { padding: 12px; }
+      section { padding: 12px; }
+      .member-item { min-width: 140px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
+      <h1>Notes</h1>
+    </div>
+    <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;margin-top:4px;">
+      <span id="statusText">Connecting</span>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Stream Notes</h2>
+      <form id="notesForm">
+        <div class="field">
+          <label for="hostInput">Host</label>
+          <input id="hostInput" type="text" placeholder="Host name">
+        </div>
+
+        <div class="field">
+          <label for="groupSelect">Group</label>
+          <select id="groupSelect"></select>
+        </div>
+
+        <div class="field">
+          <label for="outfitThemeInput">Outfit Theme</label>
+          <input id="outfitThemeInput" type="text" placeholder="e.g. Neon streetwear">
+        </div>
+
+        <div class="field">
+          <label>Members Present</label>
+          <div id="membersWrap" class="members-wrap"></div>
+        </div>
+
+        <div class="field">
+          <label for="streamFormatInput">Stream Format</label>
+          <textarea id="streamFormatInput" placeholder="Enter stream format details"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="additionalNotesInput">Additional Notes</label>
+          <textarea id="additionalNotesInput" placeholder="Any notes about this stream"></textarea>
+        </div>
+
+        <button id="submitBtn" type="submit">Submit</button>
+        <div id="formStatus" class="status-text"></div>
+      </form>
+    </section>
+  </main>
+
+  <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
+  <script>
+    const api = window.PageShared.api;
+    let dancers = [];
+    let selectedMemberSet = null;
+    const HOST_COOKIE_KEY = "notes_host";
+    const STREAM_FORMAT_COOKIE_KEY = "notes_stream_format";
+    const DEFAULT_STREAM_FORMAT = [
+      "Warm Up Solos/Duos - 30 min",
+      "Group Block - 15 min",
+      "Battles - 45 min",
+      "MVP Ceremony - 10 min",
+      "Dance Menu - 20 min",
+      "Closing Song - ~1 min",
+    ].join("\n");
+
+    function sortedNames(list) {
+      return (list || [])
+        .map(d => (d && d.name ? String(d.name).trim() : ""))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+    }
+
+    function setCookie(name, value, days = 365) {
+      const safeName = encodeURIComponent(String(name || ""));
+      const safeValue = encodeURIComponent(String(value || ""));
+      const maxAge = Math.max(1, Math.floor(days * 24 * 60 * 60));
+      document.cookie = `${safeName}=${safeValue}; Max-Age=${maxAge}; Path=/; SameSite=Lax`;
+    }
+
+    function getCookie(name) {
+      const safeName = encodeURIComponent(String(name || "")) + "=";
+      const parts = (document.cookie || "").split(";");
+      for (const part of parts) {
+        const p = part.trim();
+        if (!p.startsWith(safeName)) continue;
+        return decodeURIComponent(p.slice(safeName.length));
+      }
+      return "";
+    }
+
+    function restorePersistedDefaults() {
+      const host = getCookie(HOST_COOKIE_KEY);
+      const streamFormat = getCookie(STREAM_FORMAT_COOKIE_KEY);
+      if (host) document.getElementById("hostInput").value = host;
+      document.getElementById("streamFormatInput").value = streamFormat || DEFAULT_STREAM_FORMAT;
+    }
+
+    function wirePersistedDefaults() {
+      const hostInput = document.getElementById("hostInput");
+      const streamFormatInput = document.getElementById("streamFormatInput");
+      hostInput.addEventListener("input", () => setCookie(HOST_COOKIE_KEY, hostInput.value.trim()));
+      streamFormatInput.addEventListener("input", () => setCookie(STREAM_FORMAT_COOKIE_KEY, streamFormatInput.value.trim()));
+    }
+
+    function selectedMembers() {
+      return Array.from(document.querySelectorAll("input[name='memberPresent']:checked")).map(cb => cb.value);
+    }
+
+    function isGroupName(name) {
+      const text = String(name || "").toLowerCase();
+      return text.includes("boys") || text.includes("girls");
+    }
+
+    function renderGroupOptions(groupNames, fallbackNames) {
+      const select = document.getElementById("groupSelect");
+      const previous = select.value || "";
+      const names = (groupNames && groupNames.length) ? groupNames : (fallbackNames || []);
+      select.innerHTML = "";
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "(none)";
+      select.appendChild(empty);
+      names.forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+      if (previous && names.includes(previous)) {
+        select.value = previous;
+      } else if (groupNames && groupNames.length) {
+        select.value = groupNames[0];
+      }
+    }
+
+    function renderMembers(names) {
+      const wrap = document.getElementById("membersWrap");
+      wrap.innerHTML = "";
+      if (!names.length) {
+        const empty = document.createElement("span");
+        empty.textContent = "No dancers found.";
+        empty.style.color = "#94a3b8";
+        wrap.appendChild(empty);
+        selectedMemberSet = new Set();
+        return;
+      }
+      if (selectedMemberSet === null) {
+        // Default behavior: all members present are checked when page loads.
+        selectedMemberSet = new Set(names);
+      } else {
+        const next = new Set();
+        names.forEach(name => {
+          if (selectedMemberSet.has(name)) next.add(name);
+        });
+        // New members default to checked.
+        names.forEach(name => {
+          if (!next.has(name)) next.add(name);
+        });
+        selectedMemberSet = next;
+      }
+      names.forEach(name => {
+        const label = document.createElement("label");
+        label.className = "member-item";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.name = "memberPresent";
+        cb.value = name;
+        cb.checked = selectedMemberSet.has(name);
+        cb.addEventListener("change", () => {
+          if (!selectedMemberSet) selectedMemberSet = new Set();
+          if (cb.checked) selectedMemberSet.add(name);
+          else selectedMemberSet.delete(name);
+        });
+        const text = document.createElement("span");
+        text.textContent = name;
+        label.appendChild(cb);
+        label.appendChild(text);
+        wrap.appendChild(label);
+      });
+    }
+
+    function renderDancers() {
+      const names = sortedNames(dancers);
+      const groupNames = names.filter(isGroupName);
+      const memberNames = names.filter(name => !isGroupName(name));
+      renderGroupOptions(groupNames, names);
+      renderMembers(memberNames);
+    }
+
+    async function refreshDancers() {
+      try {
+        const res = await api("/dancers");
+        const data = await res.json();
+        dancers = Array.isArray(data) ? data : [];
+        renderDancers();
+      } catch (e) {
+        dancers = [];
+        renderDancers();
+      }
+    }
+
+    function setFormStatus(message, kind = "") {
+      const el = document.getElementById("formStatus");
+      el.textContent = message || "";
+      el.className = "status-text";
+      if (kind) el.classList.add(kind);
+    }
+
+    async function submitForm(evt) {
+      evt.preventDefault();
+      const submitBtn = document.getElementById("submitBtn");
+      submitBtn.disabled = true;
+      setFormStatus("Submitting...");
+      const body = {
+        host: document.getElementById("hostInput").value.trim(),
+        group: document.getElementById("groupSelect").value.trim(),
+        outfit_theme: document.getElementById("outfitThemeInput").value.trim(),
+        members_present: selectedMembers(),
+        stream_format: document.getElementById("streamFormatInput").value.trim(),
+        additional_notes: document.getElementById("additionalNotesInput").value.trim(),
+      };
+      setCookie(HOST_COOKIE_KEY, body.host);
+      setCookie(STREAM_FORMAT_COOKIE_KEY, body.stream_format);
+      try {
+        const res = await api("/notes/stream", {method: "POST", body});
+        let payload = {};
+        try { payload = await res.json(); } catch (e) {}
+        if (!res.ok || payload.ok === false) {
+          const err = payload.error || `Request failed (${res.status})`;
+          setFormStatus(err, "error");
+          return;
+        }
+        setFormStatus("Saved stream note.", "success");
+      } catch (err) {
+        setFormStatus(`Request failed: ${err}`, "error");
+      } finally {
+        submitBtn.disabled = false;
+      }
+    }
+
+    function connectWs() {
+      if (!window.PageShared?.connectWsStatus) return;
+      const origin = (window.location && window.location.origin) ? window.location.origin : "";
+      window.PageShared.connectWsStatus({
+        wsUrl: origin ? (origin.replace(/^http/, "ws")) + "/ws/state" : undefined,
+        connectedText: "Live",
+        disconnectedText: "Disconnected",
+        onState: (payload) => {
+          if (Array.isArray(payload?.dancers)) {
+            dancers = payload.dancers;
+            renderDancers();
+          }
+        },
+      });
+    }
+
+    document.getElementById("notesForm").addEventListener("submit", submitForm);
+    restorePersistedDefaults();
+    wirePersistedDefaults();
+    window.PageShared.initPracticeModeHeader({apiFn: api});
+    refreshDancers();
+    connectWs();
+  </script>
+</body>
+</html>

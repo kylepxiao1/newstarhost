@@ -1115,6 +1115,26 @@ class TikTokLiveListener:
         else:
             logger.warning("TikTokLive package missing FansEventEvent; fan_events listener disabled")
 
+        privilege_advance_cls = (
+            getattr(ttevents, "PrivilegeAdvanceEvent", None)
+            or getattr(ttevents, "PrivelageAdvanceEvent", None)
+        )
+        if privilege_advance_cls is not None:
+            @self.client.on(privilege_advance_cls)
+            async def on_privilege_advance(event) -> None:
+                if self._is_duplicate(event, "privilege_advance"):
+                    return
+                payload = _payload(event)
+                raw_id = await self._raw_id_for_event(event, payload, "privilege_advance")
+                await self._enqueue_store_call(
+                    "privilege_advance_events",
+                    lambda: self._event_store.log_privilege_advance(payload, event, self.username, raw_id=raw_id),
+                )
+        else:
+            logger.warning(
+                "TikTokLive package missing PrivilegeAdvanceEvent; privilege_advance_events listener disabled"
+            )
+
         @self.client.on(ttevents.LikeEvent)
         async def on_like(event: ttevents.LikeEvent) -> None:
             if self._is_duplicate(event, "like"):
