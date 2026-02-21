@@ -485,6 +485,37 @@ async def _insert_supabase_row(table: str, row: dict) -> Optional[str]:
     return f"Supabase insert failed (status={resp.status_code}): {payload}"
 
 
+def _parse_stream_format_jsonl(raw: str) -> tuple[Optional[list], Optional[str]]:
+    text = (raw or "").strip()
+    if not text:
+        return None, "stream_format is required and must be JSONL."
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return None, "stream_format is required and must be JSONL."
+    rows: list[dict] = []
+    for idx, line in enumerate(lines, start=1):
+        try:
+            parsed = json.loads(line)
+        except Exception:
+            return None, f"stream_format line {idx} is not valid JSON."
+        if not isinstance(parsed, dict):
+            return None, f"stream_format line {idx} must be a JSON object."
+        segment = str(parsed.get("segment") or "").strip()
+        if not segment:
+            return None, f"stream_format line {idx} is missing segment."
+        duration_raw = parsed.get("duration_min")
+        try:
+            duration_min = int(str(duration_raw).strip())
+        except Exception:
+            return None, f"stream_format line {idx} has invalid duration_min."
+        if duration_min <= 0:
+            return None, f"stream_format line {idx} duration_min must be a positive integer."
+        rows.append({"segment": segment, "duration_min": duration_min})
+    if not rows:
+        return None, "stream_format is empty."
+    return rows, None
+
+
 @app.post("/battle/start")
 async def start_battle(body: BattleStartRequest) -> JSONResponse:
     state = state_manager.start_battle(body.mode)
@@ -1055,6 +1086,9 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
     now_dt = datetime.now(timezone.utc)
     iso_ts = now_dt.isoformat()
     unix_ts = int(now_dt.timestamp())
+    stream_format_rows, stream_format_err = _parse_stream_format_jsonl(body.stream_format)
+    if stream_format_err:
+        return JSONResponse({"ok": False, "error": stream_format_err}, status_code=400)
 
     members = []
     for item in body.members_present or []:
@@ -1072,7 +1106,7 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
         "group_name": (body.group or "").strip(),
         "outfit_theme": (body.outfit_theme or "").strip(),
         "members_present": members,
-        "stream_format": (body.stream_format or "").strip(),
+        "stream_format": stream_format_rows,
         "additional_notes": (body.additional_notes or "").strip(),
     }
     err = await _insert_supabase_row("stream_notes", row)

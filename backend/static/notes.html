@@ -25,7 +25,93 @@
       font: inherit;
     }
     textarea { min-height: 110px; resize: vertical; }
-    #streamFormatInput { min-height: 180px; }
+    .stream-format-grid {
+      display: grid;
+      grid-template-columns: 44px 1fr 160px 90px;
+      gap: 8px;
+      align-items: center;
+    }
+    .stream-header {
+      color: #94a3b8;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 6px;
+    }
+    .stream-rows {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .stream-row {
+      padding: 8px;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      background: #0b1222;
+      transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background-color 140ms ease, opacity 140ms ease;
+    }
+    .stream-row.dragging {
+      opacity: 0.72;
+      border-color: #2563eb;
+      background: #0f172a;
+      transform: scale(0.995);
+      box-shadow: 0 8px 24px rgba(37,99,235,.28);
+    }
+    .stream-row.drag-over {
+      border-color: #60a5fa;
+      background: #111b33;
+      transform: translateY(-1px);
+      box-shadow: inset 0 0 0 1px rgba(96,165,250,.35);
+    }
+    .drag-handle {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 100%;
+      height: 36px;
+      border: 1px solid #334155;
+      border-radius: 6px;
+      background: #111827;
+      color: #cbd5e1;
+      cursor: grab;
+      user-select: none;
+    }
+    .drag-handle:active { cursor: grabbing; }
+    .drag-handle:hover { border-color: #475569; background: #0f172a; color: #e2e8f0; }
+    .drag-handle:focus-visible {
+      outline: 2px solid #60a5fa;
+      outline-offset: 1px;
+    }
+    .drag-handle svg {
+      width: 16px;
+      height: 16px;
+      stroke: currentColor;
+      stroke-width: 2;
+      fill: none;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }
+    .stream-row input {
+      width: 100%;
+    }
+    .remove-segment-btn {
+      background: #ef4444;
+      width: 100%;
+    }
+    .add-segment-row {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .stream-total {
+      color: #93c5fd;
+      font-weight: 600;
+      font-size: 13px;
+      margin-left: auto;
+      text-align: right;
+    }
     .members-wrap {
       display: flex;
       flex-wrap: wrap;
@@ -59,6 +145,12 @@
       main { padding: 12px; }
       section { padding: 12px; }
       .member-item { min-width: 140px; }
+      .stream-format-grid {
+        grid-template-columns: 40px 1fr 100px 76px;
+        gap: 6px;
+      }
+      .drag-handle { height: 34px; }
+      .remove-segment-btn { padding: 8px 6px; }
     }
   </style>
 </head>
@@ -97,8 +189,18 @@
         </div>
 
         <div class="field">
-          <label for="streamFormatInput">Stream Format</label>
-          <textarea id="streamFormatInput" placeholder="Enter stream format details"></textarea>
+          <label>Stream Format</label>
+          <div class="stream-format-grid stream-header">
+            <div></div>
+            <div>Segment</div>
+            <div>Duration (min)</div>
+            <div></div>
+          </div>
+          <div id="streamRows" class="stream-rows"></div>
+          <div class="add-segment-row">
+            <button type="button" id="addSegmentBtn">Add Segment</button>
+            <div id="streamDurationTotal" class="stream-total">Total Duration: 0h 0m</div>
+          </div>
         </div>
 
         <div class="field">
@@ -118,16 +220,20 @@
     const api = window.PageShared.api;
     let dancers = [];
     let selectedMemberSet = null;
+    let streamSegments = [];
+    let draggedSegmentId = null;
+    let dragOverSegmentId = null;
+    let nextSegmentId = 1;
     const HOST_COOKIE_KEY = "notes_host";
     const STREAM_FORMAT_COOKIE_KEY = "notes_stream_format";
-    const DEFAULT_STREAM_FORMAT = [
-      "Warm Up Solos/Duos - 30 min",
-      "Group Block - 15 min",
-      "Battles - 45 min",
-      "MVP Ceremony - 10 min",
-      "Dance Menu - 20 min",
-      "Closing Song - ~1 min",
-    ].join("\n");
+    const DEFAULT_STREAM_SEGMENTS = [
+      {segment: "Warm Up Solos/Duos", duration: "30"},
+      {segment: "Group Block", duration: "15"},
+      {segment: "Battles", duration: "45"},
+      {segment: "MVP Ceremony", duration: "10"},
+      {segment: "Dance Menu", duration: "19"},
+      {segment: "Closing Song", duration: "1"},
+    ];
 
     function sortedNames(list) {
       return (list || [])
@@ -158,14 +264,229 @@
       const host = getCookie(HOST_COOKIE_KEY);
       const streamFormat = getCookie(STREAM_FORMAT_COOKIE_KEY);
       if (host) document.getElementById("hostInput").value = host;
-      document.getElementById("streamFormatInput").value = streamFormat || DEFAULT_STREAM_FORMAT;
+      loadStreamSegmentsFromCookie(streamFormat);
+      renderStreamSegments();
     }
 
     function wirePersistedDefaults() {
       const hostInput = document.getElementById("hostInput");
-      const streamFormatInput = document.getElementById("streamFormatInput");
       hostInput.addEventListener("input", () => setCookie(HOST_COOKIE_KEY, hostInput.value.trim()));
-      streamFormatInput.addEventListener("input", () => setCookie(STREAM_FORMAT_COOKIE_KEY, streamFormatInput.value.trim()));
+      document.getElementById("addSegmentBtn").addEventListener("click", () => {
+        addStreamSegment();
+      });
+    }
+
+    function sanitizeStreamSegments(items) {
+      const cleaned = [];
+      (items || []).forEach(item => {
+        if (!item || typeof item !== "object") return;
+        const segment = String(item.segment || "").trim();
+        let duration = String(item.duration || "").trim();
+        duration = duration.replace(/\s*min$/i, "").trim();
+        const digitsOnly = duration.replace(/[^\d]/g, "");
+        if (digitsOnly) duration = digitsOnly;
+        if (!segment && !duration) return;
+        cleaned.push({segment, duration});
+      });
+      return cleaned;
+    }
+
+    function loadStreamSegmentsFromCookie(rawCookie) {
+      let parsed = [];
+      const raw = String(rawCookie || "").trim();
+      if (raw) {
+        try {
+          const asJson = JSON.parse(raw);
+          if (Array.isArray(asJson)) {
+            parsed = sanitizeStreamSegments(asJson);
+          }
+        } catch (e) {
+          parsed = [];
+        }
+      }
+      if (!parsed.length) {
+        parsed = sanitizeStreamSegments(DEFAULT_STREAM_SEGMENTS);
+      }
+      streamSegments = parsed.map((row) => ({
+        id: nextSegmentId++,
+        segment: row.segment,
+        duration: row.duration,
+      }));
+    }
+
+    function serializeStreamSegmentsForCookie() {
+      const rows = streamSegments.map(row => ({
+        segment: String(row.segment || "").trim(),
+        duration: String(row.duration || "").trim(),
+      }));
+      return JSON.stringify(rows);
+    }
+
+    function validateStreamSegments() {
+      const rows = [];
+      for (let i = 0; i < streamSegments.length; i++) {
+        const row = streamSegments[i] || {};
+        const segment = String(row.segment || "").trim();
+        const durationText = String(row.duration || "").trim();
+        if (!segment && !durationText) continue;
+        if (!segment) {
+          return {ok: false, error: `Segment name is required for row ${i + 1}.`};
+        }
+        const durationInt = Number.parseInt(durationText, 10);
+        if (!Number.isInteger(durationInt) || durationInt <= 0) {
+          return {ok: false, error: `Duration must be a positive integer for \"${segment}\".`};
+        }
+        rows.push({segment, duration_min: durationInt});
+      }
+      if (!rows.length) {
+        return {ok: false, error: "Add at least one stream format segment."};
+      }
+      return {ok: true, rows};
+    }
+
+    function streamFormatJsonlValue() {
+      const check = validateStreamSegments();
+      if (!check.ok) return check;
+      const text = check.rows.map(row => JSON.stringify(row)).join("\n");
+      return {ok: true, text, rows: check.rows};
+    }
+
+    function persistStreamSegmentsCookie() {
+      setCookie(STREAM_FORMAT_COOKIE_KEY, serializeStreamSegmentsForCookie());
+    }
+
+    function updateStreamDurationTotal() {
+      const total = streamSegments.reduce((acc, row) => {
+        const val = Number.parseInt(String(row?.duration || "").trim(), 10);
+        return Number.isInteger(val) && val > 0 ? acc + val : acc;
+      }, 0);
+      const hours = Math.floor(total / 60);
+      const minutes = total % 60;
+      const el = document.getElementById("streamDurationTotal");
+      if (el) el.textContent = `Total Duration: ${hours}h ${minutes}m`;
+    }
+
+    function moveStreamSegment(fromId, toId) {
+      if (fromId === toId) return;
+      const fromIndex = streamSegments.findIndex(row => row.id === fromId);
+      const toIndex = streamSegments.findIndex(row => row.id === toId);
+      if (fromIndex < 0 || toIndex < 0) return;
+      const [moved] = streamSegments.splice(fromIndex, 1);
+      streamSegments.splice(toIndex, 0, moved);
+      renderStreamSegments();
+      persistStreamSegmentsCookie();
+    }
+
+    function clearStreamDragOverState() {
+      dragOverSegmentId = null;
+      document.querySelectorAll("#streamRows .stream-row.drag-over").forEach((rowEl) => {
+        rowEl.classList.remove("drag-over");
+      });
+    }
+
+    function addStreamSegment(segment = "", duration = "") {
+      streamSegments.push({
+        id: nextSegmentId++,
+        segment: String(segment || "").trim(),
+        duration: String(duration || "").trim(),
+      });
+      renderStreamSegments();
+      persistStreamSegmentsCookie();
+    }
+
+    function removeStreamSegment(id) {
+      streamSegments = streamSegments.filter(row => row.id !== id);
+      renderStreamSegments();
+      persistStreamSegmentsCookie();
+    }
+
+    function updateStreamSegment(id, key, value) {
+      const row = streamSegments.find(item => item.id === id);
+      if (!row) return;
+      row[key] = value;
+      persistStreamSegmentsCookie();
+      updateStreamDurationTotal();
+    }
+
+    function renderStreamSegments() {
+      const wrap = document.getElementById("streamRows");
+      wrap.innerHTML = "";
+      streamSegments.forEach(row => {
+        const item = document.createElement("div");
+        item.className = "stream-row";
+        item.draggable = true;
+        item.dataset.id = String(row.id);
+
+        item.addEventListener("dragstart", () => {
+          draggedSegmentId = row.id;
+          requestAnimationFrame(() => item.classList.add("dragging"));
+        });
+        item.addEventListener("dragend", () => {
+          draggedSegmentId = null;
+          clearStreamDragOverState();
+          item.classList.remove("dragging");
+        });
+        item.addEventListener("dragover", (evt) => {
+          evt.preventDefault();
+          if (draggedSegmentId == null || draggedSegmentId === row.id) return;
+          if (dragOverSegmentId !== row.id) {
+            clearStreamDragOverState();
+            item.classList.add("drag-over");
+            dragOverSegmentId = row.id;
+          }
+        });
+        item.addEventListener("drop", (evt) => {
+          evt.preventDefault();
+          if (draggedSegmentId == null) return;
+          clearStreamDragOverState();
+          moveStreamSegment(draggedSegmentId, row.id);
+        });
+
+        const grid = document.createElement("div");
+        grid.className = "stream-format-grid";
+
+        const handleBtn = document.createElement("button");
+        handleBtn.type = "button";
+        handleBtn.className = "drag-handle";
+        handleBtn.title = "Drag to reorder";
+        handleBtn.setAttribute("aria-label", "Drag to reorder");
+        handleBtn.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 7h14M5 12h14M5 17h14"/></svg>';
+
+        const segInput = document.createElement("input");
+        segInput.type = "text";
+        segInput.value = row.segment || "";
+        segInput.placeholder = "Segment";
+        segInput.addEventListener("input", () => {
+          updateStreamSegment(row.id, "segment", segInput.value);
+        });
+
+        const durInput = document.createElement("input");
+        durInput.type = "number";
+        durInput.min = "1";
+        durInput.step = "1";
+        durInput.inputMode = "numeric";
+        durInput.value = row.duration || "";
+        durInput.placeholder = "Duration";
+        durInput.addEventListener("input", () => {
+          const nextVal = String(durInput.value || "").replace(/[^\d]/g, "");
+          if (durInput.value !== nextVal) durInput.value = nextVal;
+          updateStreamSegment(row.id, "duration", nextVal);
+        });
+
+        const removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "remove-segment-btn";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", () => removeStreamSegment(row.id));
+
+        grid.appendChild(handleBtn);
+        grid.appendChild(segInput);
+        grid.appendChild(durInput);
+        grid.appendChild(removeBtn);
+        item.appendChild(grid);
+        wrap.appendChild(item);
+      });
+      updateStreamDurationTotal();
     }
 
     function selectedMembers() {
@@ -277,16 +598,22 @@
       const submitBtn = document.getElementById("submitBtn");
       submitBtn.disabled = true;
       setFormStatus("Submitting...");
+      const streamFormat = streamFormatJsonlValue();
+      if (!streamFormat.ok) {
+        setFormStatus(streamFormat.error || "Invalid stream format.", "error");
+        submitBtn.disabled = false;
+        return;
+      }
       const body = {
         host: document.getElementById("hostInput").value.trim(),
         group: document.getElementById("groupSelect").value.trim(),
         outfit_theme: document.getElementById("outfitThemeInput").value.trim(),
         members_present: selectedMembers(),
-        stream_format: document.getElementById("streamFormatInput").value.trim(),
+        stream_format: streamFormat.text,
         additional_notes: document.getElementById("additionalNotesInput").value.trim(),
       };
       setCookie(HOST_COOKIE_KEY, body.host);
-      setCookie(STREAM_FORMAT_COOKIE_KEY, body.stream_format);
+      persistStreamSegmentsCookie();
       try {
         const res = await api("/notes/stream", {method: "POST", body});
         let payload = {};
