@@ -72,6 +72,13 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    value = _env(key, "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "y", "on"}
+
+
 class SupabaseEventStore:
     def __init__(self, url: str, key: str, debug: bool = False) -> None:
         self._max_concurrent_writes = max(1, _env_int("SUPABASE_MAX_CONCURRENT_WRITES", 8))
@@ -102,6 +109,19 @@ class SupabaseEventStore:
         self._failed_rows_max = max(0, _env_int("SUPABASE_FAILED_ROWS_MAX", 2000))
         self._failed_rows = []
         self._failed_rows_file = _env("SUPABASE_FAILED_ROWS_FILE", "").strip()
+        self._connect_timeout_restart_threshold = max(
+            0, _env_int("SUPABASE_CONNECT_TIMEOUT_RESTART_THRESHOLD", 0)
+        )
+        self._connect_timeout_restart_window_seconds = max(
+            30.0, _env_float("SUPABASE_CONNECT_TIMEOUT_RESTART_WINDOW_SECONDS", 300.0)
+        )
+        self._connect_timeout_restart_enabled = _env_bool(
+            "SUPABASE_CONNECT_TIMEOUT_RESTART_ENABLED",
+            self._connect_timeout_restart_threshold > 0,
+        )
+        self._connect_timeout_failures: list[float] = []
+        self._restart_requested = False
+        self._restart_reason = ""
         self._write_tiktok_events_raw = _env("SUPABASE_WRITE_TIKTOK_EVENTS_RAW", "").strip().lower() in {
             "1",
             "true",
@@ -135,6 +155,12 @@ class SupabaseEventStore:
             self._load_failed_rows_from_disk()
             if self._failed_rows:
                 logger.warning("Loaded %s buffered Supabase row writes from disk", len(self._failed_rows))
+        if self._connect_timeout_restart_enabled and self._connect_timeout_restart_threshold > 0:
+            logger.info(
+                "Supabase ConnectTimeout restart watchdog enabled (threshold=%s, window=%ss)",
+                self._connect_timeout_restart_threshold,
+                int(self._connect_timeout_restart_window_seconds),
+            )
 
     def _retry_delay(self, attempt_idx: int) -> float:
         delay = min(self._post_retry_base_seconds * (2 ** max(0, attempt_idx)), self._post_retry_max_seconds)
@@ -223,6 +249,33 @@ class SupabaseEventStore:
             self._failed_rows = self._failed_rows[-self._failed_rows_max :]
         self._persist_failed_rows_to_disk()
 
+    def _record_connect_timeout_failure(self, table: str) -> None:
+        if (
+            not self._connect_timeout_restart_enabled
+            or self._connect_timeout_restart_threshold <= 0
+            or self._restart_requested
+        ):
+            return
+        now = time.time()
+        window_start = now - self._connect_timeout_restart_window_seconds
+        self._connect_timeout_failures = [t for t in self._connect_timeout_failures if t >= window_start]
+        self._connect_timeout_failures.append(now)
+        failure_count = len(self._connect_timeout_failures)
+        if failure_count < self._connect_timeout_restart_threshold:
+            return
+        self._restart_requested = True
+        self._restart_reason = (
+            f"Supabase ConnectTimeout threshold reached: {failure_count} failures in "
+            f"{int(self._connect_timeout_restart_window_seconds)}s (table={table})"
+        )
+        logger.error("%s", self._restart_reason)
+
+    def should_force_restart(self) -> bool:
+        return self._restart_requested
+
+    def force_restart_reason(self) -> str:
+        return self._restart_reason
+
     async def _send_post_with_retry(
         self,
         table: str,
@@ -275,6 +328,8 @@ class SupabaseEventStore:
                     )
                     await asyncio.sleep(delay)
                     continue
+                if isinstance(exc, httpx.ConnectTimeout):
+                    self._record_connect_timeout_failure(table)
                 if queue_on_failure:
                     self._queue_failed_row(table, row_data, on_conflict, prefer)
                 logger.warning(

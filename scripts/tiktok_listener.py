@@ -294,8 +294,8 @@ class TikTokLiveListener:
         self._last_live_status: Optional[bool] = None
         self._cookies = _gather_tiktok_cookies()
         self._device_id = _load_device_id()
-        self._store_queue_max = max(100, _env_int("TIKTOK_EVENT_STORE_QUEUE_MAX", 20000))
-        self._store_worker_count = max(1, _env_int("TIKTOK_EVENT_STORE_WORKERS", 3))
+        self._store_queue_max = max(100, _env_int("TIKTOK_EVENT_STORE_QUEUE_MAX", 2000))
+        self._store_worker_count = max(1, _env_int("TIKTOK_EVENT_STORE_WORKERS", 2))
         self._store_flush_timeout_seconds = max(
             1.0, _env_float("TIKTOK_EVENT_STORE_FLUSH_TIMEOUT_SECONDS", 120.0)
         )
@@ -383,6 +383,14 @@ class TikTokLiveListener:
                 )
             finally:
                 self._store_queue.task_done()
+            if self._event_store.should_force_restart():
+                reason = self._event_store.force_restart_reason() or "Supabase ConnectTimeout watchdog triggered"
+                logger.critical(
+                    "Forcing listener process restart for @%s due to Supabase connectivity watchdog: %s",
+                    self.username,
+                    reason,
+                )
+                os._exit(75)
 
     async def _enqueue_store_call(
         self,
