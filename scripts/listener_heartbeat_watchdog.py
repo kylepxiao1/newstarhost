@@ -134,7 +134,8 @@ async def run() -> None:
     include_log_lines = max(1, _env_int("LISTENER_HEARTBEAT_ALERT_LOG_LINES", 5))
     stale_confirm_checks = max(1, _env_int("LISTENER_HEARTBEAT_STALE_CONFIRM_CHECKS", 2))
     recovery_confirm_checks = max(1, _env_int("LISTENER_HEARTBEAT_RECOVERY_CONFIRM_CHECKS", 2))
-    send_recovery_alert = str(_env("LISTENER_HEARTBEAT_SEND_RECOVERY_ALERT", "1")).strip().lower() in {
+    # Default off to avoid noisy "recovered" messages during transient flaps.
+    send_recovery_alert = str(_env("LISTENER_HEARTBEAT_SEND_RECOVERY_ALERT", "0")).strip().lower() in {
         "1",
         "true",
         "yes",
