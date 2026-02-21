@@ -10,7 +10,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # Per-run trendbot command override via `TRENDBOT_CMD`.
-TRENDBOT_RUN_CMD='python /app/scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --browser webkit --api-max-attempts 5 --api-navigation-timeout-ms 10000 --discover-scroll-rounds 12 --discover-dances-videos 180 --topic-hashtag-pages 24 --topic-hashtag-video-samples 20 --topic-max-related-videos 400 --supabase-min-velocity 100'
+TRENDBOT_RUN_CMD='python /app/scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --browser webkit --api-max-attempts 5 --api-navigation-timeout-ms 10000 --discover-scroll-rounds 12 --discover-dances-videos 180 --topic-hashtag-pages 24 --topic-hashtag-video-samples 20 --topic-max-related-videos 400 --supabase-min-velocity 500'
 VERIFY_BOT_CMD="${DISCORD_VERIFY_BOT_CMD:-python /app/scripts/discord_verify_bot.py}"
 TRENDBOT_ENV_FILE="${TRENDBOT_ENV_FILE:-/app/app.env}"
 TRENDBOT_INTERVAL_DEFAULT="${TRENDBOT_INTERVAL:-43200}"

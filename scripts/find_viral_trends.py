@@ -3742,7 +3742,7 @@ def parse_args(default_history: Path, default_output: Path) -> argparse.Namespac
     parser.add_argument(
         "--supabase-min-velocity",
         type=float,
-        default=0.0,
+        default=500,
         help="Only upload topic song rows with velocity_views_per_hour strictly greater than this value.",
     )
     parser.add_argument(

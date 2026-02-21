@@ -1100,6 +1100,21 @@ class TikTokLiveListener:
                 lambda: self._event_store.log_social(payload, event, self.username, raw_id=raw_id),
             )
 
+        fans_event_cls = getattr(ttevents, "FansEventEvent", None)
+        if fans_event_cls is not None:
+            @self.client.on(fans_event_cls)
+            async def on_fans(event) -> None:
+                if self._is_duplicate(event, "fans"):
+                    return
+                payload = _payload(event)
+                raw_id = await self._raw_id_for_event(event, payload, "fans")
+                await self._enqueue_store_call(
+                    "fan_events",
+                    lambda: self._event_store.log_fan_event(payload, event, self.username, raw_id=raw_id),
+                )
+        else:
+            logger.warning("TikTokLive package missing FansEventEvent; fan_events listener disabled")
+
         @self.client.on(ttevents.LikeEvent)
         async def on_like(event: ttevents.LikeEvent) -> None:
             if self._is_duplicate(event, "like"):

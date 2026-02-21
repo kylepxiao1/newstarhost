@@ -19,6 +19,7 @@ from utils import (
     _extract_recipient_from_describe,
     _get_any,
     _get_attr_any,
+    _is_placeholder_obj,
     _is_valid_value,
     _normalize_db_value,
     _safe_json,
@@ -1991,6 +1992,283 @@ class SupabaseEventStore:
                 self._log_result("like_events", action, resp)
             except Exception:
                 logger.exception("Failed to log like event")
+
+    async def log_fan_event(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
+        now_dt = datetime.now(timezone.utc)
+        ts = now_dt.isoformat()
+        unix_ts = int(now_dt.timestamp())
+
+        def _get_child(obj, *names):
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return _get_any(obj, *names)
+            return _get_attr_any(obj, *names)
+
+        def _is_missing(value) -> bool:
+            if value is None:
+                return True
+            if isinstance(value, bool):
+                return True
+            if isinstance(value, str):
+                text = value.strip()
+                if not text:
+                    return True
+                return _is_placeholder_obj(text)
+            if isinstance(value, (dict, list, tuple, set)):
+                return len(value) == 0
+            try:
+                text = str(value).strip()
+            except Exception:
+                return True
+            if not text:
+                return True
+            return _is_placeholder_obj(text)
+
+        def _first_int(*values) -> Optional[int]:
+            for value in values:
+                if _is_missing(value):
+                    continue
+                coerced = self._to_int(value)
+                if coerced is not None:
+                    return coerced
+            return None
+
+        def _first_text(*values) -> Optional[str]:
+            for value in values:
+                if _is_missing(value):
+                    continue
+                normalized = _normalize_db_value(value)
+                if _is_missing(normalized):
+                    continue
+                return str(normalized).strip()
+            return None
+
+        def _as_dict(obj) -> Optional[dict]:
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return obj
+            for method_name in ("to_dict", "as_dict"):
+                try:
+                    fn = getattr(obj, method_name, None)
+                    if callable(fn):
+                        converted = fn()
+                        if isinstance(converted, dict):
+                            return converted
+                except Exception:
+                    pass
+            try:
+                converted = vars(obj)
+                if isinstance(converted, dict):
+                    return converted
+            except Exception:
+                pass
+            return None
+
+        def _as_json_text(obj) -> Optional[str]:
+            if obj is None:
+                return None
+            if isinstance(obj, (dict, list)):
+                return _safe_json(obj)
+            for method_name in ("to_dict", "as_dict"):
+                try:
+                    fn = getattr(obj, method_name, None)
+                    if callable(fn):
+                        converted = fn()
+                        if isinstance(converted, (dict, list)):
+                            return _safe_json(converted)
+                except Exception:
+                    pass
+            try:
+                parsed = json.loads(_safe_json(obj))
+                if isinstance(parsed, (dict, list)):
+                    return _safe_json(parsed)
+            except Exception:
+                pass
+            return _normalize_db_value(obj)
+
+        base_message = _get_child(payload, "base_message", "baseMessage")
+        if base_message is None:
+            base_message = _get_attr_any(event, "base_message", "baseMessage")
+
+        user_obj = _safe_event_user(event) or _get_attr_any(event, "from_user", "fromUser")
+        user_payload = _get_child(payload, "user", "from_user", "fromUser") if isinstance(payload, dict) else None
+        if user_obj is None:
+            user_obj = user_payload
+        if user_obj is None:
+            display_text = _get_child(base_message, "display_text", "displayText")
+            pieces = _get_child(display_text, "pieces")
+            if isinstance(pieces, list):
+                for piece in pieces:
+                    piece_user = _get_child(_get_child(piece, "user_value", "userValue"), "user")
+                    if piece_user is not None:
+                        user_obj = piece_user
+                        break
+        if user_payload is None:
+            user_payload = _as_dict(user_obj)
+        if not isinstance(user_payload, dict):
+            user_payload = {}
+
+        event_type_obj = _get_child(payload, "event_type", "eventType")
+        if event_type_obj is None:
+            event_type_obj = _get_attr_any(event, "event_type", "eventType")
+        event_type_text = _first_text(
+            _get_attr_any(event_type_obj, "name", "key"),
+            event_type_obj,
+            _get_child(payload, "event_type_name", "eventTypeName"),
+        )
+
+        event_type_value = _first_int(
+            _get_attr_any(event_type_obj, "value", "number", "id"),
+            _get_child(payload, "event_type_value", "eventTypeValue"),
+            event_type_obj,
+        )
+
+        fans_level_info = _get_child(payload, "fans_level_info", "fansLevelInfo")
+        if fans_level_info is None:
+            fans_level_info = _get_attr_any(event, "fans_level_info", "fansLevelInfo")
+
+        fans_level_upgrade_info = _get_child(payload, "fans_level_upgrade_info", "fansLevelUpgradeInfo")
+        if fans_level_upgrade_info is None:
+            fans_level_upgrade_info = _get_attr_any(event, "fans_level_upgrade_info", "fansLevelUpgradeInfo")
+
+        data_obj = _get_child(payload, "data")
+        if data_obj is None:
+            data_obj = _get_attr_any(event, "data")
+
+        fans_level_badge = _get_child(fans_level_info, "badge", "fans_badge", "fansBadge")
+        new_fans_data = _get_child(data_obj, "new_fans_data", "newFansData")
+        exp_change_data = _get_child(data_obj, "exp_change_data", "expChangeData")
+
+        fans_level = _first_int(
+            _get_child(fans_level_info, "level", "fans_level", "fansLevel", "current_level", "currentLevel"),
+            _get_child(fans_level_upgrade_info, "level", "current_level", "currentLevel"),
+            _get_child(new_fans_data, "level", "fans_level", "fansLevel"),
+        )
+        fans_level_name = _first_text(
+            _get_child(fans_level_info, "level_name", "levelName", "name", "fans_level_name", "fansLevelName"),
+            _get_child(fans_level_badge, "name", "title", "level_name", "levelName", "badge_name", "badgeName"),
+            _get_child(new_fans_data, "level_name", "levelName", "name"),
+        )
+        upgrade_from_level = _first_int(
+            _get_child(
+                fans_level_upgrade_info,
+                "from_level",
+                "fromLevel",
+                "old_level",
+                "oldLevel",
+                "before_level",
+                "beforeLevel",
+                "prev_level",
+                "prevLevel",
+            ),
+            _get_child(exp_change_data, "from_level", "fromLevel", "old_level", "oldLevel"),
+        )
+        upgrade_to_level = _first_int(
+            _get_child(
+                fans_level_upgrade_info,
+                "to_level",
+                "toLevel",
+                "new_level",
+                "newLevel",
+                "after_level",
+                "afterLevel",
+                "level",
+                "current_level",
+                "currentLevel",
+            ),
+            _get_child(exp_change_data, "to_level", "toLevel", "new_level", "newLevel", "level"),
+        )
+
+        row = {
+            "id": raw_id if raw_id is not None else self._next_row_id(),
+            "iso_ts": ts,
+            "unix_ts": unix_ts,
+            "event_type": "fans",
+            "method": _first_text(
+                _get_child(payload, "method"),
+                _get_child(base_message, "method"),
+                _get_attr_any(event, "method"),
+                "WebcastFansEventMessage",
+            ),
+            "room_id": _first_int(
+                _get_child(payload, "room_id", "roomId"),
+                _get_child(base_message, "room_id", "roomId"),
+                _get_attr_any(event, "room_id", "roomId"),
+                _get_child(fans_level_info, "room_id", "roomId"),
+            ),
+            "create_time_ms": _first_int(
+                _get_child(payload, "create_time", "create_time_ms", "createTime", "timestamp"),
+                _get_child(base_message, "create_time", "createTime"),
+                _get_attr_any(event, "create_time", "createTime", "timestamp"),
+                int(unix_ts * 1000),
+            ),
+            "message_id": _first_int(
+                _get_child(payload, "msg_id", "msgId", "message_id", "messageId", "event_id"),
+                _get_child(base_message, "message_id", "messageId"),
+                _get_attr_any(event, "msg_id", "msgId", "message_id", "messageId", "_ws_msg_id"),
+            ),
+            "user_id": _first_int(
+                _get_attr_any(user_obj, "id", "user_id", "userId", "id_str", "idStr"),
+                _get_any(user_payload, "id", "user_id", "userId", "id_str", "idStr"),
+                _get_child(fans_level_info, "userid", "user_id", "userId"),
+                _get_child(fans_level_upgrade_info, "user_id", "userId"),
+                _get_child(new_fans_data, "user_id", "userId", "uid"),
+            ),
+            "username": _first_text(
+                _extract_handle(user_obj),
+                _extract_handle(user_payload),
+                _get_any(user_payload, "username", "unique_id", "display_id", "user_name", "userName"),
+                _get_child(new_fans_data, "username", "unique_id", "display_id", "user_name", "userName"),
+            ),
+            "nickname": _first_text(
+                _get_attr_any(user_obj, "nick_name", "nickname", "nickName"),
+                _get_any(user_payload, "nick_name", "nickname", "nickName"),
+                _get_child(new_fans_data, "nick_name", "nickname", "nickName"),
+            ),
+            "user_sec_uid": _first_text(
+                _get_attr_any(user_obj, "sec_uid", "secUid", "user_sec_uid"),
+                _get_any(user_payload, "sec_uid", "secUid", "user_sec_uid"),
+                _get_child(new_fans_data, "sec_uid", "secUid", "user_sec_uid"),
+            ),
+            "fans_event_type": event_type_text,
+            "fans_event_type_value": event_type_value,
+            "fans_level": fans_level,
+            "fans_level_name": fans_level_name,
+            "upgrade_from_level": upgrade_from_level,
+            "upgrade_to_level": upgrade_to_level,
+            "fans_level_info_json": _as_json_text(fans_level_info),
+            "fans_level_upgrade_info_json": _as_json_text(fans_level_upgrade_info),
+            "data_json": _as_json_text(data_obj),
+            "tiktok_username": tiktok_username,
+        }
+        values = [_normalize_db_value(v) for v in row.values()]
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping fan_events insert")
+                    return
+                row_data = dict(zip(row.keys(), values))
+                for key in (
+                    "room_id",
+                    "create_time_ms",
+                    "message_id",
+                    "fans_event_type_value",
+                    "fans_level",
+                    "upgrade_from_level",
+                    "upgrade_to_level",
+                ):
+                    row_data[key] = self._to_int(row_data.get(key))
+                on_conflict = "message_id,tiktok_username" if row_data.get("message_id") else None
+                action = "upsert" if on_conflict else "insert"
+                resp = await self._post_row("fan_events", row_data, on_conflict=on_conflict)
+                if on_conflict and self._response_missing_unique(resp):
+                    resp = await self._post_row("fan_events", row_data)
+                    action = "insert-fallback"
+                self._log_result("fan_events", action, resp)
+            except Exception:
+                logger.exception("Failed to log fan event")
 
     async def close(self) -> None:
         if not self._client:
