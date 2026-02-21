@@ -2349,47 +2349,117 @@ class SupabaseEventStore:
                 pass
             return _normalize_db_value(obj)
 
-        base_message = _get_child(payload, "base_message", "baseMessage")
-        if base_message is None:
-            base_message = _get_attr_any(event, "base_message", "baseMessage")
+        def _as_dict(obj) -> Optional[dict]:
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return obj
+            for method_name in ("to_dict", "as_dict"):
+                try:
+                    fn = getattr(obj, method_name, None)
+                    if callable(fn):
+                        converted = fn()
+                        if isinstance(converted, dict):
+                            return converted
+                except Exception:
+                    pass
+            try:
+                converted = vars(obj)
+                if isinstance(converted, dict):
+                    return converted
+            except Exception:
+                pass
+            return None
 
-        notify_obj = _get_child(payload, "notify")
-        if notify_obj is None:
-            notify_obj = _get_attr_any(event, "notify")
+        def _pick_node(*values):
+            for value in values:
+                if _is_missing(value):
+                    continue
+                return value
+            return None
 
-        scene_obj = _get_child(payload, "scene")
-        if scene_obj is None:
-            scene_obj = _get_attr_any(event, "scene")
+        payload_map = payload if isinstance(payload, dict) else {}
+        event_map = _as_dict(event) or {}
 
-        control_obj = _get_child(payload, "control")
-        if control_obj is None:
-            control_obj = _get_attr_any(event, "control")
-
-        left_icon_obj = _get_child(payload, "left_icon", "leftIcon")
-        if left_icon_obj is None:
-            left_icon_obj = _get_attr_any(event, "left_icon", "leftIcon")
-
-        right_icon_obj = _get_child(payload, "right_icon", "rightIcon")
-        if right_icon_obj is None:
-            right_icon_obj = _get_attr_any(event, "right_icon", "rightIcon")
-
-        background_obj = _get_child(payload, "background")
-        if background_obj is None:
-            background_obj = _get_attr_any(event, "background")
-
-        privilege_log_extra_obj = _get_child(payload, "privilege_log_extra", "privilegeLogExtra")
-        if privilege_log_extra_obj is None:
-            privilege_log_extra_obj = _get_attr_any(event, "privilege_log_extra", "privilegeLogExtra")
+        base_message = _pick_node(
+            _get_child(payload_map, "base_message", "baseMessage"),
+            _get_child(event_map, "base_message", "baseMessage"),
+            _get_attr_any(event, "base_message", "baseMessage"),
+        )
+        notify_obj = _pick_node(
+            _get_child(payload_map, "notify"),
+            _get_child(event_map, "notify"),
+            _get_attr_any(event, "notify"),
+        )
+        scene_obj = _pick_node(
+            _get_child(payload_map, "scene"),
+            _get_child(event_map, "scene"),
+            _get_attr_any(event, "scene"),
+        )
+        control_obj = _pick_node(
+            _get_child(payload_map, "control"),
+            _get_child(event_map, "control"),
+            _get_attr_any(event, "control"),
+        )
+        left_icon_obj = _pick_node(
+            _get_child(payload_map, "left_icon", "leftIcon"),
+            _get_child(event_map, "left_icon", "leftIcon"),
+            _get_attr_any(event, "left_icon", "leftIcon"),
+        )
+        right_icon_obj = _pick_node(
+            _get_child(payload_map, "right_icon", "rightIcon"),
+            _get_child(event_map, "right_icon", "rightIcon"),
+            _get_attr_any(event, "right_icon", "rightIcon"),
+        )
+        background_obj = _pick_node(
+            _get_child(payload_map, "background"),
+            _get_child(event_map, "background"),
+            _get_attr_any(event, "background"),
+        )
+        privilege_log_extra_obj = _pick_node(
+            _get_child(payload_map, "privilege_log_extra", "privilegeLogExtra"),
+            _get_child(event_map, "privilege_log_extra", "privilegeLogExtra"),
+            _get_attr_any(event, "privilege_log_extra", "privilegeLogExtra"),
+        )
 
         scene_text = _first_text(
             _get_attr_any(scene_obj, "name", "key"),
             scene_obj,
-            _get_child(payload, "scene_name", "sceneName"),
+            _get_child(payload_map, "scene_name", "sceneName"),
+            _get_child(event_map, "scene_name", "sceneName"),
+            "UNKNOWN",
         )
         scene_value = _first_int(
             _get_attr_any(scene_obj, "value", "number", "id"),
-            _get_child(payload, "scene_value", "sceneValue"),
+            _get_child(payload_map, "scene_value", "sceneValue"),
+            _get_child(event_map, "scene_value", "sceneValue"),
             scene_obj,
+            0,
+        )
+        control_target_group = _pick_node(
+            _get_child(control_obj, "target_group_show_rst", "targetGroupShowRst"),
+        )
+        control_status_from_groups = None
+        if isinstance(control_target_group, dict) and control_target_group:
+            total_groups = len(control_target_group)
+            banned_groups = 0
+            for result in control_target_group.values():
+                banned = _get_child(result, "banned")
+                if banned is True or str(banned).strip().lower() in {"1", "true", "yes"}:
+                    banned_groups += 1
+            control_status_from_groups = f"banned={banned_groups}/{total_groups}"
+        control_trigger_type = _pick_node(
+            _get_child(control_obj, "horizontal_trigger_type", "horizontalTriggerType"),
+        )
+        notify_extra = _pick_node(
+            _get_child(notify_obj, "extra"),
+        )
+        notify_content = _first_text(
+            _get_child(notify_obj, "content", "notify_content", "notifyContent", "text", "title"),
+            _get_child(notify_extra, "content", "text", "title", "description"),
+            _get_child(payload_map, "content", "notify_content", "notifyContent"),
+            _get_child(base_message, "describe"),
+            _get_child(_get_child(base_message, "display_text", "displayText"), "default_pattern", "defaultPattern"),
         )
 
         row = {
@@ -2398,38 +2468,49 @@ class SupabaseEventStore:
             "unix_ts": unix_ts,
             "event_type": "privilege_advance",
             "method": _first_text(
-                _get_child(payload, "method"),
+                _get_child(payload_map, "method"),
+                _get_child(event_map, "method"),
                 _get_child(base_message, "method"),
                 _get_attr_any(event, "method"),
                 "WebcastPrivilegeAdvanceMessage",
             ),
             "room_id": _first_int(
-                _get_child(payload, "room_id", "roomId"),
+                _get_child(payload_map, "room_id", "roomId"),
+                _get_child(event_map, "room_id", "roomId"),
                 _get_child(base_message, "room_id", "roomId"),
                 _get_attr_any(event, "room_id", "roomId"),
             ),
             "create_time_ms": _first_int(
-                _get_child(payload, "create_time", "create_time_ms", "createTime", "timestamp"),
+                _get_child(payload_map, "create_time", "create_time_ms", "createTime", "timestamp"),
+                _get_child(event_map, "create_time", "create_time_ms", "createTime", "timestamp"),
                 _get_child(base_message, "create_time", "createTime"),
                 _get_attr_any(event, "create_time", "createTime", "timestamp"),
                 int(unix_ts * 1000),
             ),
             "message_id": _first_int(
-                _get_child(payload, "msg_id", "msgId", "message_id", "messageId", "event_id"),
+                _get_child(payload_map, "msg_id", "msgId", "message_id", "messageId", "event_id"),
+                _get_child(event_map, "msg_id", "msgId", "message_id", "messageId", "event_id"),
                 _get_child(base_message, "message_id", "messageId"),
                 _get_attr_any(event, "msg_id", "msgId", "message_id", "messageId", "_ws_msg_id"),
             ),
             "sub_type": _first_text(
-                _get_child(payload, "sub_type", "subType"),
+                _get_child(payload_map, "sub_type", "subType"),
+                _get_child(event_map, "sub_type", "subType"),
                 _get_attr_any(event, "sub_type", "subType"),
             ),
             "scene": scene_text,
             "scene_value": scene_value,
             "control_display_type": _first_int(
                 _get_child(control_obj, "display_type", "displayType", "type"),
+                _get_attr_any(control_trigger_type, "value", "number", "id"),
+                _get_child(control_obj, "horizontal_trigger_type_value", "horizontalTriggerTypeValue"),
+                _get_child(control_obj, "priority"),
             ),
             "control_display_status": _first_text(
                 _get_child(control_obj, "display_status", "displayStatus", "status"),
+                control_trigger_type,
+                control_status_from_groups,
+                _get_child(control_obj, "duration"),
             ),
             "left_icon_uri": _first_text(
                 _get_child(left_icon_obj, "m_uri", "mUri", "uri"),
@@ -2443,9 +2524,7 @@ class SupabaseEventStore:
             "notify_type": _first_int(
                 _get_child(notify_obj, "notify_type", "notifyType", "type"),
             ),
-            "notify_content": _first_text(
-                _get_child(notify_obj, "content", "notify_content", "notifyContent", "text"),
-            ),
+            "notify_content": notify_content,
             "notify_schema": _first_text(
                 _get_child(notify_obj, "schema", "schema_url", "schemaUrl"),
             ),
