@@ -132,6 +132,15 @@ async def run() -> None:
     check_interval = max(15, _env_int("LISTENER_HEARTBEAT_CHECK_INTERVAL_SECONDS", 60))
     stale_seconds = max(30, _env_int("LISTENER_HEARTBEAT_STALE_SECONDS", 300))
     include_log_lines = max(1, _env_int("LISTENER_HEARTBEAT_ALERT_LOG_LINES", 5))
+    stale_confirm_checks = max(1, _env_int("LISTENER_HEARTBEAT_STALE_CONFIRM_CHECKS", 2))
+    recovery_confirm_checks = max(1, _env_int("LISTENER_HEARTBEAT_RECOVERY_CONFIRM_CHECKS", 2))
+    send_recovery_alert = str(_env("LISTENER_HEARTBEAT_SEND_RECOVERY_ALERT", "1")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
     watch_ids = _parse_watch_ids()
     listener_heartbeat_interval = max(1.0, _env_float("LISTENER_HEARTBEAT_INTERVAL_SECONDS", 60.0))
     startup_delay_seconds = max(1.0, 2.0 * listener_heartbeat_interval)
@@ -151,15 +160,19 @@ async def run() -> None:
     states = {
         watch_id: {
             "stale": False,
+            "stale_hits": 0,
+            "healthy_hits": 0,
         }
         for watch_id in watch_ids
     }
     logger.info(
-        "Listener heartbeat watchdog started: table=%s ids=%s stale_after=%ss interval=%ss",
+        "Listener heartbeat watchdog started: table=%s ids=%s stale_after=%ss interval=%ss stale_confirm=%s recovery_confirm=%s",
         table,
         ",".join(watch_ids),
         stale_seconds,
         check_interval,
+        stale_confirm_checks,
+        recovery_confirm_checks,
     )
     logger.info(
         "Heartbeat watchdog startup delay active: sleeping %.0fs (2 * LISTENER_HEARTBEAT_INTERVAL_SECONDS=%.2fs)",
@@ -194,9 +207,20 @@ async def run() -> None:
                     age_seconds = _heartbeat_age_seconds(row, now_dt)
                     stale = age_seconds is None or age_seconds > stale_seconds
 
-                # Alert once when transitioning from healthy -> stale.
-                # Do not repeat while still stale to avoid channel spam.
-                should_alert = stale and not state["stale"]
+                if stale:
+                    state["stale_hits"] = int(state.get("stale_hits", 0)) + 1
+                    state["healthy_hits"] = 0
+                else:
+                    state["healthy_hits"] = int(state.get("healthy_hits", 0)) + 1
+                    state["stale_hits"] = 0
+
+                # Alert once when transitioning from healthy -> stale, after
+                # N consecutive stale checks to avoid flapping spam.
+                should_alert = (
+                    (not state["stale"])
+                    and stale
+                    and int(state.get("stale_hits", 0)) >= stale_confirm_checks
+                )
                 if should_alert:
                     if query_error:
                         message = (
@@ -227,8 +251,14 @@ async def run() -> None:
                             clipped = "\n".join(recent_lines)[-1200:]
                             message += f"\nRecent logs:\n```text\n{clipped}\n```"
                     await _send_webhook(client, webhook_url=webhook_url, content=message)
+                    state["stale"] = True
 
-                if (not stale) and state["stale"]:
+                should_recover = (
+                    state["stale"]
+                    and (not stale)
+                    and int(state.get("healthy_hits", 0)) >= recovery_confirm_checks
+                )
+                if should_recover and send_recovery_alert:
                     recovery_age = int(age_seconds or 0)
                     await _send_webhook(
                         client,
@@ -238,8 +268,8 @@ async def run() -> None:
                             f"Latest heartbeat age is {recovery_age}s."
                         ),
                     )
-
-                state["stale"] = stale
+                if should_recover:
+                    state["stale"] = False
             await asyncio.sleep(check_interval)
 
 
