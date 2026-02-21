@@ -12,6 +12,8 @@ fi
 # Per-run trendbot command override via `TRENDBOT_CMD`.
 TRENDBOT_RUN_CMD='python /app/scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --browser webkit --api-max-attempts 5 --api-navigation-timeout-ms 10000 --discover-scroll-rounds 12 --discover-dances-videos 180 --topic-hashtag-pages 24 --topic-hashtag-video-samples 20 --topic-max-related-videos 400 --supabase-min-velocity 500'
 VERIFY_BOT_CMD="${DISCORD_VERIFY_BOT_CMD:-python /app/scripts/discord_verify_bot.py}"
+HEARTBEAT_WATCHDOG_CMD="${LISTENER_HEARTBEAT_WATCHDOG_CMD:-python /app/scripts/listener_heartbeat_watchdog.py}"
+HEARTBEAT_WATCHDOG_ENABLED="${LISTENER_HEARTBEAT_WATCHDOG_ENABLED:-1}"
 TRENDBOT_ENV_FILE="${TRENDBOT_ENV_FILE:-/app/app.env}"
 TRENDBOT_INTERVAL_DEFAULT="${TRENDBOT_INTERVAL:-43200}"
 
@@ -74,6 +76,7 @@ trendbot_loop() {
 
 trendbot_pid=""
 verify_pid=""
+watchdog_pid=""
 
 shutdown_children() {
   log "Shutting down discord worker children"
@@ -82,6 +85,9 @@ shutdown_children() {
   fi
   if [ -n "${verify_pid}" ] && kill -0 "${verify_pid}" 2>/dev/null; then
     kill "${verify_pid}" 2>/dev/null || true
+  fi
+  if [ -n "${watchdog_pid}" ] && kill -0 "${watchdog_pid}" 2>/dev/null; then
+    kill "${watchdog_pid}" 2>/dev/null || true
   fi
   wait || true
 }
@@ -96,8 +102,21 @@ log "Starting discord verify bot: ${VERIFY_BOT_CMD}"
 bash -lc "${VERIFY_BOT_CMD}" &
 verify_pid=$!
 
+if [ "${HEARTBEAT_WATCHDOG_ENABLED}" = "1" ] || [ "${HEARTBEAT_WATCHDOG_ENABLED}" = "true" ]; then
+  log "Starting listener heartbeat watchdog: ${HEARTBEAT_WATCHDOG_CMD}"
+  bash -lc "${HEARTBEAT_WATCHDOG_CMD}" &
+  watchdog_pid=$!
+else
+  log "Listener heartbeat watchdog disabled (LISTENER_HEARTBEAT_WATCHDOG_ENABLED=${HEARTBEAT_WATCHDOG_ENABLED})"
+fi
+
+pids=("${trendbot_pid}" "${verify_pid}")
+if [ -n "${watchdog_pid}" ]; then
+  pids+=("${watchdog_pid}")
+fi
+
 set +e
-wait -n "${trendbot_pid}" "${verify_pid}"
+wait -n "${pids[@]}"
 exit_code=$?
 set -e
 

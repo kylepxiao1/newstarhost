@@ -1,8 +1,11 @@
 import asyncio
+import collections
 import logging
 import os
 import random
 import re
+import socket
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from http.cookiejar import MozillaCookieJar
@@ -64,6 +67,11 @@ TIKTOK_DEVICE_ID_FILE = _env("TIKTOK_DEVICE_ID_FILE")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID")
 SUPABASE_SECRET_KEY = _env("SUPABASE_SECRET_KEY")
 SUPABASE_DEBUG = _env_flag("SUPABASE_DEBUG", False)
+LISTENER_HEARTBEAT_ENABLED = _env_flag("LISTENER_HEARTBEAT_ENABLED", True)
+LISTENER_HEARTBEAT_INTERVAL_SECONDS = max(15.0, _env_float("LISTENER_HEARTBEAT_INTERVAL_SECONDS", 60.0))
+LISTENER_HEARTBEAT_ID = _env("LISTENER_HEARTBEAT_ID", "").strip()
+LISTENER_HEARTBEAT_LOG_LINES = max(1, _env_int("LISTENER_HEARTBEAT_LOG_LINES", 30))
+LISTENER_HEARTBEAT_LOG_BUFFER_LINES = max(100, _env_int("LISTENER_HEARTBEAT_LOG_BUFFER_LINES", 300))
 
 if WHITELIST_AUTHENTICATED_SESSION_ID_HOST:
     os.environ.setdefault(
@@ -84,6 +92,30 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 if SUPABASE_DEBUG:
     logger.setLevel(logging.DEBUG)
+
+
+class _RecentLogBufferHandler(logging.Handler):
+    def __init__(self, max_lines: int = 300) -> None:
+        super().__init__(level=logging.INFO)
+        self._lines = collections.deque(maxlen=max(1, int(max_lines)))
+        self._lock = threading.Lock()
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+        except Exception:
+            line = f"{record.levelname}: {record.getMessage()}"
+        with self._lock:
+            self._lines.append(line)
+
+    def tail(self, limit: int) -> list[str]:
+        with self._lock:
+            return list(self._lines)[-max(1, int(limit)) :]
+
+
+_recent_log_handler = _RecentLogBufferHandler(max_lines=LISTENER_HEARTBEAT_LOG_BUFFER_LINES)
+_recent_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+logging.getLogger().addHandler(_recent_log_handler)
 
 
 COOKIE_ENV_MAP = {
@@ -304,6 +336,7 @@ class TikTokLiveListener:
         self._store_workers_started = False
         self._store_backpressure_hits = 0
         self._last_store_backpressure_log = datetime.min.replace(tzinfo=timezone.utc)
+        self._is_connected = False
 
         # Apply signer defaults if available
         if WebDefaults:
@@ -345,6 +378,19 @@ class TikTokLiveListener:
             self._device_id = pinned
             _persist_device_id(pinned)
         self._wire_events()
+
+    def heartbeat_snapshot(self) -> dict:
+        now_mono = time.monotonic()
+        seconds_until_next_check = max(0.0, self._next_live_check_at - now_mono)
+        return {
+            "username": self.username,
+            "connected": bool(self._is_connected),
+            "last_live_status": self._last_live_status,
+            "store_queue_size": self._store_queue.qsize(),
+            "store_queue_max": self._store_queue_max,
+            "store_backpressure_hits": self._store_backpressure_hits,
+            "next_live_check_in_seconds": round(seconds_until_next_check, 2),
+        }
 
     async def _start_store_workers(self) -> None:
         if self._store_workers_started:
@@ -822,6 +868,7 @@ class TikTokLiveListener:
 
         @self.client.on(ttevents.ConnectEvent)
         async def on_connect(_: ttevents.ConnectEvent) -> None:
+            self._is_connected = True
             host = None
             try:
                 host_obj = getattr(self.client, "room_info", None)
@@ -836,6 +883,7 @@ class TikTokLiveListener:
 
         @self.client.on(ttevents.DisconnectEvent)
         async def on_disconnect(_: ttevents.DisconnectEvent) -> None:
+            self._is_connected = False
             logger.warning("Disconnected from TikTok LIVE. Reconnecting...")
             self._force_live_recheck()
 
@@ -1238,6 +1286,7 @@ class TikTokLiveListener:
                     await self.client.disconnect()
                 except Exception:
                     pass
+                self._is_connected = False
                 # After any disconnect, re-enter live polling before attempting
                 # another websocket connect for this account.
                 self._force_live_recheck()
@@ -1276,6 +1325,13 @@ def parse_usernames() -> list[str]:
         return out
     return []
 
+
+def _resolve_heartbeat_id(usernames: list[str]) -> str:
+    if LISTENER_HEARTBEAT_ID:
+        return LISTENER_HEARTBEAT_ID
+    # Keep default stable so each heartbeat overwrites the same row by default.
+    return "listener"
+
 async def main() -> None:
     usernames = [u for u in parse_usernames() if u]
     if not usernames:
@@ -1292,6 +1348,8 @@ async def main() -> None:
         logger.info("Supabase target: %s (key suffix: %s)", supabase_url, key_tail if key_tail else "n/a")
     event_store = SupabaseEventStore(supabase_url, SUPABASE_SECRET_KEY, debug=SUPABASE_DEBUG)
     listeners = [TikTokLiveListener(u, event_store) for u in usernames]
+    heartbeat_task: Optional[asyncio.Task] = None
+    heartbeat_id = _resolve_heartbeat_id(usernames)
 
     async def run_listener(listener: TikTokLiveListener) -> None:
         try:
@@ -1301,10 +1359,49 @@ async def main() -> None:
         finally:
             await listener.close()
 
+    async def heartbeat_loop() -> None:
+        while True:
+            snapshots = [listener.heartbeat_snapshot() for listener in listeners]
+            connected_count = sum(1 for item in snapshots if item.get("connected"))
+            queue_total = sum(int(item.get("store_queue_size") or 0) for item in snapshots)
+            backpressure_total = sum(int(item.get("store_backpressure_hits") or 0) for item in snapshots)
+            recent_logs = _recent_log_handler.tail(LISTENER_HEARTBEAT_LOG_LINES)
+            await event_store.log_listener_heartbeat(
+                listener_id=heartbeat_id,
+                payload={
+                    "status": "running",
+                    "process_id": os.getpid(),
+                    "hostname": socket.gethostname(),
+                    "machine_id": os.environ.get("FLY_MACHINE_ID"),
+                    "region": os.environ.get("FLY_REGION"),
+                    "listener_usernames": [listener.username for listener in listeners],
+                    "active_listener_count": len(listeners),
+                    "connected_listener_count": connected_count,
+                    "queue_total": queue_total,
+                    "backpressure_hits_total": backpressure_total,
+                    "listener_states": snapshots,
+                    "recent_logs": recent_logs,
+                    "last_log_line": recent_logs[-1] if recent_logs else None,
+                },
+            )
+            await asyncio.sleep(LISTENER_HEARTBEAT_INTERVAL_SECONDS)
+
     try:
-        await asyncio.gather(*(run_listener(l) for l in listeners))
+        listener_tasks = [asyncio.create_task(run_listener(l), name=f"listener-{l.username}") for l in listeners]
+        if LISTENER_HEARTBEAT_ENABLED:
+            heartbeat_task = asyncio.create_task(heartbeat_loop(), name="listener-heartbeat")
+            logger.info(
+                "Listener heartbeat enabled: id=%s interval=%ss table=listener_heartbeats",
+                heartbeat_id,
+                int(LISTENER_HEARTBEAT_INTERVAL_SECONDS),
+            )
+        await asyncio.gather(*(listener_tasks + ([heartbeat_task] if heartbeat_task else [])))
     except (asyncio.CancelledError, KeyboardInterrupt):
         logger.info("Shutting down TikTok listeners.")
+    finally:
+        if heartbeat_task:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
         for l in listeners:
             await l.close()
         await event_store.close()

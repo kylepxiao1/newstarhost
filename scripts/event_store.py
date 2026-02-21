@@ -2578,6 +2578,64 @@ class SupabaseEventStore:
             except Exception:
                 logger.exception("Failed to log privilege advance event")
 
+    async def log_listener_heartbeat(self, listener_id: str, payload: dict) -> None:
+        listener_id = str(listener_id or "").strip()
+        if not listener_id:
+            return
+        now_dt = datetime.now(timezone.utc)
+        updated_unix = int(now_dt.timestamp())
+
+        listener_usernames_raw = payload.get("listener_usernames") if isinstance(payload, dict) else None
+        if not isinstance(listener_usernames_raw, list):
+            listener_usernames_raw = []
+        listener_usernames = [str(item).strip() for item in listener_usernames_raw if str(item).strip()]
+
+        recent_logs_raw = payload.get("recent_logs") if isinstance(payload, dict) else None
+        if not isinstance(recent_logs_raw, list):
+            recent_logs_raw = []
+        recent_logs = [str(item)[:1000] for item in recent_logs_raw if str(item).strip()]
+        recent_logs = recent_logs[-100:]
+
+        listener_states = payload.get("listener_states") if isinstance(payload, dict) else None
+        if not isinstance(listener_states, list):
+            listener_states = []
+
+        row = {
+            "listener_id": listener_id,
+            "updated_at": now_dt.isoformat(),
+            "updated_unix": updated_unix,
+            "status": _normalize_db_value(payload.get("status")) if isinstance(payload, dict) else "running",
+            "process_id": self._to_int(payload.get("process_id")) if isinstance(payload, dict) else None,
+            "hostname": _normalize_db_value(payload.get("hostname")) if isinstance(payload, dict) else None,
+            "machine_id": _normalize_db_value(payload.get("machine_id")) if isinstance(payload, dict) else None,
+            "region": _normalize_db_value(payload.get("region")) if isinstance(payload, dict) else None,
+            "active_listener_count": self._to_int(payload.get("active_listener_count")) if isinstance(payload, dict) else None,
+            "connected_listener_count": self._to_int(payload.get("connected_listener_count")) if isinstance(payload, dict) else None,
+            "queue_total": self._to_int(payload.get("queue_total")) if isinstance(payload, dict) else None,
+            "backpressure_hits_total": self._to_int(payload.get("backpressure_hits_total")) if isinstance(payload, dict) else None,
+            "last_log_line": _normalize_db_value(payload.get("last_log_line")) if isinstance(payload, dict) else None,
+            "listener_usernames": listener_usernames,
+            "listener_states": listener_states,
+            "recent_logs": recent_logs,
+            "meta": payload if isinstance(payload, dict) else {},
+        }
+        async with self._lock:
+            try:
+                if not self._client:
+                    logger.debug("Supabase client unavailable; skipping listener heartbeat insert")
+                    return
+                resp = await self._send_post_with_retry(
+                    table="listener_heartbeats",
+                    row_data=row,
+                    on_conflict="listener_id",
+                    prefer=None,
+                    queue_on_failure=False,
+                    max_attempts=1,
+                )
+                self._log_result("listener_heartbeats", "upsert", resp)
+            except Exception:
+                logger.exception("Failed to write listener heartbeat")
+
     async def close(self) -> None:
         if not self._client:
             return
