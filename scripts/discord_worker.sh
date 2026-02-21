@@ -9,11 +9,12 @@ if [ -f "$ENV_FILE" ]; then
   set +a
 fi
 
-# Per-run trendbot command override via `TRENDBOT_CMD`.
-TRENDBOT_RUN_CMD='python /app/scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --browser webkit --api-max-attempts 5 --api-navigation-timeout-ms 10000 --discover-scroll-rounds 12 --discover-dances-videos 180 --topic-hashtag-pages 24 --topic-hashtag-video-samples 20 --topic-max-related-videos 400 --supabase-min-velocity 500'
+# Per-run trendbot command override via `TRENDBOT_RUN_CMD`.
+TRENDBOT_MIN_VELOCITY="${TRENDBOT_MIN_VELOCITY:-500}"
 VERIFY_BOT_CMD="${DISCORD_VERIFY_BOT_CMD:-python /app/scripts/discord_verify_bot.py}"
 HEARTBEAT_WATCHDOG_CMD="${LISTENER_HEARTBEAT_WATCHDOG_CMD:-python /app/scripts/listener_heartbeat_watchdog.py}"
 HEARTBEAT_WATCHDOG_ENABLED="${LISTENER_HEARTBEAT_WATCHDOG_ENABLED:-1}"
+LISTENER_HEARTBEAT_INTERVAL_SECONDS="${LISTENER_HEARTBEAT_INTERVAL_SECONDS:-60}"
 TRENDBOT_ENV_FILE="${TRENDBOT_ENV_FILE:-/app/app.env}"
 TRENDBOT_INTERVAL_DEFAULT="${TRENDBOT_INTERVAL:-43200}"
 
@@ -34,7 +35,9 @@ trendbot_loop() {
   fi
 
   local interval="${TRENDBOT_INTERVAL:-${TRENDBOT_INTERVAL_DEFAULT}}"
-  local cmd="${TRENDBOT_RUN_CMD}"
+  local min_velocity="${TRENDBOT_MIN_VELOCITY:-500}"
+  local default_cmd="python /app/scripts/find_viral_trends.py --topic \"dance challenges\" --videos 120 --top 25 --browser webkit --api-max-attempts 5 --api-navigation-timeout-ms 10000 --discover-scroll-rounds 12 --discover-dances-videos 180 --topic-hashtag-pages 24 --topic-hashtag-video-samples 20 --topic-max-related-videos 400 --supabase-min-velocity ${min_velocity}"
+  local cmd="${TRENDBOT_RUN_CMD:-${default_cmd}}"
 
   trendbot_log "Starting trendbot loop (interval=${interval}s)"
   trendbot_log "Command: ${cmd}"
@@ -103,7 +106,7 @@ bash -lc "${VERIFY_BOT_CMD}" &
 verify_pid=$!
 
 if [ "${HEARTBEAT_WATCHDOG_ENABLED}" = "1" ] || [ "${HEARTBEAT_WATCHDOG_ENABLED}" = "true" ]; then
-  log "Starting listener heartbeat watchdog: ${HEARTBEAT_WATCHDOG_CMD}"
+  log "Starting listener heartbeat watchdog: ${HEARTBEAT_WATCHDOG_CMD} (LISTENER_HEARTBEAT_INTERVAL_SECONDS=${LISTENER_HEARTBEAT_INTERVAL_SECONDS})"
   bash -lc "${HEARTBEAT_WATCHDOG_CMD}" &
   watchdog_pid=$!
 else
