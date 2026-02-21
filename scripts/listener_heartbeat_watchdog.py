@@ -18,6 +18,16 @@ def _env_int(key: str, default: int) -> int:
         return default
 
 
+def _env_float(key: str, default: float) -> float:
+    value = _env(key, "").strip()
+    if not value:
+        return default
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
 def _parse_iso(value: str) -> Optional[datetime]:
     text = str(value or "").strip()
     if not text:
@@ -123,6 +133,8 @@ async def run() -> None:
     stale_seconds = max(30, _env_int("LISTENER_HEARTBEAT_STALE_SECONDS", 300))
     include_log_lines = max(1, _env_int("LISTENER_HEARTBEAT_ALERT_LOG_LINES", 5))
     watch_ids = _parse_watch_ids()
+    listener_heartbeat_interval = max(1.0, _env_float("LISTENER_HEARTBEAT_INTERVAL_SECONDS", 60.0))
+    startup_delay_seconds = max(1.0, 2.0 * listener_heartbeat_interval)
 
     if not supabase_url or not supabase_key:
         logger.error("Missing Supabase credentials for heartbeat watchdog.")
@@ -149,6 +161,12 @@ async def run() -> None:
         stale_seconds,
         check_interval,
     )
+    logger.info(
+        "Heartbeat watchdog startup delay active: sleeping %.0fs (2 * LISTENER_HEARTBEAT_INTERVAL_SECONDS=%.2fs)",
+        startup_delay_seconds,
+        listener_heartbeat_interval,
+    )
+    await asyncio.sleep(startup_delay_seconds)
 
     async with httpx.AsyncClient(
         base_url=f"{supabase_url}/rest/v1",
