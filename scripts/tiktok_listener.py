@@ -59,6 +59,7 @@ def _env_float(key: str, default: float) -> float:
 
 TIKTOK_USERNAMES = _env("TIKTOK_USERNAMES")
 LOG_FILE = _env("LOG_FILE")
+LISTENER_LOG_LEVEL = _env("LISTENER_LOG_LEVEL", "INFO").strip().upper()
 EULERSTREAM_API_KEY = _env("EULERSTREAM_API_KEY")
 EULERSTREAM_SIGN_URL = _env("EULERSTREAM_SIGN_URL")
 WHITELIST_AUTHENTICATED_SESSION_ID_HOST = _env("WHITELIST_AUTHENTICATED_SESSION_ID_HOST")
@@ -82,8 +83,11 @@ if WHITELIST_AUTHENTICATED_SESSION_ID_HOST:
 _log_handlers = [logging.StreamHandler()]
 if LOG_FILE:
     _log_handlers.append(logging.FileHandler(LOG_FILE, encoding="utf-8"))
+_resolved_listener_level = getattr(logging, LISTENER_LOG_LEVEL, logging.INFO)
+if not isinstance(_resolved_listener_level, int):
+    _resolved_listener_level = logging.INFO
 logging.basicConfig(
-    level=logging.INFO,
+    level=_resolved_listener_level,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=_log_handlers,
 )

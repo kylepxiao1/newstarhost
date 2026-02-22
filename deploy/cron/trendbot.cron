@@ -1,0 +1,4 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=America/Denver
+0 0,12 * * * /usr/bin/env bash /app/scripts/sh/run_program.sh trendbot-once

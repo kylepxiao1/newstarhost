@@ -176,16 +176,33 @@ async def lifespan(app: FastAPI):
     # Standalone mode: skip OBS control
     obs.enabled = False
     logger.info("Service started (headless). Overlay websocket at %s", config.WEBSOCKET_PATH)
+    # Run potentially slow media maintenance in the background so the HTTP port can bind quickly.
+    maintenance_task = asyncio.create_task(_run_startup_maintenance())
+    app.state.startup_maintenance_task = maintenance_task
+    yield
+    if not maintenance_task.done():
+        maintenance_task.cancel()
+        try:
+            await maintenance_task
+        except asyncio.CancelledError:
+            pass
+
+
+async def _run_startup_maintenance() -> None:
+    logger.info("Startup maintenance task started")
     try:
-        state_manager.rename_media_files(MEDIA_DIR)
+        await asyncio.to_thread(state_manager.rename_media_files, MEDIA_DIR)
     except Exception as exc:
         logger.warning("Media rename on startup failed: %s", exc)
     try:
-        state_manager.ensure_song_durations(MEDIA_DIR)
+        await asyncio.to_thread(state_manager.ensure_song_durations, MEDIA_DIR)
     except Exception as exc:
         logger.warning("Song duration scan failed: %s", exc)
-    _cleanup_unregistered_media(state_manager)
-    yield
+    try:
+        await asyncio.to_thread(_cleanup_unregistered_media, state_manager)
+    except Exception as exc:
+        logger.warning("Media cleanup on startup failed: %s", exc)
+    logger.info("Startup maintenance task finished")
 
 
 app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json", lifespan=lifespan)

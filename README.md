@@ -11,6 +11,7 @@ Windows-first control stack for automated TikTok LIVE battles. FastAPI backend o
 - `scripts/virtual_cam_compositor.py` - Lightweight virtual camera compositor (no OBS; overlays + camera into a virtual cam).
 - `scripts/run_all.py` - One-shot launcher for backend + virtual cam compositor.
 - `scripts/find_viral_trends.py` - Public-data TikTok topic trend/song radar with optional Supabase upload.
+- `scripts/sh/` - Supervisord runtime wrappers (`run_supervisor_program.sh`, `run_with_memory_cap.sh`, `run_program.sh`).
 - `requirements.txt` - Python dependencies.
 
 ## Quick Start (Windows)
@@ -103,19 +104,70 @@ Notes:
 - Topic song rows can be upserted to Supabase `topic_trends` (disable with `--no-supabase-upload`).
 
 ### Fly.io Single Machine (supervisord)
-Fly deploy now runs one machine with three `supervisord` programs:
-- `app`: backend API + `scripts/sh/s3_sync.sh`
-- `listener`: `scripts/tiktok_listener.py`
-- `discord`: `scripts/sh/discord_worker.sh`
+Fly deploy now runs one machine with six `supervisord` programs:
+- `app`: FastAPI web app (`backend.main:app`)
+- `listener`: `scripts/tiktok_listener.py` (auto-retry on crash)
+- `discord-verify-bot`: `scripts/discord_verify_bot.py` (auto-retry on crash)
+- `watchdog`: `scripts/watchdog.py --mode heartbeat` (auto-retry on crash)
+- `s3-sync`: scheduled by Supercronic at **4:00 AM America/Denver** (daily)
+- `trendbot`: scheduled by Supercronic at **12:00 AM and 12:00 PM America/Denver** (daily)
+
+Web app bind behavior:
+- The `app` program starts Uvicorn with `--host $APP_HOST --port $PORT` (`APP_HOST=0.0.0.0`, `PORT=8080` in `fly.toml`).
+- Slow media maintenance (rename/scan/cleanup) now runs in a background startup task so the web port can bind quickly for Fly proxy checks.
+- Deploy defaults set `UVICORN_LOG_LEVEL=info` and `UVICORN_ACCESS_LOG=true` so `[app]` log filtering has regular request/startup lines.
+- Listener verbosity is controllable with `LISTENER_LOG_LEVEL` (set to `WARNING` by default in `fly.toml` to reduce noise).
+
+Supervisord also runs an event listener:
+- `watchdog-process-events`: runs `scripts/watchdog.py --mode process-events` and posts webhook alerts when supervised programs crash unexpectedly (including OOM-style exits).
+  It dedupes alerts per process incident (no repeated BACKOFF/FATAL/EXITED spam for the same outage) and rearms once that process returns to `RUNNING`.
 
 Machine sizing in `fly.toml`:
 - Shared VM memory: `2gb` (`memory_mb=2048`)
 - CPU: `2`
 
-Each program is auto-restarted independently and launched with a per-process memory cap (`APP_MEMORY_LIMIT_MB`, `LISTENER_MEMORY_LIMIT_MB`, `DISCORD_MEMORY_LIMIT_MB`) to keep one leaking process from immediately taking down the other supervised processes.
+Each supervised process has its own memory cap:
+- `APP_MEMORY_LIMIT_MB`
+- `LISTENER_MEMORY_LIMIT_MB`
+- `DISCORD_VERIFY_BOT_MEMORY_LIMIT_MB`
+- `WATCHDOG_MEMORY_LIMIT_MB`
+- `WATCHDOG_PROCESS_EVENTS_MEMORY_LIMIT_MB`
+- `S3_SYNC_MEMORY_LIMIT_MB`
+- `TRENDBOT_MEMORY_LIMIT_MB`
+
+Adding more processes is pattern-based:
+- Continuous worker: add a `[program:...]` entry in `deploy/supervisord.conf` that runs `scripts/sh/run_supervisor_program.sh`.
+- Scheduled worker: add a cron file under `deploy/cron/` and a `supercronic` program entry in `deploy/supervisord.conf`.
+
+Crash alert webhook knobs (used by `watchdog` heartbeat mode and `watchdog-process-events`):
+- `WATCHDOG_ALERT_WEBHOOK`
+- `WATCHDOG_PROCESS_ALERTS_ENABLED` (`1` by default)
+- `WATCHDOG_ALERT_COOLDOWN_SECONDS` (`300` by default)
+- `WATCHDOG_PROCESS_STARTUP_GRACE_SECONDS` (`300` by default; suppresses deploy-time startup/backoff noise)
+- `WATCHDOG_MONITOR_PROGRAMS` (default monitors `app,s3-sync,listener,discord-verify-bot,trendbot`)
 
 #### Logging / Grep
-All supervised program output is wrapped and prefixed with `[app]`, `[listener]`, or `[discord]`.
+`[program:*]` processes are wrapped by `scripts/sh/run_supervisor_program.sh` and are prefixed with process tags, for example:
+- `[app]`
+- `[listener]`
+- `[discord-verify-bot]`
+- `[watchdog]`
+- `[s3-sync]`
+- `[trendbot]`
+
+`[eventlistener:watchdog-process-events]` is not wrapped with that same stdout/stderr wrapper because Supervisor event listeners must keep a strict stdout protocol (`READY` / `RESULT`).
+Its human-readable log lines are tagged as:
+- `[watchdog-events]`
+
+Quick verification:
+```powershell
+flyctl logs -a newstarhost | Select-String '\[(app|listener|discord-verify-bot|watchdog|s3-sync|trendbot|watchdog-events)\]'
+```
+
+If Fly prints `app is not listening on 0.0.0.0:8080`, check app startup lines first:
+```powershell
+flyctl logs -a newstarhost | Select-String '\[app\]'
+```
 
 PowerShell examples:
 ```powershell
@@ -125,15 +177,15 @@ flyctl logs -a newstarhost | Select-String '\[listener\]'
 # app-only lines
 flyctl logs -a newstarhost | Select-String '\[app\]'
 
-# discord-only lines
-flyctl logs -a newstarhost | Select-String '\[discord\]'
+# trendbot-only lines
+flyctl logs -a newstarhost | Select-String '\[trendbot\]'
 ```
 
 Bash examples:
 ```bash
 flyctl logs -a newstarhost | grep '\[listener\]'
 flyctl logs -a newstarhost | grep '\[app\]'
-flyctl logs -a newstarhost | grep '\[discord\]'
+flyctl logs -a newstarhost | grep '\[trendbot\]'
 ```
 
 Useful Fly commands:
