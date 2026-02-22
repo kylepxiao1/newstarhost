@@ -102,8 +102,41 @@ Notes:
 - Videos older than 365 days are excluded by default (`--max-video-age-days` to change, `0` to disable).
 - Topic song rows can be upserted to Supabase `topic_trends` (disable with `--no-supabase-upload`).
 
-### Fly.io Listener Machine
-Useful commands when running the listener on Fly.io:
+### Fly.io Single Machine (supervisord)
+Fly deploy now runs one machine with three `supervisord` programs:
+- `app`: backend API + `scripts/sh/s3_sync.sh`
+- `listener`: `scripts/tiktok_listener.py`
+- `discord`: `scripts/sh/discord_worker.sh`
+
+Machine sizing in `fly.toml`:
+- Shared VM memory: `2gb` (`memory_mb=2048`)
+- CPU: `2`
+
+Each program is auto-restarted independently and launched with a per-process memory cap (`APP_MEMORY_LIMIT_MB`, `LISTENER_MEMORY_LIMIT_MB`, `DISCORD_MEMORY_LIMIT_MB`) to keep one leaking process from immediately taking down the other supervised processes.
+
+#### Logging / Grep
+All supervised program output is wrapped and prefixed with `[app]`, `[listener]`, or `[discord]`.
+
+PowerShell examples:
+```powershell
+# listener-only lines
+flyctl logs -a newstarhost | Select-String '\[listener\]'
+
+# app-only lines
+flyctl logs -a newstarhost | Select-String '\[app\]'
+
+# discord-only lines
+flyctl logs -a newstarhost | Select-String '\[discord\]'
+```
+
+Bash examples:
+```bash
+flyctl logs -a newstarhost | grep '\[listener\]'
+flyctl logs -a newstarhost | grep '\[app\]'
+flyctl logs -a newstarhost | grep '\[discord\]'
+```
+
+Useful Fly commands:
 ```powershell
 # Authenticate Fly CLI
 flyctl auth login
@@ -111,14 +144,16 @@ flyctl auth login
 # List machines
 flyctl machines list -a newstarhost
 
-# SSH into the machine
-flyctl ssh console -a newstarhost -g app
-flyctl ssh console -a newstarhost -g listener
+# Ensure exactly one machine is running
+fly scale count 1 -a newstarhost
 
-# Start the listener machine
+# SSH into the machine
+flyctl ssh console -a newstarhost
+
+# Start the machine
 fly machines start <APP_MACHINE_ID>
 
-# Check the listener logs
+# Check machine logs (all supervised processes)
 flyctl logs -a newstarhost --machine <APP_MACHINE_ID>
 
 # Download a file from the machine (one-shot)
@@ -126,22 +161,6 @@ flyctl ssh sftp get -a newstarhost /path/on/machine/filename.ext C:\path\to\loca
 
 # Upload a file to the machine (one-shot)
 flyctl ssh sftp put -a newstarhost C:\path\to\local\file.ext /path/on/machine/file.ext
-```
-
-### Fly.io Discord Worker
-- `fly.toml` runs:
-  - `app` process: backend + `scripts/s3_sync.sh`
-  - `discord` process: `scripts/discord_worker.sh` (separate process group)
-    This worker runs both:
-    an internal trendbot loop and `scripts/discord_verify_bot.py`.
-- The `/app/media` Fly volume is scoped to `app` machines only.
-- Trendbot defaults (inside `scripts/discord_worker.sh`):
-  - `TRENDBOT_INTERVAL=43200` (12 hours)
-  - `TRENDBOT_CMD='python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --api-max-attempts 5 --supabase-min-velocity 100'`
-- Optional env file for trendbot: `TRENDBOT_ENV_FILE` (default `/app/app.env`).
-- Scale process groups explicitly:
-```powershell
-fly scale count app=1 listener=1 discord=1 -a newstarhost
 ```
 
 ## Audio Routing (Windows)
