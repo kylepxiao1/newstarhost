@@ -18,7 +18,7 @@ TEXT_SOURCE_RIGHT_SCORE = os.environ.get("TEXT_SOURCE_RIGHT_SCORE", "RightScore"
 # Overlay sources that can be toggled on/off
 OVERLAY_SOURCES = os.environ.get(
     "OVERLAY_SOURCES",
-    "BattleScore,BurstOverlay,CenterDottedLine",
+    "BattleScore,BurstOverlay,CenterDottedLine,TotalLikesOverlay",
 ).split(",")
 
 # API / Websocket config

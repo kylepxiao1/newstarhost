@@ -8,7 +8,7 @@ import asyncio
 import subprocess
 import time
 import random
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import unicodedata
 import uuid
@@ -238,6 +238,19 @@ class SlotImportRequest(BaseModel):
 class CameraSelectRequest(BaseModel):
     index: Optional[int] = None
     label: Optional[str] = None
+
+
+class OverlayLayoutRequest(BaseModel):
+    x_offset: Optional[float] = 0
+    y_offset: Optional[float] = 0
+    scale: Optional[float] = 1
+
+
+class CameraLikesOverlayRequest(BaseModel):
+    like_goal: Optional[str] = ""
+    prize: Optional[str] = ""
+    target_group_name: Optional[str] = ""
+    target_group_handle: Optional[str] = ""
 
 
 class SongRequest(BaseModel):
@@ -485,6 +498,118 @@ async def _insert_supabase_row(table: str, row: dict) -> Optional[str]:
     return f"Supabase insert failed (status={resp.status_code}): {payload}"
 
 
+def _resolve_group_handle_from_state(state: dict) -> str:
+    group_name = str(state.get("group_name") or "").strip()
+    return _resolve_group_handle_by_name(state, group_name)
+
+
+def _resolve_group_handle_by_name(state: dict, group_name: str) -> str:
+    group_name = str(group_name or "").strip()
+    if not group_name:
+        return ""
+    dancers = state.get("dancers") or []
+    target = group_name.lower()
+    for dancer in dancers:
+        name = str(dancer.get("name") or "").strip().lower()
+        if name == target:
+            handle = str(dancer.get("handle") or "").strip().lstrip("@")
+            if handle:
+                return handle
+    # Fallback: if group_name itself looks like a handle, accept it.
+    if re.fullmatch(r"@?[A-Za-z0-9._]{2,64}", group_name):
+        return group_name.lstrip("@")
+    return ""
+
+
+def _resolve_group_name_by_handle(state: dict, handle: str) -> str:
+    normalized = str(handle or "").strip().lstrip("@").lower()
+    if not normalized:
+        return ""
+    dancers = state.get("dancers") or []
+    for dancer in dancers:
+        dancer_handle = str(dancer.get("handle") or "").strip().lstrip("@").lower()
+        if dancer_handle == normalized:
+            return str(dancer.get("name") or "").strip()
+    return ""
+
+
+def _resolve_like_overlay_target_from_state(state: dict) -> tuple[str, str, str]:
+    configured_name = str(state.get("like_target_group_name") or "").strip()
+    configured_handle = str(state.get("like_target_group_handle") or "").strip().lstrip("@")
+    if configured_name or configured_handle:
+        name = configured_name
+        handle = configured_handle
+        if name and not handle:
+            handle = _resolve_group_handle_by_name(state, name)
+        if handle and not name:
+            name = _resolve_group_name_by_handle(state, handle)
+        return name, handle, "configured"
+    fallback_name = str(state.get("group_name") or "").strip()
+    fallback_handle = _resolve_group_handle_from_state(state)
+    return fallback_name, fallback_handle, "state.group_name"
+
+
+def _parse_like_goal_value(raw: str) -> Optional[int]:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    digits = re.sub(r"[^\d]", "", text)
+    if not digits:
+        return None
+    try:
+        value = int(digits)
+    except Exception:
+        return None
+    return value if value > 0 else None
+
+
+async def _fetch_latest_total_likes_today(tiktok_username: str) -> tuple[int, Optional[str]]:
+    handle = str(tiktok_username or "").strip().lstrip("@")
+    if not handle:
+        return 0, None
+    headers = _supabase_headers()
+    if not headers:
+        return 0, "Supabase credentials missing. Set SUPABASE_URL/SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY."
+    headers = dict(headers)
+    headers.pop("Prefer", None)
+    now_utc = datetime.now(timezone.utc)
+    start_day = now_utc.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_day = start_day + timedelta(days=1)
+    start_unix = int(start_day.timestamp())
+    end_unix = int(end_day.timestamp())
+    params = {
+        "select": "total_like_count,unix_ts",
+        "tiktok_username": f"ilike.{handle}",
+        "total_like_count": "not.is.null",
+        "and": f"(unix_ts.gte.{start_unix},unix_ts.lt.{end_unix})",
+        "order": "unix_ts.desc",
+        "limit": "1",
+    }
+    try:
+        async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=10.0) as client:
+            resp = await client.get("/like_events", headers=headers, params=params)
+    except Exception as exc:
+        return 0, f"Supabase request failed: {exc}"
+    if not resp.is_success:
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = resp.text or ""
+        return 0, f"Supabase like_events query failed (status={resp.status_code}): {payload}"
+    try:
+        rows = resp.json()
+    except Exception:
+        rows = []
+    if not isinstance(rows, list) or not rows:
+        return 0, None
+    total_raw = rows[0].get("total_like_count")
+    try:
+        total = int(str(total_raw).strip())
+    except Exception:
+        total = 0
+    return max(0, total), None
+
+
 def _parse_stream_format_jsonl(raw: str) -> tuple[Optional[list], Optional[str]]:
     text = (raw or "").strip()
     if not text:
@@ -557,6 +682,20 @@ async def show_overlay(name: str) -> JSONResponse:
 async def hide_overlay(name: str) -> JSONResponse:
     state = state_manager.set_overlay_state(name, False)
     obs.set_visibility(config.SCENE_BATTLE, name, False)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+
+@app.post("/overlay/{name}/layout")
+async def set_overlay_layout(name: str, body: OverlayLayoutRequest) -> JSONResponse:
+    scale_value = float(body.scale if body.scale is not None else 1.0)
+    if scale_value <= 0:
+        scale_value = 1.0
+    # Keep UI mistakes bounded.
+    scale_value = max(0.1, min(8.0, scale_value))
+    x_value = float(body.x_offset if body.x_offset is not None else 0.0)
+    y_value = float(body.y_offset if body.y_offset is not None else 0.0)
+    state = state_manager.set_overlay_layout(name, x_value, y_value, scale_value)
     _broadcast_state(state)
     return JSONResponse(state)
 
@@ -1079,6 +1218,71 @@ async def add_points(req: PointsRequest) -> JSONResponse:
     state = state_manager.increment_points(target_url or "", req.amount)
     _broadcast_state(state)
     return JSONResponse(state)
+
+
+@app.post("/camera/likes/settings")
+async def set_camera_likes_overlay_settings(body: CameraLikesOverlayRequest) -> JSONResponse:
+    current_state = state_manager.get_state()
+    target_group_name = str(body.target_group_name or "").strip()
+    target_group_handle = str(body.target_group_handle or "").strip().lstrip("@")
+    if target_group_name and not target_group_handle:
+        target_group_handle = _resolve_group_handle_by_name(current_state, target_group_name)
+    if target_group_handle and not target_group_name:
+        target_group_name = _resolve_group_name_by_handle(current_state, target_group_handle)
+    state = state_manager.set_like_overlay(
+        body.like_goal,
+        body.prize,
+        target_group_name,
+        target_group_handle,
+    )
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+
+@app.get("/camera/likes/summary")
+async def camera_likes_summary() -> JSONResponse:
+    state = state_manager.get_state()
+    group_name, tiktok_username, target_source = _resolve_like_overlay_target_from_state(state)
+    like_goal_text = str(state.get("like_goal") or "").strip()
+    prize_text = str(state.get("prize") or "").strip()
+    goal_value = _parse_like_goal_value(like_goal_text)
+    total_likes = 0
+    source = "unavailable"
+    warning: Optional[str] = None
+
+    if tiktok_username:
+        total_likes, err = await _fetch_latest_total_likes_today(tiktok_username)
+        if err:
+            warning = err
+            source = "error"
+        else:
+            source = "like_events"
+    else:
+        source = "no-group-handle"
+
+    progress = None
+    goal_reached = False
+    if goal_value is not None and goal_value > 0:
+        progress = min(1.0, float(total_likes) / float(goal_value))
+        goal_reached = total_likes >= goal_value
+
+    payload = {
+        "group_name": group_name,
+        "tiktok_username": tiktok_username,
+        "total_likes": max(0, int(total_likes)),
+        "like_goal": like_goal_text,
+        "goal_value": goal_value,
+        "progress": progress,
+        "goal_reached": goal_reached,
+        "prize": prize_text,
+        "source": source,
+        "target_source": target_source,
+        "target_group_name": str(state.get("like_target_group_name") or "").strip(),
+        "target_group_handle": str(state.get("like_target_group_handle") or "").strip().lstrip("@"),
+    }
+    if warning:
+        payload["warning"] = warning
+    return JSONResponse(payload)
 
 
 @app.post("/notes/stream")

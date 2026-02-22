@@ -21,6 +21,7 @@ DEFAULT_WIDTH = int(os.environ.get("CAM_WIDTH", 1280))
 DEFAULT_HEIGHT = int(os.environ.get("CAM_HEIGHT", 720))
 FPS = int(os.environ.get("CAM_FPS", 30))
 POLL_INTERVAL = float(os.environ.get("STATE_POLL_SECS", 5.0))
+LIKE_OVERLAY_POLL_INTERVAL = float(os.environ.get("LIKE_OVERLAY_POLL_SECS", "5.0"))
 WS_PATH = os.environ.get("STATE_WS_PATH", "/ws/state")
 CAM_OPEN_RETRIES = int(os.environ.get("CAM_OPEN_RETRIES", 4))
 CAM_OPEN_DELAY = float(os.environ.get("CAM_OPEN_DELAY", 0.35))
@@ -120,6 +121,17 @@ async def fetch_state(client: httpx.AsyncClient) -> Dict:
         return {}
 
 
+async def fetch_likes_overlay(client: httpx.AsyncClient) -> Dict:
+    try:
+        resp = await client.get(f"{API_BASE}/camera/likes/summary", timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:
+        _verbose_log("Failed to fetch likes overlay summary: %s", exc)
+        return {}
+
+
 async def ws_state_listener(state_holder: Dict):
     ws_url = API_BASE.replace("http", "ws") + WS_PATH
     while True:
@@ -137,7 +149,7 @@ async def ws_state_listener(state_holder: Dict):
             await asyncio.sleep(2)
 
 
-def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
+def draw_overlay(frame: np.ndarray, state: Dict, likes_overlay: Dict | None = None) -> np.ndarray:
     """
     Render overlays with resolution-aware sizing so text stays crisp at any resolution.
     """
@@ -146,7 +158,13 @@ def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
     enabled = set((state.get("enabled_dancers") or []))
     dancers = state.get("dancers") or []
     display_dancers = dancers if not enabled else [d for d in dancers if (d.get("name") or "") in enabled]
-    overlays = state.get("overlay_states") or {"CenterDottedLine": True, "BurstOverlay": True, "BattleScore": True}
+    overlays = state.get("overlay_states") or {
+        "CenterDottedLine": False,
+        "BurstOverlay": True,
+        "BattleScore": True,
+        "TotalLikesOverlay": True,
+    }
+    overlay_layouts = state.get("overlay_layouts") or {}
     font = cv2.FONT_HERSHEY_SIMPLEX
 
     # Scale elements based on frame height (smaller text)
@@ -155,13 +173,40 @@ def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
     thick = max(1, int(scale * 2))
     line_step = max(20, int(base_h / 38))
 
-    if overlays.get("CenterDottedLine", True):
-        center_x = frame.shape[1] // 2
-        dash = max(18, int(line_step * 0.9))   # longer dashes
-        gap = max(14, int(line_step * 0.7))   # larger gaps
-        white_thick = max(3, int(scale * 3.2))  # thicker
-        black_thick = max(2, int(scale * 1.8))
-        y = 0
+    def outlined_text(img: np.ndarray, text: str, org: tuple[int, int], color: tuple[int, int, int] = (255, 255, 255)) -> None:
+        cv2.putText(img, text, org, font, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
+        cv2.putText(img, text, org, font, scale, color, thick, cv2.LINE_AA)
+
+    def _overlay_layout(name: str) -> tuple[int, int, float]:
+        raw = overlay_layouts.get(name) if isinstance(overlay_layouts, dict) else None
+        if not isinstance(raw, dict):
+            return 0, 0, 1.0
+        try:
+            x_val = int(round(float(raw.get("x_offset", 0))))
+        except Exception:
+            x_val = 0
+        try:
+            y_val = int(round(float(raw.get("y_offset", 0))))
+        except Exception:
+            y_val = 0
+        try:
+            s_val = float(raw.get("scale", 1))
+        except Exception:
+            s_val = 1.0
+        if s_val <= 0:
+            s_val = 1.0
+        s_val = max(0.1, min(8.0, s_val))
+        return x_val, y_val, s_val
+
+    if overlays.get("CenterDottedLine", False):
+        x_off, y_off, s_off = _overlay_layout("CenterDottedLine")
+        center_x = max(0, min(frame.shape[1] - 1, (frame.shape[1] // 2) + x_off))
+        dash = max(10, int(line_step * 0.9 * s_off))   # longer dashes
+        gap = max(8, int(line_step * 0.7 * s_off))   # larger gaps
+        white_thick = max(2, int(scale * 3.2 * s_off))  # thicker
+        black_thick = max(1, int(scale * 1.8 * s_off))
+        cycle = max(1, dash + gap)
+        y = y_off % cycle
         while y < frame.shape[0]:
             y2 = min(y + dash, frame.shape[0])
             cv2.line(overlay, (center_x, y), (center_x, y2), (255, 255, 255), white_thick)
@@ -169,23 +214,133 @@ def draw_overlay(frame: np.ndarray, state: Dict) -> np.ndarray:
             y += dash + gap
 
     if overlays.get("BurstOverlay", True):
+        x_off, y_off, s_off = _overlay_layout("BurstOverlay")
         mask = np.zeros_like(frame)
-        rad = int(min(frame.shape[0], frame.shape[1]) * 0.18)
-        cv2.circle(mask, (int(frame.shape[1] * 0.25), int(frame.shape[0] * 0.25)), rad, (0, 128, 255), -1)
-        cv2.circle(mask, (int(frame.shape[1] * 0.75), int(frame.shape[0] * 0.75)), rad, (255, 64, 128), -1)
+        rad = max(6, int(min(frame.shape[0], frame.shape[1]) * 0.18 * s_off))
+        c1 = (
+            max(0, min(frame.shape[1] - 1, int(frame.shape[1] * 0.25) + x_off)),
+            max(0, min(frame.shape[0] - 1, int(frame.shape[0] * 0.25) + y_off)),
+        )
+        c2 = (
+            max(0, min(frame.shape[1] - 1, int(frame.shape[1] * 0.75) + x_off)),
+            max(0, min(frame.shape[0] - 1, int(frame.shape[0] * 0.75) + y_off)),
+        )
+        cv2.circle(mask, c1, rad, (0, 128, 255), -1)
+        cv2.circle(mask, c2, rad, (255, 64, 128), -1)
         overlay = cv2.addWeighted(overlay, 0.9, mask, 0.1, 0)
 
     if overlays.get("BattleScore", True):
-        def outlined_text(img, text, org):
-            cv2.putText(img, text, org, font, scale, (0, 0, 0), thick + 1, cv2.LINE_AA)
-            cv2.putText(img, text, org, font, scale, (255, 255, 255), thick, cv2.LINE_AA)
-
-        y = int(50 * scale)
-        step = int(36 * scale)
+        x_off, y_off, s_off = _overlay_layout("BattleScore")
+        bs_scale = max(0.25, scale * s_off)
+        bs_thick = max(1, int(thick * s_off))
+        y = max(16, int(50 * scale) + y_off)
+        x = max(8, 40 + x_off)
+        step = max(14, int(36 * scale * s_off))
         for dancer in display_dancers:
             name = dancer.get("name") or "Waiting"
-            outlined_text(overlay, f"{name}: {wins.get(name, 0)} wins", (40, y))
+            text = f"{name}: {wins.get(name, 0)} wins"
+            cv2.putText(overlay, text, (x, y), font, bs_scale, (0, 0, 0), bs_thick + 1, cv2.LINE_AA)
+            cv2.putText(overlay, text, (x, y), font, bs_scale, (255, 255, 255), bs_thick, cv2.LINE_AA)
             y += step
+
+    if overlays.get("TotalLikesOverlay", True):
+        x_off, y_off, s_off = _overlay_layout("TotalLikesOverlay")
+        likes = likes_overlay if isinstance(likes_overlay, dict) else {}
+        total_likes_raw = likes.get("total_likes", 0)
+        try:
+            total_likes = max(0, int(float(str(total_likes_raw).strip() or "0")))
+        except Exception:
+            total_likes = 0
+        goal_text = str(likes.get("like_goal") or "").strip()
+        goal_value_raw = likes.get("goal_value", None)
+        try:
+            goal_value = int(float(str(goal_value_raw).strip())) if goal_value_raw is not None else 0
+        except Exception:
+            goal_value = 0
+        if goal_value <= 0 and goal_text:
+            digits = "".join(ch for ch in goal_text if ch.isdigit())
+            try:
+                goal_value = int(digits) if digits else 0
+            except Exception:
+                goal_value = 0
+        goal_value = max(0, goal_value)
+        progress_raw = likes.get("progress")
+        if goal_value > 0:
+            try:
+                progress = float(progress_raw) if progress_raw is not None else (float(total_likes) / float(goal_value))
+            except Exception:
+                progress = float(total_likes) / float(goal_value)
+            progress = max(0.0, min(1.0, progress))
+        else:
+            progress = 0.0
+        prize_text = str(likes.get("prize") or "").strip()
+        goal_display = f"{goal_value:,}" if goal_value > 0 else (goal_text or "0")
+        likes_line = f"{total_likes:,} / {goal_display} Likes"
+        if prize_text:
+            likes_line = f"{prize_text} - {likes_line}"
+
+        max_text_width = max(120, int(frame.shape[1] - 40))
+        text_scale = max(0.3, scale * s_off)
+        text_thick = max(1, int(thick * s_off))
+        (text_w, text_h), _ = cv2.getTextSize(likes_line, font, text_scale, text_thick)
+        if text_w > max_text_width:
+            shrink_ratio = max_text_width / float(max(1, text_w))
+            text_scale = max(0.25, text_scale * shrink_ratio)
+            (text_w, text_h), _ = cv2.getTextSize(likes_line, font, text_scale, text_thick)
+
+        text_x = int((frame.shape[1] - text_w) / 2) + x_off
+        text_x = max(8, min(frame.shape[1] - text_w - 8, text_x))
+        text_y = max(text_h + 18, int(54 * scale) + y_off)
+        text_y = min(frame.shape[0] - 8, text_y)
+        # TikTok-style peach neon headline treatment.
+        cv2.putText(overlay, likes_line, (text_x, text_y), font, text_scale, (0, 0, 0), text_thick + 4, cv2.LINE_AA)
+        cv2.putText(overlay, likes_line, (text_x, text_y), font, text_scale, (150, 196, 255), text_thick + 2, cv2.LINE_AA)
+        cv2.putText(overlay, likes_line, (text_x, text_y), font, text_scale, (255, 255, 255), text_thick, cv2.LINE_AA)
+
+        if goal_value > 0:
+            def _draw_pill(img: np.ndarray, x1: int, y1: int, x2: int, y2: int, color: tuple[int, int, int], thickness: int = -1) -> None:
+                if x2 <= x1 or y2 <= y1:
+                    return
+                radius = max(1, int((y2 - y1) / 2))
+                if (x2 - x1) <= radius * 2:
+                    cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness, lineType=cv2.LINE_AA)
+                    return
+                cv2.rectangle(img, (x1 + radius, y1), (x2 - radius, y2), color, thickness, lineType=cv2.LINE_AA)
+                cv2.circle(img, (x1 + radius, y1 + radius), radius, color, thickness, lineType=cv2.LINE_AA)
+                cv2.circle(img, (x2 - radius, y1 + radius), radius, color, thickness, lineType=cv2.LINE_AA)
+
+            bar_h = max(14, int(20 * scale * s_off))
+            bar_y1 = text_y + max(8, int(12 * scale * s_off))
+            bar_y2 = bar_y1 + bar_h
+            bar_w = min(max(180, int((text_w + int(42 * text_scale)) * max(0.75, s_off))), max(180, int(frame.shape[1] * 0.72)))
+            bar_x1 = int((frame.shape[1] - bar_w) / 2) + x_off
+            bar_x1 = max(8, min(frame.shape[1] - bar_w - 8, bar_x1))
+            bar_x2 = min(frame.shape[1] - 8, bar_x1 + bar_w)
+
+            _draw_pill(overlay, bar_x1, bar_y1, bar_x2, bar_y2, (30, 41, 59), -1)
+            fill_w = int((bar_x2 - bar_x1) * progress)
+            if fill_w > 0:
+                fill_x2 = min(bar_x2, bar_x1 + fill_w)
+                _draw_pill(overlay, bar_x1, bar_y1, fill_x2, bar_y2, (132, 185, 255), -1)
+                # Top highlight for a glossy progress look.
+                highlight_y = bar_y1 + max(1, int(bar_h * 0.3))
+                cv2.line(
+                    overlay,
+                    (bar_x1 + 2, highlight_y),
+                    (max(bar_x1 + 2, fill_x2 - 2), highlight_y),
+                    (255, 238, 248),
+                    max(1, text_thick - 1),
+                    cv2.LINE_AA,
+                )
+            _draw_pill(overlay, bar_x1, bar_y1, bar_x2, bar_y2, (128, 222, 255), max(1, text_thick - 1))
+
+            pct_text = f"{int(round(progress * 100.0))}%"
+            pct_scale = max(0.32, text_scale * 0.72)
+            (pct_w, pct_h), _ = cv2.getTextSize(pct_text, font, pct_scale, max(1, text_thick - 1))
+            pct_x = int((bar_x1 + bar_x2 - pct_w) / 2)
+            pct_y = bar_y1 + int((bar_h + pct_h) / 2) - 2
+            cv2.putText(overlay, pct_text, (pct_x, pct_y), font, pct_scale, (0, 0, 0), max(1, text_thick), cv2.LINE_AA)
+            cv2.putText(overlay, pct_text, (pct_x, pct_y), font, pct_scale, (255, 255, 255), max(1, text_thick - 1), cv2.LINE_AA)
     return overlay
 
 
@@ -433,6 +588,8 @@ async def main() -> None:
 
     async with httpx.AsyncClient() as client:
         state_holder: Dict = {"state": await fetch_state(client)}
+        likes_overlay_holder: Dict = {"summary": await fetch_likes_overlay(client)}
+        next_like_overlay_poll = 0.0
         current_idx = DEFAULT_CAM_INDEX
         current_label = ""
         last_seen_idx = state_holder.get("state", {}).get("camera_index", -1)
@@ -511,9 +668,19 @@ async def main() -> None:
                             desired_label,
                         )
 
+                if LIKE_OVERLAY_POLL_INTERVAL >= 0:
+                    now_poll = time.monotonic()
+                    if now_poll >= next_like_overlay_poll:
+                        likes_overlay_holder["summary"] = await fetch_likes_overlay(client)
+                        next_like_overlay_poll = now_poll + max(0.25, LIKE_OVERLAY_POLL_INTERVAL)
+
                 if not cap.isOpened():
                     blank = np.zeros((output_height, output_width, 3), dtype=np.uint8)
-                    overlayed = draw_overlay(blank, state_holder.get("state") or {})
+                    overlayed = draw_overlay(
+                        blank,
+                        state_holder.get("state") or {},
+                        likes_overlay_holder.get("summary") or {},
+                    )
                     cam.send(overlayed)
                     cam.sleep_until_next_frame()
                     await asyncio.sleep(0.05)
@@ -557,7 +724,11 @@ async def main() -> None:
                     )
                 if frame_w != output_width or frame_h != output_height:
                     frame = cv2.resize(frame, (output_width, output_height), interpolation=cv2.INTER_AREA)
-                overlayed = draw_overlay(frame, state_holder.get("state") or {})
+                overlayed = draw_overlay(
+                    frame,
+                    state_holder.get("state") or {},
+                    likes_overlay_holder.get("summary") or {},
+                )
                 cam.send(overlayed)
                 cam.sleep_until_next_frame()
                 try:

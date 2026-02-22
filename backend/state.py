@@ -47,6 +47,11 @@ class BattleState:
     dancers: List[Dict[str, str]] = field(default_factory=list)
     play_counts: Dict[str, int] = field(default_factory=dict)
     points_counts: Dict[str, int] = field(default_factory=dict)
+    like_goal: str = ""
+    prize: str = ""
+    like_target_group_name: str = ""
+    like_target_group_handle: str = ""
+    overlay_layouts: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     def copy(self) -> Dict:
         return asdict(self)
@@ -70,7 +75,12 @@ class BattleStateManager:
         else:
             plays = self._load_play_counts()
             points = self._load_points_counts()
-        self._state = BattleState(overlay_states={name: (name != "BurstOverlay") for name in overlay_names})
+        self._state = BattleState(
+            overlay_states={
+                name: (name not in {"BurstOverlay", "CenterDottedLine"})
+                for name in overlay_names
+            }
+        )
         self._state.songs["library"] = library
         self._state.dancers = dancers
         self._state.play_counts = plays
@@ -186,6 +196,31 @@ class BattleStateManager:
     def set_camera_label(self, label: str) -> Dict:
         with self._lock:
             self._state.camera_label = label
+            return self._state.copy()
+
+    def set_like_overlay(
+        self,
+        like_goal: Optional[str],
+        prize: Optional[str],
+        target_group_name: Optional[str] = None,
+        target_group_handle: Optional[str] = None,
+    ) -> Dict:
+        with self._lock:
+            self._state.like_goal = str(like_goal or "").strip()
+            self._state.prize = str(prize or "").strip()
+            self._state.like_target_group_name = str(target_group_name or "").strip()
+            self._state.like_target_group_handle = str(target_group_handle or "").strip().lstrip("@")
+            return self._state.copy()
+
+    def set_overlay_layout(self, name: str, x_offset: float, y_offset: float, scale: float) -> Dict:
+        with self._lock:
+            layouts = dict(self._state.overlay_layouts or {})
+            layouts[name] = {
+                "x_offset": float(x_offset),
+                "y_offset": float(y_offset),
+                "scale": float(scale),
+            }
+            self._state.overlay_layouts = layouts
             return self._state.copy()
 
     def set_song(self, target: str, url: str) -> Dict:

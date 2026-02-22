@@ -59,7 +59,7 @@
         }
 
         const overlays = state.overlay_states || {};
-        const showLine = overlays.CenterDottedLine !== undefined ? overlays.CenterDottedLine : true;
+        const showLine = overlays.CenterDottedLine !== undefined ? overlays.CenterDottedLine : false;
         line.style.display = showLine ? "block" : "none";
       }
 
