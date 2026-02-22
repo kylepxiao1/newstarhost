@@ -193,6 +193,7 @@ async def run() -> None:
                 state = states[watch_id]
                 row = None
                 query_error = None
+                stale_reason = ""
                 try:
                     row = await _fetch_heartbeat_row(client, table=table, listener_id=watch_id)
                 except Exception as exc:
@@ -202,11 +203,17 @@ async def run() -> None:
                 age_seconds = None
                 if query_error:
                     stale = True
+                    stale_reason = "query_error"
                 elif row is None:
                     stale = True
+                    stale_reason = "row_unavailable"
                 else:
                     age_seconds = _heartbeat_age_seconds(row, now_dt)
                     stale = age_seconds is None or age_seconds > stale_seconds
+                    if age_seconds is None:
+                        stale_reason = "age_unreadable"
+                    elif age_seconds > stale_seconds:
+                        stale_reason = "age_exceeded"
 
                 if stale:
                     state["stale_hits"] = int(state.get("stale_hits", 0)) + 1
@@ -229,7 +236,11 @@ async def run() -> None:
                             f"Error: `{query_error[:500]}`"
                         )
                     elif row is None:
-                        message = f"Listener heartbeat stale for `{watch_id}`: no heartbeat row found in `{table}`."
+                        message = (
+                            f"Listener heartbeat stale for `{watch_id}`: heartbeat row is currently unavailable in "
+                            f"`{table}` (reason=`{stale_reason or 'row_unavailable'}`). "
+                            "Most likely cause: heartbeat service is down."
+                        )
                     else:
                         last_log = str(row.get("last_log_line") or "").strip()
                         recent_logs = row.get("recent_logs")

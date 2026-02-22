@@ -1581,6 +1581,9 @@ async def fetch_discover_video_urls_once(
 
     urls: List[str] = []
     seen: Set[str] = set()
+    browser_obj = None
+    context = None
+    page = None
     try:
         async with async_playwright() as playwright:
             launcher = getattr(playwright, browser)
@@ -1642,8 +1645,6 @@ async def fetch_discover_video_urls_once(
                     if len(urls) >= max(1, max_urls):
                         break
 
-            await context.close()
-            await browser_obj.close()
     except Exception as exc:
         progress_log(
             f"Discover attempt exception: {discover_url} browser={browser} headless={headless} "
@@ -1651,6 +1652,22 @@ async def fetch_discover_video_urls_once(
             force=True,
         )
         return [], f"{type(exc).__name__}: {exc}"
+    finally:
+        if page is not None:
+            try:
+                await page.close()
+            except Exception:
+                pass
+        if context is not None:
+            try:
+                await context.close()
+            except Exception:
+                pass
+        if browser_obj is not None:
+            try:
+                await browser_obj.close()
+            except Exception:
+                pass
 
     if not urls:
         progress_log(f"Discover attempt ended with zero urls: {discover_url}", force=True)
@@ -1897,23 +1914,29 @@ async def collect_tiktokapi_once(
                 force=True,
             )
 
-            for index, signal in enumerate(lookup_candidates, start=1):
+            try:
+                for index, signal in enumerate(lookup_candidates, start=1):
+                    try:
+                        info = await api.hashtag(name=signal.hashtag).info()
+                    except Exception:
+                        continue
+                    stats = info.get("challengeInfo", {}).get("stats", {}) if isinstance(info, dict) else {}
+                    if isinstance(stats, dict):
+                        signal.global_video_count = safe_int(stats.get("videoCount"))
+                        signal.global_view_count = safe_int(stats.get("viewCount"))
+                        signal.sources.add("hashtag_info")
+                    if lookup_delay > 0:
+                        await asyncio.sleep(lookup_delay)
+                    if index % 10 == 0:
+                        progress_log(
+                            f"TikTokApi hashtag info progress: browser={browser} {index}/{len(lookup_candidates)}",
+                            key=f"api-lookup-{browser}-{headless}",
+                        )
+            finally:
                 try:
-                    info = await api.hashtag(name=signal.hashtag).info()
+                    await api.close_sessions()
                 except Exception:
-                    continue
-                stats = info.get("challengeInfo", {}).get("stats", {}) if isinstance(info, dict) else {}
-                if isinstance(stats, dict):
-                    signal.global_video_count = safe_int(stats.get("videoCount"))
-                    signal.global_view_count = safe_int(stats.get("viewCount"))
-                    signal.sources.add("hashtag_info")
-                if lookup_delay > 0:
-                    await asyncio.sleep(lookup_delay)
-                if index % 10 == 0:
-                    progress_log(
-                        f"TikTokApi hashtag info progress: browser={browser} {index}/{len(lookup_candidates)}",
-                        key=f"api-lookup-{browser}-{headless}",
-                    )
+                    pass
     except Exception as exc:
         progress_log(
             f"TikTokApi collect attempt exception: browser={browser} headless={headless} "
@@ -2108,95 +2131,101 @@ async def fetch_topic_seed_signals(
                 if not attempt_headless and headful_wait_seconds > 0:
                     await asyncio.sleep(headful_wait_seconds)
 
-                successful = 0
-                for term_index, term in enumerate(seed_terms, start=1):
-                    if term_index == 1 or term_index % 5 == 0:
-                        progress_log(
-                            f"Topic seed info progress: {term_index}/{len(seed_terms)} term=#{term}",
-                            key=f"topic-seed-terms-{attempt_index}",
-                        )
-                    hashtag_obj = api.hashtag(name=term)
-                    try:
-                        info = await hashtag_obj.info()
-                    except Exception:
-                        continue
-
-                    challenge = info.get("challengeInfo", {}).get("challenge", {}) if isinstance(info, dict) else {}
-                    stats = info.get("challengeInfo", {}).get("stats", {}) if isinstance(info, dict) else {}
-                    if not isinstance(stats, dict):
-                        continue
-
-                    canonical = clean_hashtag(challenge.get("title")) or clean_hashtag(term)
-                    if not canonical:
-                        continue
-
-                    view_count = safe_int(stats.get("viewCount"))
-                    video_count = safe_int(stats.get("videoCount"))
-                    signal = signals.setdefault(canonical, HashtagSignal(hashtag=canonical))
-                    signal.sources.add("topic_web_seed" if term in candidate_term_set else "topic_seed")
-                    if video_count is not None:
-                        signal.global_video_count = max(signal.global_video_count or 0, video_count)
-                    if view_count is not None:
-                        signal.global_view_count = max(signal.global_view_count or 0, view_count)
-                    successful += 1
-                    if lookup_delay > 0:
-                        await asyncio.sleep(lookup_delay)
-
-                    if topic_video_samples > 0:
-                        pulled = 0
+                try:
+                    successful = 0
+                    for term_index, term in enumerate(seed_terms, start=1):
+                        if term_index == 1 or term_index % 5 == 0:
+                            progress_log(
+                                f"Topic seed info progress: {term_index}/{len(seed_terms)} term=#{term}",
+                                key=f"topic-seed-terms-{attempt_index}",
+                            )
+                        hashtag_obj = api.hashtag(name=term)
                         try:
-                            async for video in hashtag_obj.videos(count=max(1, topic_video_samples)):
-                                payload = getattr(video, "as_dict", None) or {}
-                                stats_payload = payload.get("stats", {}) if isinstance(payload, dict) else {}
-                                play_count = safe_int(stats_payload.get("playCount")) or 0
-                                digg_count = safe_int(stats_payload.get("diggCount")) or 0
-                                create_time = safe_int(payload.get("createTime")) if isinstance(payload, dict) else None
-                                if is_video_too_old(
-                                    create_time=create_time,
-                                    now_ts=current_ts,
-                                    max_video_age_hours=max_video_age_hours,
-                                ):
-                                    continue
-                                age_hours = compute_video_age_hours(
-                                    create_time=create_time, now_ts=current_ts
-                                )
-                                video_hashtags = extract_hashtags_from_video(payload) if isinstance(payload, dict) else set()
-                                video_url = build_tiktok_video_url(payload if isinstance(payload, dict) else {})
-                                add_song_signal_from_video(
-                                    song_signals=song_signals,
-                                    video=payload if isinstance(payload, dict) else {},
-                                    topic_terms=topic_terms,
-                                    play_count=play_count,
-                                    digg_count=digg_count,
-                                    age_hours=age_hours,
-                                    hashtags=video_hashtags,
-                                    source="topic_hashtag_video",
-                                    video_url=video_url or "",
-                                    video_create_time=create_time,
-                                    source_page_url=f"https://www.tiktok.com/tag/{term}",
-                                )
-                                pulled += 1
-                                if pulled >= max(1, topic_video_samples):
-                                    break
+                            info = await hashtag_obj.info()
                         except Exception:
-                            pass
+                            continue
 
-                if successful > 0 or song_signals:
+                        challenge = info.get("challengeInfo", {}).get("challenge", {}) if isinstance(info, dict) else {}
+                        stats = info.get("challengeInfo", {}).get("stats", {}) if isinstance(info, dict) else {}
+                        if not isinstance(stats, dict):
+                            continue
+
+                        canonical = clean_hashtag(challenge.get("title")) or clean_hashtag(term)
+                        if not canonical:
+                            continue
+
+                        view_count = safe_int(stats.get("viewCount"))
+                        video_count = safe_int(stats.get("videoCount"))
+                        signal = signals.setdefault(canonical, HashtagSignal(hashtag=canonical))
+                        signal.sources.add("topic_web_seed" if term in candidate_term_set else "topic_seed")
+                        if video_count is not None:
+                            signal.global_video_count = max(signal.global_video_count or 0, video_count)
+                        if view_count is not None:
+                            signal.global_view_count = max(signal.global_view_count or 0, view_count)
+                        successful += 1
+                        if lookup_delay > 0:
+                            await asyncio.sleep(lookup_delay)
+
+                        if topic_video_samples > 0:
+                            pulled = 0
+                            try:
+                                async for video in hashtag_obj.videos(count=max(1, topic_video_samples)):
+                                    payload = getattr(video, "as_dict", None) or {}
+                                    stats_payload = payload.get("stats", {}) if isinstance(payload, dict) else {}
+                                    play_count = safe_int(stats_payload.get("playCount")) or 0
+                                    digg_count = safe_int(stats_payload.get("diggCount")) or 0
+                                    create_time = safe_int(payload.get("createTime")) if isinstance(payload, dict) else None
+                                    if is_video_too_old(
+                                        create_time=create_time,
+                                        now_ts=current_ts,
+                                        max_video_age_hours=max_video_age_hours,
+                                    ):
+                                        continue
+                                    age_hours = compute_video_age_hours(
+                                        create_time=create_time, now_ts=current_ts
+                                    )
+                                    video_hashtags = extract_hashtags_from_video(payload) if isinstance(payload, dict) else set()
+                                    video_url = build_tiktok_video_url(payload if isinstance(payload, dict) else {})
+                                    add_song_signal_from_video(
+                                        song_signals=song_signals,
+                                        video=payload if isinstance(payload, dict) else {},
+                                        topic_terms=topic_terms,
+                                        play_count=play_count,
+                                        digg_count=digg_count,
+                                        age_hours=age_hours,
+                                        hashtags=video_hashtags,
+                                        source="topic_hashtag_video",
+                                        video_url=video_url or "",
+                                        video_create_time=create_time,
+                                        source_page_url=f"https://www.tiktok.com/tag/{term}",
+                                    )
+                                    pulled += 1
+                                    if pulled >= max(1, topic_video_samples):
+                                        break
+                            except Exception:
+                                pass
+
+                    if successful > 0 or song_signals:
+                        progress_log(
+                            "Topic seed attempt succeeded: "
+                            f"successful={successful} songs={len(song_signals)} "
+                            f"elapsed={time.monotonic() - attempt_started:.1f}s",
+                            force=True,
+                        )
+                        return signals, song_signals, None
+                    attempt_errors.append(
+                        f"attempt {attempt_index} ({attempt_browser}, headless={attempt_headless}) returned no topic seed hashtag stats"
+                    )
                     progress_log(
-                        "Topic seed attempt succeeded: "
-                        f"successful={successful} songs={len(song_signals)} "
-                        f"elapsed={time.monotonic() - attempt_started:.1f}s",
+                        f"Topic seed attempt {attempt_index} returned no data "
+                        f"(elapsed={time.monotonic() - attempt_started:.1f}s)",
                         force=True,
                     )
-                    return signals, song_signals, None
-                attempt_errors.append(
-                    f"attempt {attempt_index} ({attempt_browser}, headless={attempt_headless}) returned no topic seed hashtag stats"
-                )
-                progress_log(
-                    f"Topic seed attempt {attempt_index} returned no data "
-                    f"(elapsed={time.monotonic() - attempt_started:.1f}s)",
-                    force=True,
-                )
+                finally:
+                    try:
+                        await api.close_sessions()
+                    except Exception:
+                        pass
         except Exception as exc:
             reason = f"{type(exc).__name__}: {exc}"
             attempt_errors.append(
@@ -3854,6 +3883,7 @@ def main() -> None:
     )
 
     session = requests.Session()
+    atexit.register(session.close)
     topic_candidates: List[str] = []
     discover_source_urls = parse_discover_source_urls(
         args.discover_dances_urls,

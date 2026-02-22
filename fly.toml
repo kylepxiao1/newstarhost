@@ -31,10 +31,16 @@ primary_region = 'lax'
   discord = 'bash /app/scripts/discord_worker.sh'
 
 [[vm]]
-  processes = ['app', 'discord']
+  processes = ['app']
   memory = '512mb'
   cpus = 1
   memory_mb = 512
+
+[[vm]]
+  processes = ['discord']
+  memory = '1gb'
+  cpus = 1
+  memory_mb = 1024
 
 [[vm]]
   processes = ['listener']

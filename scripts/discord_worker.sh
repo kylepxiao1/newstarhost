@@ -11,12 +11,22 @@ fi
 
 # Per-run trendbot command override via `TRENDBOT_RUN_CMD`.
 TRENDBOT_MIN_VELOCITY="${TRENDBOT_MIN_VELOCITY:-500}"
+TRENDBOT_BROWSER="${TRENDBOT_BROWSER:-chromium}"
+TRENDBOT_HEADLESS="${TRENDBOT_HEADLESS:-1}"
+TRENDBOT_API_MAX_ATTEMPTS="${TRENDBOT_API_MAX_ATTEMPTS:-2}"
+TRENDBOT_API_NAV_TIMEOUT_MS="${TRENDBOT_API_NAV_TIMEOUT_MS:-8000}"
+TRENDBOT_VIDEOS="${TRENDBOT_VIDEOS:-60}"
+TRENDBOT_TOP="${TRENDBOT_TOP:-25}"
+TRENDBOT_DISCOVER_SCROLL_ROUNDS="${TRENDBOT_DISCOVER_SCROLL_ROUNDS:-6}"
+TRENDBOT_DISCOVER_DANCES_VIDEOS="${TRENDBOT_DISCOVER_DANCES_VIDEOS:-72}"
+TRENDBOT_TOPIC_HASHTAG_PAGES="${TRENDBOT_TOPIC_HASHTAG_PAGES:-10}"
+TRENDBOT_TOPIC_HASHTAG_VIDEO_SAMPLES="${TRENDBOT_TOPIC_HASHTAG_VIDEO_SAMPLES:-8}"
+TRENDBOT_TOPIC_MAX_RELATED_VIDEOS="${TRENDBOT_TOPIC_MAX_RELATED_VIDEOS:-120}"
 VERIFY_BOT_CMD="${DISCORD_VERIFY_BOT_CMD:-python /app/scripts/discord_verify_bot.py}"
 HEARTBEAT_WATCHDOG_CMD="${LISTENER_HEARTBEAT_WATCHDOG_CMD:-python /app/scripts/listener_heartbeat_watchdog.py}"
 HEARTBEAT_WATCHDOG_ENABLED="${LISTENER_HEARTBEAT_WATCHDOG_ENABLED:-1}"
 LISTENER_HEARTBEAT_INTERVAL_SECONDS="${LISTENER_HEARTBEAT_INTERVAL_SECONDS:-60}"
 TRENDBOT_ENV_FILE="${TRENDBOT_ENV_FILE:-/app/app.env}"
-TRENDBOT_INTERVAL_DEFAULT="${TRENDBOT_INTERVAL:-43200}"
 
 log() {
   printf '%s [discord] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$*"
@@ -34,9 +44,12 @@ trendbot_loop() {
     set +a
   fi
 
-  local interval="${TRENDBOT_INTERVAL:-${TRENDBOT_INTERVAL_DEFAULT}}"
-  local min_velocity="${TRENDBOT_MIN_VELOCITY:-500}"
-  local default_cmd="python /app/scripts/find_viral_trends.py --topic \"dance challenges\" --videos 120 --top 25 --browser webkit --api-max-attempts 5 --api-navigation-timeout-ms 10000 --discover-scroll-rounds 12 --discover-dances-videos 180 --topic-hashtag-pages 24 --topic-hashtag-video-samples 20 --topic-max-related-videos 400 --supabase-min-velocity ${min_velocity}"
+  local interval="${TRENDBOT_INTERVAL:-43200}"
+  local headless_flag=""
+  if [ "${TRENDBOT_HEADLESS:-1}" = "1" ] || [ "${TRENDBOT_HEADLESS:-1}" = "true" ]; then
+    headless_flag="--headless"
+  fi
+  local default_cmd="python /app/scripts/find_viral_trends.py --topic \"dance challenges\" --videos ${TRENDBOT_VIDEOS:-60} --top ${TRENDBOT_TOP:-25} --browser ${TRENDBOT_BROWSER:-chromium} ${headless_flag} --api-max-attempts ${TRENDBOT_API_MAX_ATTEMPTS:-2} --api-navigation-timeout-ms ${TRENDBOT_API_NAV_TIMEOUT_MS:-8000} --discover-scroll-rounds ${TRENDBOT_DISCOVER_SCROLL_ROUNDS:-6} --discover-dances-videos ${TRENDBOT_DISCOVER_DANCES_VIDEOS:-72} --topic-hashtag-pages ${TRENDBOT_TOPIC_HASHTAG_PAGES:-10} --topic-hashtag-video-samples ${TRENDBOT_TOPIC_HASHTAG_VIDEO_SAMPLES:-8} --topic-max-related-videos ${TRENDBOT_TOPIC_MAX_RELATED_VIDEOS:-120} --supabase-min-velocity ${TRENDBOT_MIN_VELOCITY:-500}"
   local cmd="${TRENDBOT_RUN_CMD:-${default_cmd}}"
 
   trendbot_log "Starting trendbot loop (interval=${interval}s)"
