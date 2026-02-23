@@ -52,6 +52,9 @@ class BattleState:
     like_target_group_name: str = ""
     like_target_group_handle: str = ""
     overlay_layouts: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    overlay_rotation_deg: int = 0
+    overlay_flip_x: bool = False
+    overlay_flip_y: bool = False
 
     def copy(self) -> Dict:
         return asdict(self)
@@ -221,6 +224,20 @@ class BattleStateManager:
                 "scale": float(scale),
             }
             self._state.overlay_layouts = layouts
+            return self._state.copy()
+
+    def set_overlay_rotation(self, degrees: int) -> Dict:
+        with self._lock:
+            normalized = int(degrees) % 360
+            if normalized not in (0, 90, 180, 270):
+                normalized = int(round(normalized / 90.0) * 90) % 360
+            self._state.overlay_rotation_deg = normalized
+            return self._state.copy()
+
+    def set_overlay_flip(self, flip_x: bool, flip_y: bool) -> Dict:
+        with self._lock:
+            self._state.overlay_flip_x = bool(flip_x)
+            self._state.overlay_flip_y = bool(flip_y)
             return self._state.copy()
 
     def set_song(self, target: str, url: str) -> Dict:

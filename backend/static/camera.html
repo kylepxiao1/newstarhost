@@ -28,6 +28,25 @@
     .likes-layout-controls .likes-group-label { min-width: 210px; }
     .likes-overlay-config { margin-top: 8px; padding-top: 12px; border-top: 1px solid #1f2937; }
     .likes-overlay-config h3 { margin: 0 0 8px 0; }
+    .preview-shell {
+      width: 100%;
+      max-width: 100%;
+      background: #0b1222;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto;
+    }
+    .preview-shell video {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      transform-origin: center center;
+      display: block;
+    }
     @media (max-width: 900px) {
       header { padding: 12px 12px 8px; }
       header .status { display: none !important; }
@@ -41,7 +60,7 @@
       .likes-layout-controls .likes-group-label {
         flex-basis: 100%;
       }
-      #preview { max-height: 55vh; }
+      #previewShell { max-height: none; }
     }
   </style>
 </head>
@@ -68,11 +87,26 @@
         <button class="secondary" onclick="startPreview()">Start Preview</button>
         <a class="button-link" href="/dist/virtual_cam_compositor.exe" download>Download Virtual Cam Compositor</a>
       </div>
-      <video id="preview" autoplay playsinline style="width:100%;height:auto;object-fit:contain;background:#0b1222;border:1px solid #1f2937;border-radius:8px;"></video>
+      <div class="row">
+        <button class="secondary" type="button" onclick="rotatePreview(-90)">Rotate Preview Left</button>
+        <button class="secondary" type="button" onclick="rotatePreview(90)">Rotate Preview Right</button>
+        <div id="previewRotationText" style="align-self:center;color:#94a3b8;">Preview Rotation: 0&deg;</div>
+      </div>
+      <div id="previewShell" class="preview-shell">
+        <video id="preview" autoplay playsinline></video>
+      </div>
       <div id="previewResolution" style="margin-top:8px;color:#94a3b8;font-size:13px;">Preview resolution: -</div>
     </section>
     <section>
       <h2>Overlays</h2>
+      <div class="row">
+        <button class="secondary" type="button" onclick="rotateOverlays(-90)">Rotate Overlays Left</button>
+        <button class="secondary" type="button" onclick="rotateOverlays(90)">Rotate Overlays Right</button>
+        <button class="secondary" type="button" onclick="flipOverlaysX()">Flip Overlays Horizontal</button>
+        <button class="secondary" type="button" onclick="flipOverlaysY()">Flip Overlays Vertical</button>
+        <div id="overlayRotationText" style="align-self:center;color:#94a3b8;">Overlay Rotation: 0&deg;</div>
+        <div id="overlayFlipText" style="align-self:center;color:#94a3b8;">Flip H: Off, V: Off</div>
+      </div>
       <div id="overlays"></div>
       <div class="likes-overlay-config">
         <h3 class="overlay-name">Total Likes Overlay</h3>
@@ -118,6 +152,9 @@
     let previewStream = null;
     let previewDeviceId = null;
     let previewDeviceLabel = null;
+    let previewRotationDeg = 0;
+    let previewNativeWidth = 16;
+    let previewNativeHeight = 9;
     const MAX_PREVIEW_WIDTH = 7680;
     const MAX_PREVIEW_HEIGHT = 4320;
     const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -327,6 +364,119 @@
       if (!digits) return 0;
       const n = Number(digits);
       return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+    }
+
+    function normalizeRightAngle(value) {
+      const n = Number(value || 0);
+      if (!Number.isFinite(n)) return 0;
+      return ((((Math.round(n / 90) * 90) % 360) + 360) % 360);
+    }
+
+    function getOverlayRotationFromState() {
+      return normalizeRightAngle(state?.overlay_rotation_deg || 0);
+    }
+
+    function getOverlayFlipFromState() {
+      return {
+        flipX: !!state?.overlay_flip_x,
+        flipY: !!state?.overlay_flip_y,
+      };
+    }
+
+    function updateOverlayRotationLabel() {
+      const label = document.getElementById("overlayRotationText");
+      if (!label) return;
+      label.innerHTML = `Overlay Rotation: ${getOverlayRotationFromState()}&deg;`;
+    }
+
+    function updateOverlayFlipLabel() {
+      const label = document.getElementById("overlayFlipText");
+      if (!label) return;
+      const { flipX, flipY } = getOverlayFlipFromState();
+      label.textContent = `Flip H: ${flipX ? "On" : "Off"}, V: ${flipY ? "On" : "Off"}`;
+    }
+
+    async function setOverlayRotation(degrees) {
+      const normalized = normalizeRightAngle(degrees);
+      try {
+        const res = await api("/overlay/rotation", { method: "POST", body: { degrees: normalized } });
+        if (!res.ok) return;
+        state = await res.json();
+        renderOverlays();
+        renderLikesSettingsFromState();
+        updateOverlayRotationLabel();
+        updateOverlayFlipLabel();
+      } catch (e) {
+        // no-op
+      }
+    }
+
+    function rotateOverlays(delta) {
+      const current = getOverlayRotationFromState();
+      setOverlayRotation(current + delta);
+    }
+
+    async function setOverlayFlip(nextFlipX, nextFlipY) {
+      try {
+        const res = await api("/overlay/flip", { method: "POST", body: { flip_x: !!nextFlipX, flip_y: !!nextFlipY } });
+        if (!res.ok) return;
+        state = await res.json();
+        renderOverlays();
+        renderLikesSettingsFromState();
+        updateOverlayRotationLabel();
+        updateOverlayFlipLabel();
+      } catch (e) {
+        // no-op
+      }
+    }
+
+    function flipOverlaysX() {
+      const { flipX, flipY } = getOverlayFlipFromState();
+      setOverlayFlip(!flipX, flipY);
+    }
+
+    function flipOverlaysY() {
+      const { flipX, flipY } = getOverlayFlipFromState();
+      setOverlayFlip(flipX, !flipY);
+    }
+
+    function updatePreviewRotationLabel() {
+      const label = document.getElementById("previewRotationText");
+      if (!label) return;
+      label.innerHTML = `Preview Rotation: ${previewRotationDeg}&deg;`;
+    }
+
+    function applyPreviewRotation() {
+      const video = document.getElementById("preview");
+      const shell = document.getElementById("previewShell");
+      if (!video || !shell) return;
+      const baseW = Math.max(1, Number(previewNativeWidth || video.videoWidth || 16));
+      const baseH = Math.max(1, Number(previewNativeHeight || video.videoHeight || 9));
+      const quarterTurn = previewRotationDeg === 90 || previewRotationDeg === 270;
+
+      // Keep preview contained and avoid oversized dead-space when rotated.
+      const parentWidth = Math.max(320, Number(shell.parentElement?.clientWidth || shell.clientWidth || window.innerWidth));
+      const maxHeight = Math.max(220, Math.floor(window.innerHeight * 0.62));
+      const ratio = quarterTurn ? 1 : (baseW / baseH);
+      let width = parentWidth;
+      let height = Math.floor(width / ratio);
+      if (height > maxHeight) {
+        height = maxHeight;
+        width = Math.floor(height * ratio);
+      }
+      width = Math.max(220, width);
+      height = Math.max(160, height);
+      shell.style.width = `${width}px`;
+      shell.style.height = `${height}px`;
+
+      video.style.transform = `rotate(${previewRotationDeg}deg)`;
+      updatePreviewRotationLabel();
+    }
+
+    function rotatePreview(delta) {
+      previewRotationDeg = normalizeRightAngle(previewRotationDeg + delta);
+      setCookie("previewRotationDeg", String(previewRotationDeg));
+      applyPreviewRotation();
     }
 
     function renderLikeTargetGroupOptions() {
@@ -603,6 +753,9 @@
       }
       video.srcObject = null;
       previewStream = null;
+      previewNativeWidth = 16;
+      previewNativeHeight = 9;
+      applyPreviewRotation();
       if (meta) meta.textContent = "Preview resolution: -";
     }
 
@@ -686,8 +839,10 @@
             : "Preview resolution: unknown";
         }
         if (width > 0 && height > 0) {
-          video.style.aspectRatio = `${width} / ${height}`;
+          previewNativeWidth = width;
+          previewNativeHeight = height;
         }
+        applyPreviewRotation();
         previewDeviceId = target.deviceId || null;
         previewDeviceLabel = target.label || null;
         cameraPermissionGranted = true;
@@ -847,6 +1002,8 @@
         }
       });
       updateLikesOverlayToggleButton();
+      updateOverlayRotationLabel();
+      updateOverlayFlipLabel();
     }
 
     function toggleOverlay(name, show) {
@@ -890,10 +1047,16 @@
       });
     }
 
+    function initPreviewRotation() {
+      previewRotationDeg = normalizeRightAngle(getCookie("previewRotationDeg") || 0);
+      applyPreviewRotation();
+    }
+
     refreshState();
     connectWs();
     window.PageShared.initPracticeModeHeader({apiFn: api});
     initFieldPersistence();
+    initPreviewRotation();
     refreshCameras(false);
     window.addEventListener("pagehide", () => {
       stopPreview();
@@ -902,6 +1065,9 @@
     window.addEventListener("beforeunload", stopPreview);
     document.addEventListener("visibilitychange", () => {
       if (document.hidden) stopPreview();
+    });
+    window.addEventListener("resize", () => {
+      applyPreviewRotation();
     });
   </script>
 </body>

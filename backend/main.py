@@ -246,6 +246,15 @@ class OverlayLayoutRequest(BaseModel):
     scale: Optional[float] = 1
 
 
+class OverlayRotationRequest(BaseModel):
+    degrees: Optional[int] = 0
+
+
+class OverlayFlipRequest(BaseModel):
+    flip_x: Optional[bool] = False
+    flip_y: Optional[bool] = False
+
+
 class CameraLikesOverlayRequest(BaseModel):
     like_goal: Optional[str] = ""
     prize: Optional[str] = ""
@@ -696,6 +705,24 @@ async def set_overlay_layout(name: str, body: OverlayLayoutRequest) -> JSONRespo
     x_value = float(body.x_offset if body.x_offset is not None else 0.0)
     y_value = float(body.y_offset if body.y_offset is not None else 0.0)
     state = state_manager.set_overlay_layout(name, x_value, y_value, scale_value)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+
+@app.post("/overlay/rotation")
+async def set_overlay_rotation(body: OverlayRotationRequest) -> JSONResponse:
+    raw = int(body.degrees if body.degrees is not None else 0)
+    normalized = raw % 360
+    if normalized not in (0, 90, 180, 270):
+        normalized = int(round(normalized / 90.0) * 90) % 360
+    state = state_manager.set_overlay_rotation(normalized)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+
+@app.post("/overlay/flip")
+async def set_overlay_flip(body: OverlayFlipRequest) -> JSONResponse:
+    state = state_manager.set_overlay_flip(bool(body.flip_x), bool(body.flip_y))
     _broadcast_state(state)
     return JSONResponse(state)
 

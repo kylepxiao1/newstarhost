@@ -149,6 +149,125 @@ async def ws_state_listener(state_holder: Dict):
             await asyncio.sleep(2)
 
 
+def _transform_overlay_only(
+    frame: np.ndarray,
+    overlayed: np.ndarray,
+    rotation_deg: int,
+    flip_x: bool,
+    flip_y: bool,
+) -> np.ndarray:
+    """Transform only overlay pixels around frame center, leaving base frame unchanged."""
+    rotation_norm = int(rotation_deg) % 360
+    if rotation_norm == 0 and not flip_x and not flip_y:
+        return overlayed
+    h, w = frame.shape[:2]
+
+    diff = cv2.absdiff(overlayed, frame)
+    diff_gray = cv2.cvtColor(diff, cv2.COLOR_BGR2GRAY)
+    _, mask = cv2.threshold(diff_gray, 2, 255, cv2.THRESH_BINARY)
+    points = cv2.findNonZero(mask)
+    if points is None:
+        return overlayed
+
+    x, y, bw, bh = cv2.boundingRect(points)
+    x2 = x + max(0, bw - 1)
+    y2 = y + max(0, bh - 1)
+    corners = np.array(
+        [
+            [x, y, 1.0],
+            [x2, y, 1.0],
+            [x, y2, 1.0],
+            [x2, y2, 1.0],
+        ],
+        dtype=np.float32,
+    ).T
+
+    cx = (w - 1) / 2.0
+    cy = (h - 1) / 2.0
+    rot_2x3 = cv2.getRotationMatrix2D((cx, cy), -float(rotation_norm), 1.0)
+    mat = np.vstack([rot_2x3, [0.0, 0.0, 1.0]]).astype(np.float32)
+
+    if flip_x:
+        flipx = np.array(
+            [
+                [-1.0, 0.0, 2.0 * cx],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        mat = flipx @ mat
+    if flip_y:
+        flipy = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, -1.0, 2.0 * cy],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        mat = flipy @ mat
+
+    transformed_corners = mat @ corners
+    min_x = float(np.min(transformed_corners[0]))
+    max_x = float(np.max(transformed_corners[0]))
+    min_y = float(np.min(transformed_corners[1]))
+    max_y = float(np.max(transformed_corners[1]))
+
+    # Keep transformed overlays near their original top-left anchor when possible,
+    # then clamp into frame bounds.
+    target_min_x = float(x)
+    target_min_y = float(y)
+
+    def _anchored_clamped_shift(
+        src_min: float, src_max: float, target_min: float, max_bound: float
+    ) -> float:
+        desired = target_min - src_min
+        low = -src_min
+        high = max_bound - src_max
+        if low > high:
+            # Overlay span exceeds bounds; center best-effort.
+            return ((max_bound - (src_max - src_min)) / 2.0) - src_min
+        return min(high, max(low, desired))
+
+    dx = _anchored_clamped_shift(min_x, max_x, target_min_x, float(max(1, w - 1)))
+    dy = _anchored_clamped_shift(min_y, max_y, target_min_y, float(max(1, h - 1)))
+    if dx != 0.0 or dy != 0.0:
+        shift = np.array(
+            [
+                [1.0, 0.0, dx],
+                [0.0, 1.0, dy],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        mat = shift @ mat
+
+    mat_2x3 = mat[:2, :]
+
+    transformed_overlay = cv2.warpAffine(
+        overlayed,
+        mat_2x3,
+        (w, h),
+        flags=cv2.INTER_LINEAR,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=(0, 0, 0),
+    )
+    transformed_mask = cv2.warpAffine(
+        mask,
+        mat_2x3,
+        (w, h),
+        flags=cv2.INTER_NEAREST,
+        borderMode=cv2.BORDER_CONSTANT,
+        borderValue=0,
+    )
+
+    out = frame.copy()
+    idx = transformed_mask > 0
+    out[idx] = transformed_overlay[idx]
+    return out
+
+
 def draw_overlay(frame: np.ndarray, state: Dict, likes_overlay: Dict | None = None) -> np.ndarray:
     """
     Render overlays with resolution-aware sizing so text stays crisp at any resolution.
@@ -341,6 +460,18 @@ def draw_overlay(frame: np.ndarray, state: Dict, likes_overlay: Dict | None = No
             pct_y = bar_y1 + int((bar_h + pct_h) / 2) - 2
             cv2.putText(overlay, pct_text, (pct_x, pct_y), font, pct_scale, (0, 0, 0), max(1, text_thick), cv2.LINE_AA)
             cv2.putText(overlay, pct_text, (pct_x, pct_y), font, pct_scale, (255, 255, 255), max(1, text_thick - 1), cv2.LINE_AA)
+    raw_rot = state.get("overlay_rotation_deg", 0)
+    try:
+        rot = int(raw_rot)
+    except Exception:
+        rot = 0
+    rot = rot % 360
+    if rot not in (0, 90, 180, 270):
+        rot = int(round(rot / 90.0) * 90) % 360
+    flip_x = bool(state.get("overlay_flip_x", False))
+    flip_y = bool(state.get("overlay_flip_y", False))
+    if rot or flip_x or flip_y:
+        return _transform_overlay_only(frame, overlay, rot, flip_x, flip_y)
     return overlay
 
 

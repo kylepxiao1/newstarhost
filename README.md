@@ -103,6 +103,16 @@ Notes:
 - Topic song rows can be upserted to Supabase `topic_trends` (disable with `--no-supabase-upload`).
 
 ### Fly.io Listener Machine
+The `listener` process now runs `scripts/listener_multi.sh`, which launches 3 listener child processes with shard-specific usernames and heartbeat IDs:
+- set 1 (`listener-set-1`): `wildcard_boys`
+- set 2 (`listener-set-2`): `afterdark_ns,valentinananaaaa,cardin_v_`
+- set 3 (`listener-set-3`): `snyki.live,sv_cloveris,superv_sv,visiondance.leo,millarboys233,primalkings_officialjwm,sunsetnova__,bdcuphedc3,play.zr4,play.hero8,vfm.aero,chaos001inc`
+
+Shard env vars live in `app.env`:
+- `TIKTOK_USERNAMES_SET_1`, `TIKTOK_USERNAMES_SET_2`, `TIKTOK_USERNAMES_SET_3`
+- `LISTENER_HEARTBEAT_ID_SET_1`, `LISTENER_HEARTBEAT_ID_SET_2`, `LISTENER_HEARTBEAT_ID_SET_3`
+- `LISTENER_HEARTBEAT_WATCH_IDS=listener-set-1,listener-set-2,listener-set-3`
+
 Useful commands when running the listener on Fly.io:
 ```powershell
 # Authenticate Fly CLI
