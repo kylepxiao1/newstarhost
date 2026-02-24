@@ -8,10 +8,14 @@ import time
 from pathlib import Path
 from typing import Dict
 
+# Some drivers/GPU stacks are unstable with MSMF hardware transforms.
+os.environ.setdefault("OPENCV_VIDEOIO_MSMF_ENABLE_HW_TRANSFORMS", "0")
+
 import cv2
 import httpx
 import numpy as np
 import pyvirtualcam
+import pyvirtualcam.camera as pyvirtualcam_camera
 import websockets
 from overlay_renderer import draw_overlay as optimized_draw_overlay
 from pyvirtualcam import PixelFormat
@@ -37,6 +41,11 @@ CAM_PROBE_MAX_CANDIDATES = max(1, int(os.environ.get("CAM_PROBE_MAX_CANDIDATES",
 CAM_PROBE_BUDGET_SECS = max(0.0, float(os.environ.get("CAM_PROBE_BUDGET_SECS", "0.5")))
 CAM_PROBE_SETTLE_SECS = max(0.0, float(os.environ.get("CAM_PROBE_SETTLE_SECS", "0.02")))
 CAM_VERBOSE_LOGS = os.environ.get("CAM_VERBOSE_LOGS", "0").strip().lower() in {"1", "true", "yes", "on"}
+VCAM_BACKENDS = os.environ.get("VCAM_BACKENDS", "auto,obs,unitycapture").strip()
+VCAM_FORMATS = os.environ.get("VCAM_FORMATS", "BGR,RGB,I420").strip()
+VCAM_FPS_CANDIDATES = os.environ.get("VCAM_FPS_CANDIDATES", f"{FPS},30,25,24").strip()
+GPU_LOG_INTERVAL_SECS = max(0.0, float(os.environ.get("GPU_LOG_INTERVAL_SECS", "0")))
+GPU_NVIDIA_SMI_BIN = os.environ.get("GPU_NVIDIA_SMI_BIN", "nvidia-smi").strip() or "nvidia-smi"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("virtual-cam")
@@ -104,6 +113,166 @@ RESOLUTION_CANDIDATES = _parse_resolution_candidates(CAM_MAX_RES_CANDIDATES)
 def _verbose_log(msg: str, *args) -> None:
     if CAM_VERBOSE_LOGS:
         logger.info(msg, *args)
+
+
+def _log_graphics_diagnostics() -> None:
+    cuda_count = 0
+    cuda_devices: list[str] = []
+    try:
+        if hasattr(cv2, "cuda") and hasattr(cv2.cuda, "getCudaEnabledDeviceCount"):
+            cuda_count = int(cv2.cuda.getCudaEnabledDeviceCount())
+            for idx in range(max(0, cuda_count)):
+                try:
+                    info = cv2.cuda.DeviceInfo(idx)
+                    name = str(info.name()).strip()
+                    cc = f"{int(info.majorVersion())}.{int(info.minorVersion())}"
+                    mp = int(info.multiProcessorCount())
+                    total_mb = int(info.totalMemory() // (1024 * 1024))
+                    cuda_devices.append(f"#{idx} {name} cc={cc} mp={mp} mem={total_mb}MB")
+                except Exception:
+                    cuda_devices.append(f"#{idx} <details unavailable>")
+    except Exception:
+        cuda_count = 0
+        cuda_devices = []
+
+    have_opencl = False
+    use_opencl = False
+    opencl_name = ""
+    try:
+        if hasattr(cv2, "ocl"):
+            have_opencl = bool(cv2.ocl.haveOpenCL())
+            use_opencl = bool(cv2.ocl.useOpenCL()) if hasattr(cv2.ocl, "useOpenCL") else False
+            dev = None
+            if hasattr(cv2.ocl, "Device_getDefault"):
+                dev = cv2.ocl.Device_getDefault()
+            elif hasattr(cv2.ocl, "Device") and hasattr(cv2.ocl.Device, "getDefault"):
+                dev = cv2.ocl.Device.getDefault()
+            if dev is not None:
+                try:
+                    opencl_name = str(dev.name()).strip()
+                except Exception:
+                    opencl_name = ""
+    except Exception:
+        have_opencl = False
+        use_opencl = False
+        opencl_name = ""
+
+    logger.info(
+        "Graphics diagnostics: OpenCV CUDA devices=%s; OpenCL available=%s in_use=%s%s",
+        cuda_count,
+        have_opencl,
+        use_opencl,
+        f" device='{opencl_name}'" if opencl_name else "",
+    )
+    if cuda_devices:
+        logger.info("CUDA devices: %s", " | ".join(cuda_devices))
+
+    # Current overlay renderer path is CPU (NumPy/OpenCV) unless explicitly ported to cv2.cuda/UMat.
+    logger.info("Render pipeline mode: CPU (overlay ops run on NumPy/OpenCV CPU kernels)")
+
+
+def _poll_nvidia_smi() -> str | None:
+    try:
+        result = subprocess.run(
+            [
+                GPU_NVIDIA_SMI_BIN,
+                "--query-gpu=name,utilization.gpu,utilization.memory,memory.used,memory.total",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=2.0,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    return " | ".join(lines)
+
+
+def _parse_vcam_backends(text: str) -> list[str | None]:
+    available = set(pyvirtualcam_camera.BACKENDS.keys())
+    parsed: list[str | None] = []
+    for part in text.split(","):
+        token = part.strip().lower()
+        if not token:
+            continue
+        if token in {"auto", "any", "default"}:
+            if None not in parsed:
+                parsed.append(None)
+            continue
+        if token not in available:
+            logger.warning(
+                "Ignoring unsupported VCAM_BACKENDS entry '%s' (available: %s)",
+                token,
+                ",".join(sorted(available)),
+            )
+            continue
+        if token not in parsed:
+            parsed.append(token)
+    if not parsed:
+        parsed.append(None)
+    return parsed
+
+
+def _parse_vcam_formats(text: str) -> list[PixelFormat]:
+    supported = {
+        "BGR": PixelFormat.BGR,
+        "RGB": PixelFormat.RGB,
+        "RGBA": PixelFormat.RGBA,
+        "GRAY": PixelFormat.GRAY,
+        "I420": PixelFormat.I420,
+    }
+    parsed: list[PixelFormat] = []
+    for part in text.split(","):
+        token = part.strip().upper()
+        if not token:
+            continue
+        fmt = supported.get(token)
+        if fmt is None:
+            logger.warning(
+                "Ignoring unsupported VCAM_FORMATS entry '%s' (supported: %s)",
+                token,
+                ",".join(sorted(supported.keys())),
+            )
+            continue
+        if fmt not in parsed:
+            parsed.append(fmt)
+    if not parsed:
+        parsed = [PixelFormat.BGR, PixelFormat.RGB]
+    return parsed
+
+
+def _parse_vcam_fps_candidates(text: str, base_fps: int) -> list[float]:
+    parsed: list[float] = []
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            fps_val = float(token)
+        except Exception:
+            continue
+        if fps_val <= 0:
+            continue
+        if fps_val not in parsed:
+            parsed.append(fps_val)
+    preferred = float(max(1, base_fps))
+    if preferred not in parsed:
+        parsed.insert(0, preferred)
+    for fallback in (30.0, 25.0, 24.0):
+        if fallback not in parsed:
+            parsed.append(fallback)
+    return parsed
+
+
+VCAM_BACKEND_CANDIDATES = _parse_vcam_backends(VCAM_BACKENDS)
+VCAM_FORMAT_CANDIDATES = _parse_vcam_formats(VCAM_FORMATS)
+VCAM_FPS_CANDIDATE_VALUES = _parse_vcam_fps_candidates(VCAM_FPS_CANDIDATES, FPS)
 
 
 def _resolution_candidates_for_label(label: str = "") -> list[tuple[int, int]]:
@@ -595,13 +764,36 @@ def _capture_size(cap: cv2.VideoCapture, frame: np.ndarray | None = None) -> tup
     return max(1, DEFAULT_WIDTH), max(1, DEFAULT_HEIGHT)
 
 
+def _prepare_virtual_cam_frame(frame: np.ndarray, fmt: PixelFormat) -> np.ndarray:
+    src = frame
+    if src.dtype != np.uint8:
+        src = np.clip(src, 0, 255).astype(np.uint8, copy=False)
+
+    if fmt == PixelFormat.BGR:
+        out = src
+    elif fmt == PixelFormat.RGB:
+        out = cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
+    elif fmt == PixelFormat.RGBA:
+        out = cv2.cvtColor(src, cv2.COLOR_BGR2RGBA)
+    elif fmt == PixelFormat.GRAY:
+        out = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
+    elif fmt == PixelFormat.I420:
+        out = cv2.cvtColor(src, cv2.COLOR_BGR2YUV_I420)
+    else:
+        raise ValueError(f"Unsupported pixel format for virtual camera frame conversion: {fmt}")
+
+    if not out.flags.c_contiguous:
+        out = np.ascontiguousarray(out)
+    return out
+
+
 def _restart_virtual_camera(
     cam: pyvirtualcam.Camera | None,
     requested_width: int,
     requested_height: int,
     current_width: int,
     current_height: int,
-) -> tuple[pyvirtualcam.Camera, int, int]:
+) -> tuple[pyvirtualcam.Camera, int, int, PixelFormat, str, float]:
     def _size_candidates(w: int, h: int) -> list[tuple[int, int]]:
         w = max(1, int(w))
         h = max(1, int(h))
@@ -631,29 +823,75 @@ def _restart_virtual_camera(
 
     candidates = _size_candidates(requested_width, requested_height)
     errors: list[str] = []
+    preferred_backend = VCAM_BACKEND_CANDIDATES[0]
+    preferred_format = VCAM_FORMAT_CANDIDATES[0]
+    preferred_fps = VCAM_FPS_CANDIDATE_VALUES[0]
     for cand_w, cand_h in candidates:
-        try:
-            new_cam = pyvirtualcam.Camera(width=cand_w, height=cand_h, fps=FPS, fmt=PixelFormat.BGR)
-            if cam is not None:
-                try:
-                    cam.close()
-                except Exception:
-                    pass
-            if cand_w == requested_width and cand_h == requested_height:
-                logger.info("Virtual camera started: %s (%sx%s @ %sfps)", new_cam.device, cand_w, cand_h, FPS)
-            else:
-                logger.warning(
-                    "Virtual camera fallback: requested %sx%s, using %sx%s",
-                    requested_width,
-                    requested_height,
-                    cand_w,
-                    cand_h,
-                )
-                logger.info("Virtual camera started: %s (%sx%s @ %sfps)", new_cam.device, cand_w, cand_h, FPS)
-            return new_cam, cand_w, cand_h
-        except Exception as exc:
-            errors.append(f"{cand_w}x{cand_h}: {exc}")
-            continue
+        for cand_fps in VCAM_FPS_CANDIDATE_VALUES:
+            for cand_backend in VCAM_BACKEND_CANDIDATES:
+                for cand_fmt in VCAM_FORMAT_CANDIDATES:
+                    if cand_fmt == PixelFormat.I420 and ((cand_w % 2) or (cand_h % 2)):
+                        continue
+                    try:
+                        new_cam = pyvirtualcam.Camera(
+                            width=cand_w,
+                            height=cand_h,
+                            fps=cand_fps,
+                            fmt=cand_fmt,
+                            backend=cand_backend,
+                        )
+                        if cam is not None:
+                            try:
+                                cam.close()
+                            except Exception:
+                                pass
+                        backend_label = str(getattr(new_cam, "backend", cand_backend or "auto"))
+                        is_preferred = (
+                            cand_w == requested_width
+                            and cand_h == requested_height
+                            and abs(cand_fps - preferred_fps) < 0.01
+                            and cand_fmt == preferred_format
+                            and cand_backend == preferred_backend
+                        )
+                        if is_preferred:
+                            logger.info(
+                                "Virtual camera started: %s (%sx%s @ %sfps, backend=%s, fmt=%s)",
+                                new_cam.device,
+                                cand_w,
+                                cand_h,
+                                cand_fps,
+                                backend_label,
+                                cand_fmt.name,
+                            )
+                        else:
+                            logger.warning(
+                                "Virtual camera fallback: requested %sx%s @ %sfps backend=%s fmt=%s, using %sx%s @ %sfps backend=%s fmt=%s",
+                                requested_width,
+                                requested_height,
+                                preferred_fps,
+                                preferred_backend or "auto",
+                                preferred_format.name,
+                                cand_w,
+                                cand_h,
+                                cand_fps,
+                                backend_label,
+                                cand_fmt.name,
+                            )
+                            logger.info(
+                                "Virtual camera started: %s (%sx%s @ %sfps, backend=%s, fmt=%s)",
+                                new_cam.device,
+                                cand_w,
+                                cand_h,
+                                cand_fps,
+                                backend_label,
+                                cand_fmt.name,
+                            )
+                        return new_cam, cand_w, cand_h, cand_fmt, backend_label, cand_fps
+                    except Exception as exc:
+                        errors.append(
+                            f"{cand_w}x{cand_h}@{cand_fps} backend={cand_backend or 'auto'} fmt={cand_fmt.name}: {exc}"
+                        )
+                        continue
 
     if cam is not None:
         error_count = len(errors)
@@ -671,7 +909,7 @@ def _restart_virtual_camera(
             "Virtual camera restart detailed errors: %s",
             "; ".join(errors[-3:]) if errors else "unknown",
         )
-        return cam, current_width, current_height
+        return cam, current_width, current_height, preferred_format, preferred_backend or "auto", preferred_fps
     raise RuntimeError(
         f"Could not start virtual camera for requested {requested_width}x{requested_height}. "
         f"Recent errors: {'; '.join(errors[-3:]) if errors else 'unknown'}"
@@ -716,8 +954,11 @@ def log_dshow_devices() -> None:
 
 
 async def main() -> None:
+    _log_graphics_diagnostics()
     log_dshow_devices()
     last_open_attempt = 0.0
+    next_gpu_log = 0.0
+    nvidia_probe_reported_unavailable = False
 
     async with httpx.AsyncClient() as client:
         state_holder: Dict = {"state": await fetch_state(client)}
@@ -750,7 +991,10 @@ async def main() -> None:
         if cap.isOpened():
             source_width, source_height = _capture_size(cap)
         cam: pyvirtualcam.Camera | None
-        cam, output_width, output_height = _restart_virtual_camera(
+        cam_fmt = VCAM_FORMAT_CANDIDATES[0]
+        cam_backend = VCAM_BACKEND_CANDIDATES[0] or "auto"
+        cam_fps = float(VCAM_FPS_CANDIDATE_VALUES[0])
+        cam, output_width, output_height, cam_fmt, cam_backend, cam_fps = _restart_virtual_camera(
             None,
             source_width,
             source_height,
@@ -787,7 +1031,7 @@ async def main() -> None:
                         new_w, new_h = _capture_size(cap)
                         if new_w != source_width or new_h != source_height:
                             source_width, source_height = new_w, new_h
-                            cam, output_width, output_height = _restart_virtual_camera(
+                            cam, output_width, output_height, cam_fmt, cam_backend, cam_fps = _restart_virtual_camera(
                                 cam,
                                 source_width,
                                 source_height,
@@ -807,6 +1051,21 @@ async def main() -> None:
                         likes_overlay_holder["summary"] = await fetch_likes_overlay(client)
                         next_like_overlay_poll = now_poll + max(0.25, LIKE_OVERLAY_POLL_INTERVAL)
 
+                if GPU_LOG_INTERVAL_SECS > 0:
+                    now_gpu = time.monotonic()
+                    if now_gpu >= next_gpu_log:
+                        next_gpu_log = now_gpu + GPU_LOG_INTERVAL_SECS
+                        snapshot = _poll_nvidia_smi()
+                        if snapshot:
+                            nvidia_probe_reported_unavailable = False
+                            logger.info("GPU usage (nvidia-smi): %s", snapshot)
+                        elif not nvidia_probe_reported_unavailable:
+                            nvidia_probe_reported_unavailable = True
+                            logger.info(
+                                "GPU usage telemetry unavailable (nvidia-smi not found or unsupported). "
+                                "Set GPU_NVIDIA_SMI_BIN if needed."
+                            )
+
                 if not cap.isOpened():
                     blank = np.zeros((output_height, output_width, 3), dtype=np.uint8)
                     overlayed = optimized_draw_overlay(
@@ -814,8 +1073,26 @@ async def main() -> None:
                         state_holder.get("state") or {},
                         likes_overlay_holder.get("summary") or {},
                     )
-                    cam.send(overlayed)
-                    cam.sleep_until_next_frame()
+                    try:
+                        cam.send(_prepare_virtual_cam_frame(overlayed, cam_fmt))
+                        cam.sleep_until_next_frame()
+                    except Exception as exc:
+                        logger.warning(
+                            "Virtual camera send failed for %sx%s (%s/%s @ %sfps): %s. Restarting with compatibility fallbacks.",
+                            output_width,
+                            output_height,
+                            cam_backend,
+                            cam_fmt.name,
+                            cam_fps,
+                            exc,
+                        )
+                        cam, output_width, output_height, cam_fmt, cam_backend, cam_fps = _restart_virtual_camera(
+                            cam,
+                            source_width,
+                            source_height,
+                            output_width,
+                            output_height,
+                        )
                     await asyncio.sleep(0.05)
                     continue
 
@@ -832,7 +1109,7 @@ async def main() -> None:
                                 new_w, new_h = _capture_size(cap)
                                 if new_w != source_width or new_h != source_height:
                                     source_width, source_height = new_w, new_h
-                                    cam, output_width, output_height = _restart_virtual_camera(
+                                    cam, output_width, output_height, cam_fmt, cam_backend, cam_fps = _restart_virtual_camera(
                                         cam,
                                         source_width,
                                         source_height,
@@ -848,7 +1125,7 @@ async def main() -> None:
                 frame_w, frame_h = _capture_size(cap, frame)
                 if frame_w != source_width or frame_h != source_height:
                     source_width, source_height = frame_w, frame_h
-                    cam, output_width, output_height = _restart_virtual_camera(
+                    cam, output_width, output_height, cam_fmt, cam_backend, cam_fps = _restart_virtual_camera(
                         cam,
                         source_width,
                         source_height,
@@ -862,8 +1139,28 @@ async def main() -> None:
                     state_holder.get("state") or {},
                     likes_overlay_holder.get("summary") or {},
                 )
-                cam.send(overlayed)
-                cam.sleep_until_next_frame()
+                try:
+                    cam.send(_prepare_virtual_cam_frame(overlayed, cam_fmt))
+                    cam.sleep_until_next_frame()
+                except Exception as exc:
+                    logger.warning(
+                        "Virtual camera send failed for %sx%s (%s/%s @ %sfps): %s. Restarting with compatibility fallbacks.",
+                        output_width,
+                        output_height,
+                        cam_backend,
+                        cam_fmt.name,
+                        cam_fps,
+                        exc,
+                    )
+                    cam, output_width, output_height, cam_fmt, cam_backend, cam_fps = _restart_virtual_camera(
+                        cam,
+                        source_width,
+                        source_height,
+                        output_width,
+                        output_height,
+                    )
+                    await asyncio.sleep(0.02)
+                    continue
                 try:
                     state_task = asyncio.create_task(fetch_state(client))
                     await asyncio.wait_for(asyncio.shield(state_task), timeout=POLL_INTERVAL)
