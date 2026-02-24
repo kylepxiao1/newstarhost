@@ -1460,7 +1460,12 @@ async def group_dances_page() -> FileResponse:
 
 @app.get("/dances/menu")
 async def dances_menu_page() -> FileResponse:
-    return _static_file("menu_dances.html")
+    return _static_file("solo_dances.html")
+
+
+@app.get("/dances/solo")
+async def dances_solo_page() -> FileResponse:
+    return _static_file("solo_dances.html")
 
 
 @app.get("/app")

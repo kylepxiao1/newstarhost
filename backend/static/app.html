@@ -125,7 +125,7 @@
     <div id="navLinks" class="nav-links">
       <a href="#group" data-target="group" class="active">Group Dances</a>
       <a href="#battle" data-target="battle">Battle Control</a>
-      <a href="#menu" data-target="menu">Dance Menu</a>
+      <a href="#solo" data-target="solo">Solo Dances</a>
       <a href="#dancers" data-target="dancers">Dancers</a>
       <a href="#songs" data-target="songs">Songs</a>
       <a href="#audio" data-target="audio">Audio Tools</a>
@@ -139,7 +139,7 @@
     <div class="frames">
       <iframe id="frame-group" class="active" src="/group/dances"></iframe>
       <iframe id="frame-battle" src="/battle/dances"></iframe>
-      <iframe id="frame-menu" src="/dances/menu"></iframe>
+      <iframe id="frame-solo" src="/dances/solo"></iframe>
       <iframe id="frame-dancers" src="/dancers/register"></iframe>
       <iframe id="frame-songs" src="/songs/edit"></iframe>
       <iframe id="frame-audio" src="/audio/tools"></iframe>
@@ -161,7 +161,7 @@
     const frames = {
       group: document.getElementById("frame-group"),
       battle: document.getElementById("frame-battle"),
-      menu: document.getElementById("frame-menu"),
+      solo: document.getElementById("frame-solo"),
       dancers: document.getElementById("frame-dancers"),
       songs: document.getElementById("frame-songs"),
       audio: document.getElementById("frame-audio"),
@@ -312,7 +312,8 @@
       }
     });
 
-    const hash = (location.hash || "").replace("#","") || "group";
+    const hashRaw = (location.hash || "").replace("#","");
+    const hash = hashRaw === "menu" ? "solo" : (hashRaw || "group");
     if (frames[hash]) show(hash);
     installFrameNavButtons();
     updateFrameHeights();
