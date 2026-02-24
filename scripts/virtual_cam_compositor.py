@@ -4,6 +4,7 @@ import logging
 import os
 import re
 import subprocess
+import threading
 import time
 from pathlib import Path
 from typing import Dict
@@ -17,8 +18,9 @@ import numpy as np
 import pyvirtualcam
 import pyvirtualcam.camera as pyvirtualcam_camera
 import websockets
-from overlay_renderer import draw_overlay as optimized_draw_overlay, get_render_pipeline_mode
+from overlay_renderer import draw_overlay as cpu_draw_overlay, get_render_pipeline_mode as cpu_render_pipeline_mode
 from pyvirtualcam import PixelFormat
+from gpu_overlay_renderer import SkiaGpuOverlayRenderer
 
 API_BASE = os.environ.get("API_BASE", "https://newstarhost.fly.dev") # http://127.0.0.1:8000
 DEFAULT_CAM_INDEX = int(os.environ.get("INPUT_CAM_INDEX", -1))  # -1 => auto-pick first working camera
@@ -44,16 +46,29 @@ CAM_PROBE_SETTLE_SECS = max(0.0, float(os.environ.get("CAM_PROBE_SETTLE_SECS", "
 CAM_VERBOSE_LOGS = os.environ.get("CAM_VERBOSE_LOGS", "0").strip().lower() in {"1", "true", "yes", "on"}
 CV2_USE_OPENCL_REQUEST = os.environ.get("CV2_USE_OPENCL", "auto").strip()
 VCAM_BACKENDS = os.environ.get("VCAM_BACKENDS", "obs,unitycapture,auto").strip()
-VCAM_FORMATS = os.environ.get("VCAM_FORMATS", "RGB,BGR,I420").strip()
+VCAM_FORMATS = os.environ.get("VCAM_FORMATS", "BGR,RGB,I420").strip()
 VCAM_FPS_CANDIDATES = os.environ.get("VCAM_FPS_CANDIDATES", f"{FPS},30,25,24").strip()
 OVERLAY_GPU_MODE = os.environ.get("OVERLAY_GPU_MODE", "auto").strip()
+OVERLAY_GPU_MIN_PIXELS = max(0, int(os.environ.get("OVERLAY_GPU_MIN_PIXELS", "180000")))
+OVERLAY_RENDERER_BACKEND = os.environ.get("OVERLAY_RENDERER_BACKEND", "auto").strip().lower()
 GPU_LOG_INTERVAL_SECS = max(0.0, float(os.environ.get("GPU_LOG_INTERVAL_SECS", "0")))
 GPU_NVIDIA_SMI_BIN = os.environ.get("GPU_NVIDIA_SMI_BIN", "nvidia-smi").strip() or "nvidia-smi"
+FFMPEG_PROBE_ON_START = os.environ.get("FFMPEG_PROBE_ON_START", "1").strip().lower() not in {"0", "false", "no", "off"}
+PERF_LOG_INTERVAL_SECS = max(0.0, float(os.environ.get("PERF_LOG_INTERVAL_SECS", "5")))
+AUTO_QUALITY_ENABLED = os.environ.get("AUTO_QUALITY_ENABLED", "1").strip().lower() in {"1", "true", "yes", "on"}
+AUTO_QUALITY_LEVELS = os.environ.get("AUTO_QUALITY_LEVELS", "1.0,0.9,0.8,0.7").strip()
+AUTO_QUALITY_DOWNGRADE_FRAMES = max(5, int(os.environ.get("AUTO_QUALITY_DOWNGRADE_FRAMES", "45")))
+AUTO_QUALITY_UPGRADE_FRAMES = max(20, int(os.environ.get("AUTO_QUALITY_UPGRADE_FRAMES", "240")))
+CAM_READER_RESTART_STALE_SECS = max(0.2, float(os.environ.get("CAM_READER_RESTART_STALE_SECS", "1.0")))
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("virtual-cam")
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+_overlay_draw_fn = cpu_draw_overlay
+_overlay_pipeline_mode = cpu_render_pipeline_mode()
+_overlay_renderer_name = "cpu"
 # Silence verbose OpenCV backend selection chatter (handle older OpenCVs)
 try:
     if hasattr(cv2, "setLogLevel"):
@@ -126,6 +141,93 @@ def _configure_opencl(request_raw: str) -> tuple[str, bool, bool, str]:
 
 
 OPENCL_MODE, OPENCL_AVAILABLE, OPENCL_ENABLED, OPENCL_DEVICE = _configure_opencl(CV2_USE_OPENCL_REQUEST)
+
+
+def _parse_quality_levels(text: str) -> list[float]:
+    levels: list[float] = []
+    for part in text.split(","):
+        token = part.strip()
+        if not token:
+            continue
+        try:
+            value = float(token)
+        except Exception:
+            continue
+        if value <= 0.0 or value > 1.0:
+            continue
+        if value not in levels:
+            levels.append(value)
+    if 1.0 not in levels:
+        levels.append(1.0)
+    levels.sort(reverse=True)
+    return levels
+
+
+RENDER_SCALE_LEVELS = _parse_quality_levels(AUTO_QUALITY_LEVELS)
+
+
+class _CameraFrameReader:
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._lock = threading.Lock()
+        self._running = False
+        self._cap: cv2.VideoCapture | None = None
+        self._latest_frame: np.ndarray | None = None
+        self._latest_ts = 0.0
+        self._consecutive_failures = 0
+
+    def start(self, cap: cv2.VideoCapture) -> None:
+        self.stop()
+        self._cap = cap
+        self._running = True
+        self._latest_frame = None
+        self._latest_ts = 0.0
+        self._consecutive_failures = 0
+        self._thread = threading.Thread(target=self._run, name="camera-frame-reader", daemon=True)
+        self._thread.start()
+
+    def _run(self) -> None:
+        while self._running:
+            cap = self._cap
+            if cap is None or not cap.isOpened():
+                time.sleep(0.01)
+                continue
+            try:
+                ok, frame = cap.read()
+            except Exception:
+                ok, frame = False, None
+            now = time.monotonic()
+            with self._lock:
+                if ok and frame is not None:
+                    self._latest_frame = frame
+                    self._latest_ts = now
+                    self._consecutive_failures = 0
+                else:
+                    self._consecutive_failures += 1
+            if not ok:
+                time.sleep(0.002)
+
+    def latest(self) -> tuple[np.ndarray | None, float, int]:
+        with self._lock:
+            frame = self._latest_frame
+            ts = float(self._latest_ts)
+            failures = int(self._consecutive_failures)
+        return frame, ts, failures
+
+    def clear(self) -> None:
+        with self._lock:
+            self._latest_frame = None
+            self._latest_ts = 0.0
+            self._consecutive_failures = 0
+
+    def stop(self) -> None:
+        self._running = False
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=1.0)
+        self._cap = None
+        self.clear()
 
 
 def _parse_resolution_candidates(text: str) -> list[tuple[int, int]]:
@@ -227,7 +329,58 @@ def _log_graphics_diagnostics() -> None:
     if cuda_devices:
         logger.info("CUDA devices: %s", " | ".join(cuda_devices))
 
-    logger.info("Render pipeline mode: %s", get_render_pipeline_mode())
+    logger.info("Render pipeline mode: %s", _overlay_pipeline_mode)
+
+
+def _init_overlay_renderer() -> None:
+    global _overlay_draw_fn, _overlay_pipeline_mode, _overlay_renderer_name
+
+    backend = OVERLAY_RENDERER_BACKEND
+    if backend not in {"auto", "cpu", "skia"}:
+        logger.warning("Ignoring unsupported OVERLAY_RENDERER_BACKEND='%s'; falling back to auto", backend)
+        backend = "auto"
+
+    if backend == "cpu":
+        _overlay_renderer_name = "cpu"
+        _overlay_draw_fn = cpu_draw_overlay
+        _overlay_pipeline_mode = cpu_render_pipeline_mode()
+        return
+
+    if SkiaGpuOverlayRenderer is None:
+        if backend == "skia":
+            logger.warning("Skia renderer requested but gpu_overlay_renderer import failed; using CPU overlay renderer")
+        _overlay_renderer_name = "cpu"
+        _overlay_draw_fn = cpu_draw_overlay
+        _overlay_pipeline_mode = cpu_render_pipeline_mode()
+        return
+
+    try:
+        skia_renderer = SkiaGpuOverlayRenderer(logger=logger)
+        if skia_renderer.is_available():
+            _overlay_renderer_name = "skia"
+
+            def _draw(frame: np.ndarray, state: Dict, likes: Dict | None) -> np.ndarray:
+                out = skia_renderer.render(frame, state, likes)
+                if out is None:
+                    return cpu_draw_overlay(frame, state, likes)
+                return out
+
+            _overlay_draw_fn = _draw
+            _overlay_pipeline_mode = skia_renderer.pipeline_mode()
+            logger.info("Overlay renderer backend selected: skia")
+            return
+        if backend == "skia":
+            logger.warning(
+                "Skia renderer requested but unavailable (%s); using CPU overlay renderer",
+                skia_renderer.unavailable_reason(),
+            )
+    except Exception as exc:
+        if backend == "skia":
+            logger.warning("Skia renderer initialization failed (%s); using CPU overlay renderer", exc)
+
+    _overlay_renderer_name = "cpu"
+    _overlay_draw_fn = cpu_draw_overlay
+    _overlay_pipeline_mode = cpu_render_pipeline_mode()
 
 
 def _poll_nvidia_smi() -> str | None:
@@ -923,6 +1076,14 @@ def _resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
     return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
 
+def _scaled_dims(width: int, height: int, scale: float) -> tuple[int, int]:
+    if scale >= 0.999:
+        return width, height
+    scaled_w = max(2, int(round(width * scale)))
+    scaled_h = max(2, int(round(height * scale)))
+    return scaled_w, scaled_h
+
+
 def _restart_virtual_camera(
     cam: pyvirtualcam.Camera | None,
     requested_width: int,
@@ -1090,9 +1251,10 @@ def log_dshow_devices() -> None:
 
 
 async def main() -> None:
+    _init_overlay_renderer()
     _log_graphics_diagnostics()
     logger.info(
-        "Capture compatibility config: CAM_BACKENDS=%s (resolved=%s), CAM_PROBE_MAX_RES=%s, CV2_USE_OPENCL='%s' (mode=%s available=%s enabled=%s), OVERLAY_GPU_MODE='%s'",
+        "Capture compatibility config: CAM_BACKENDS=%s (resolved=%s), CAM_PROBE_MAX_RES=%s, CV2_USE_OPENCL='%s' (mode=%s available=%s enabled=%s), OVERLAY_GPU_MODE='%s' min_pixels=%s",
         CAM_BACKENDS,
         ",".join(_cam_backend_label(b) for b in CAM_BACKEND_CANDIDATES),
         CAM_PROBE_MAX_RES,
@@ -1101,14 +1263,32 @@ async def main() -> None:
         OPENCL_AVAILABLE,
         OPENCL_ENABLED,
         OVERLAY_GPU_MODE or "auto",
+        OVERLAY_GPU_MIN_PIXELS,
     )
     logger.info(
-        "Virtual cam compatibility config: VCAM_BACKENDS=%s, VCAM_FORMATS=%s, VCAM_FPS_CANDIDATES=%s",
+        "Overlay renderer config: OVERLAY_RENDERER_BACKEND=%s active=%s",
+        OVERLAY_RENDERER_BACKEND,
+        _overlay_renderer_name,
+    )
+    logger.info(
+        "Virtual cam compatibility config: VCAM_BACKENDS=%s, VCAM_FORMATS=%s, VCAM_FPS_CANDIDATES=%s, FFMPEG_PROBE_ON_START=%s",
         VCAM_BACKENDS,
         VCAM_FORMATS,
         VCAM_FPS_CANDIDATES,
+        FFMPEG_PROBE_ON_START,
     )
-    log_dshow_devices()
+    logger.info(
+        "Performance config: AUTO_QUALITY_ENABLED=%s levels=%s downgrade_frames=%s upgrade_frames=%s PERF_LOG_INTERVAL_SECS=%s",
+        AUTO_QUALITY_ENABLED,
+        ",".join(f"{lvl:.2f}" for lvl in RENDER_SCALE_LEVELS),
+        AUTO_QUALITY_DOWNGRADE_FRAMES,
+        AUTO_QUALITY_UPGRADE_FRAMES,
+        PERF_LOG_INTERVAL_SECS,
+    )
+    if FFMPEG_PROBE_ON_START:
+        log_dshow_devices()
+    else:
+        logger.info("Skipping FFmpeg DirectShow probe on startup (FFMPEG_PROBE_ON_START=0)")
     last_open_attempt = 0.0
     next_gpu_log = 0.0
     nvidia_probe_reported_unavailable = False
@@ -1122,10 +1302,12 @@ async def main() -> None:
         last_seen_idx = state_holder.get("state", {}).get("camera_index", -1)
         last_seen_label = state_holder.get("state", {}).get("camera_label", "")
         cap = cv2.VideoCapture()
+        reader = _CameraFrameReader()
         if current_idx >= 0:
             cap = open_cam(current_idx, "")
             if cap.isOpened():
                 logger.info("Opened camera index %s on startup (from INPUT_CAM_INDEX)", current_idx)
+                reader.start(cap)
             else:
                 logger.warning("Failed to open camera index %s on startup; waiting for selection", current_idx)
         else:
@@ -1140,6 +1322,17 @@ async def main() -> None:
         state_poll_interval = max(0.25, POLL_INTERVAL) if POLL_INTERVAL >= 0 else -1.0
         next_state_poll = 0.0
         state_poll_task: asyncio.Task | None = None
+        quality_idx = 0
+        over_budget_frames = 0
+        under_budget_frames = 0
+        perf_samples = 0
+        perf_capture_ms = 0.0
+        perf_draw_ms = 0.0
+        perf_convert_ms = 0.0
+        perf_send_ms = 0.0
+        perf_total_ms = 0.0
+        perf_frame_age_ms = 0.0
+        next_perf_log = time.monotonic() + PERF_LOG_INTERVAL_SECS if PERF_LOG_INTERVAL_SECS > 0 else 0.0
         source_width = max(1, DEFAULT_WIDTH)
         source_height = max(1, DEFAULT_HEIGHT)
         output_width = source_width
@@ -1178,12 +1371,20 @@ async def main() -> None:
                 if should_attempt:
                     last_open_attempt = now
                     logger.info("Switching camera to index %s label '%s'", desired_idx, desired_label)
-                    cap.release()
                     new_cap = open_cam(desired_idx, desired_label)
                     if new_cap.isOpened():
+                        try:
+                            reader.stop()
+                        except Exception:
+                            pass
+                        try:
+                            cap.release()
+                        except Exception:
+                            pass
                         cap = new_cap
                         current_idx = desired_idx
                         current_label = desired_label
+                        reader.start(cap)
                         new_w, new_h = _capture_size(cap)
                         if new_w != source_width or new_h != source_height:
                             source_width, source_height = new_w, new_h
@@ -1195,6 +1396,10 @@ async def main() -> None:
                                 output_height,
                             )
                     else:
+                        try:
+                            new_cap.release()
+                        except Exception:
+                            pass
                         logger.warning(
                             "Failed to open camera index %s label '%s'; keeping previous",
                             desired_idx,
@@ -1239,14 +1444,29 @@ async def main() -> None:
 
                 if not cap.isOpened():
                     blank = np.zeros((output_height, output_width, 3), dtype=np.uint8)
-                    overlayed = optimized_draw_overlay(
+                    draw_started = time.perf_counter()
+                    overlayed = _overlay_draw_fn(
                         blank,
                         state_holder.get("state") or {},
                         likes_overlay_holder.get("summary") or {},
                     )
+                    draw_ms = (time.perf_counter() - draw_started) * 1000.0
                     try:
-                        cam.send(_prepare_virtual_cam_frame(overlayed, cam_fmt))
+                        convert_started = time.perf_counter()
+                        prepared = _prepare_virtual_cam_frame(overlayed, cam_fmt)
+                        convert_ms = (time.perf_counter() - convert_started) * 1000.0
+                        send_started = time.perf_counter()
+                        cam.send(prepared)
+                        send_ms = (time.perf_counter() - send_started) * 1000.0
                         cam.sleep_until_next_frame()
+                        if PERF_LOG_INTERVAL_SECS > 0:
+                            perf_samples += 1
+                            perf_capture_ms += 0.0
+                            perf_draw_ms += draw_ms
+                            perf_convert_ms += convert_ms
+                            perf_send_ms += send_ms
+                            perf_total_ms += draw_ms + convert_ms + send_ms
+                            perf_frame_age_ms += 0.0
                     except Exception as exc:
                         logger.warning(
                             "Virtual camera send failed for %sx%s (%s/%s @ %sfps): %s. Restarting with compatibility fallbacks.",
@@ -1267,16 +1487,35 @@ async def main() -> None:
                     await asyncio.sleep(0.05)
                     continue
 
-                ret, frame = cap.read()
-                if not ret or frame is None:
-                    logger.warning("Camera frame grab failed")
+                capture_started = time.perf_counter()
+                frame, frame_ts, reader_failures = reader.latest()
+                capture_ms = (time.perf_counter() - capture_started) * 1000.0
+                frame_age_ms = 0.0
+                if frame_ts > 0:
+                    frame_age_ms = max(0.0, (time.monotonic() - frame_ts) * 1000.0)
+
+                if frame is None or (frame_ts > 0 and frame_age_ms > (CAM_READER_RESTART_STALE_SECS * 1000.0)):
                     fail_count += 1
                     if fail_count > 30:
-                        logger.warning("Reopening camera after repeated failures")
-                        cap.release()
+                        logger.warning(
+                            "Reopening camera after repeated reader failures (failures=%s, stale_ms=%.1f, read_failures=%s)",
+                            fail_count,
+                            frame_age_ms,
+                            reader_failures,
+                        )
                         if current_idx >= 0:
-                            cap = open_cam(current_idx, "")
-                            if cap.isOpened():
+                            new_cap = open_cam(current_idx, "")
+                            if new_cap.isOpened():
+                                try:
+                                    reader.stop()
+                                except Exception:
+                                    pass
+                                try:
+                                    cap.release()
+                                except Exception:
+                                    pass
+                                cap = new_cap
+                                reader.start(cap)
                                 new_w, new_h = _capture_size(cap)
                                 if new_w != source_width or new_h != source_height:
                                     source_width, source_height = new_w, new_h
@@ -1287,6 +1526,11 @@ async def main() -> None:
                                         output_width,
                                         output_height,
                                     )
+                            else:
+                                try:
+                                    new_cap.release()
+                                except Exception:
+                                    pass
                         fail_count = 0
                         await asyncio.sleep(0.1)
                         continue
@@ -1305,13 +1549,32 @@ async def main() -> None:
                     )
                 if frame_w != output_width or frame_h != output_height:
                     frame = _resize_frame(frame, output_width, output_height)
-                overlayed = optimized_draw_overlay(
-                    frame,
-                    state_holder.get("state") or {},
-                    likes_overlay_holder.get("summary") or {},
-                )
+
+                render_scale = RENDER_SCALE_LEVELS[quality_idx] if AUTO_QUALITY_ENABLED else 1.0
+                draw_started = time.perf_counter()
+                if render_scale < 0.999:
+                    scaled_w, scaled_h = _scaled_dims(output_width, output_height, render_scale)
+                    work_frame = _resize_frame(frame, scaled_w, scaled_h)
+                    overlay_small = _overlay_draw_fn(
+                        work_frame,
+                        state_holder.get("state") or {},
+                        likes_overlay_holder.get("summary") or {},
+                    )
+                    overlayed = _resize_frame(overlay_small, output_width, output_height)
+                else:
+                    overlayed = _overlay_draw_fn(
+                        frame,
+                        state_holder.get("state") or {},
+                        likes_overlay_holder.get("summary") or {},
+                    )
+                draw_ms = (time.perf_counter() - draw_started) * 1000.0
                 try:
-                    cam.send(_prepare_virtual_cam_frame(overlayed, cam_fmt))
+                    convert_started = time.perf_counter()
+                    prepared = _prepare_virtual_cam_frame(overlayed, cam_fmt)
+                    convert_ms = (time.perf_counter() - convert_started) * 1000.0
+                    send_started = time.perf_counter()
+                    cam.send(prepared)
+                    send_ms = (time.perf_counter() - send_started) * 1000.0
                     cam.sleep_until_next_frame()
                 except Exception as exc:
                     logger.warning(
@@ -1332,6 +1595,72 @@ async def main() -> None:
                     )
                     await asyncio.sleep(0.02)
                     continue
+
+                total_ms = capture_ms + draw_ms + convert_ms + send_ms
+                budget_ms = 1000.0 / max(1.0, float(cam_fps))
+
+                if AUTO_QUALITY_ENABLED and len(RENDER_SCALE_LEVELS) > 1:
+                    if total_ms > (budget_ms * 1.05):
+                        over_budget_frames += 1
+                        under_budget_frames = 0
+                    elif total_ms < (budget_ms * 0.82):
+                        under_budget_frames += 1
+                        over_budget_frames = 0
+                    else:
+                        over_budget_frames = max(0, over_budget_frames - 1)
+                        under_budget_frames = max(0, under_budget_frames - 1)
+
+                    if over_budget_frames >= AUTO_QUALITY_DOWNGRADE_FRAMES and quality_idx < (len(RENDER_SCALE_LEVELS) - 1):
+                        quality_idx += 1
+                        over_budget_frames = 0
+                        under_budget_frames = 0
+                        logger.info(
+                            "Auto quality downgrade: render_scale=%.2f (budget %.1fms, last %.1fms)",
+                            RENDER_SCALE_LEVELS[quality_idx],
+                            budget_ms,
+                            total_ms,
+                        )
+                    elif under_budget_frames >= AUTO_QUALITY_UPGRADE_FRAMES and quality_idx > 0:
+                        quality_idx -= 1
+                        over_budget_frames = 0
+                        under_budget_frames = 0
+                        logger.info(
+                            "Auto quality upgrade: render_scale=%.2f (budget %.1fms, last %.1fms)",
+                            RENDER_SCALE_LEVELS[quality_idx],
+                            budget_ms,
+                            total_ms,
+                        )
+
+                if PERF_LOG_INTERVAL_SECS > 0:
+                    perf_samples += 1
+                    perf_capture_ms += capture_ms
+                    perf_draw_ms += draw_ms
+                    perf_convert_ms += convert_ms
+                    perf_send_ms += send_ms
+                    perf_total_ms += total_ms
+                    perf_frame_age_ms += frame_age_ms
+                    now_perf = time.monotonic()
+                    if perf_samples > 0 and now_perf >= next_perf_log:
+                        logger.info(
+                            "Perf avg over %s frames: capture=%.2fms draw=%.2fms convert=%.2fms send=%.2fms total=%.2fms frame_age=%.2fms budget=%.2fms render_scale=%.2f",
+                            perf_samples,
+                            perf_capture_ms / perf_samples,
+                            perf_draw_ms / perf_samples,
+                            perf_convert_ms / perf_samples,
+                            perf_send_ms / perf_samples,
+                            perf_total_ms / perf_samples,
+                            perf_frame_age_ms / perf_samples,
+                            budget_ms,
+                            (RENDER_SCALE_LEVELS[quality_idx] if AUTO_QUALITY_ENABLED else 1.0),
+                        )
+                        perf_samples = 0
+                        perf_capture_ms = 0.0
+                        perf_draw_ms = 0.0
+                        perf_convert_ms = 0.0
+                        perf_send_ms = 0.0
+                        perf_total_ms = 0.0
+                        perf_frame_age_ms = 0.0
+                        next_perf_log = now_perf + PERF_LOG_INTERVAL_SECS
         finally:
             try:
                 ws_task.cancel()
@@ -1342,6 +1671,10 @@ async def main() -> None:
                     state_poll_task.cancel()
                 except Exception:
                     pass
+            try:
+                reader.stop()
+            except Exception:
+                pass
             try:
                 cap.release()
             except Exception:

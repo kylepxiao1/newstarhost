@@ -57,20 +57,29 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 ### A) Lightweight virtual camera (no OBS)
 - Uses `scripts/virtual_cam_compositor.py` with `pyvirtualcam` + `opencv` to capture your real camera, draw names/scores/mode + dotted center line, and expose a virtual camera device.
 - Configure env vars as needed: `INPUT_CAM_INDEX`, `CAM_WIDTH`, `CAM_HEIGHT`, `CAM_FPS`, `STATE_POLL_SECS`.
-- Compatibility knobs (for broader GPU/driver support): `CAM_BACKENDS` (default `DSHOW,ANY,MSMF`), `CV2_USE_OPENCL` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MODE` (default `auto`, accepts `auto|1|0`), `VCAM_BACKENDS` (default `obs,unitycapture,auto`), `VCAM_FORMATS` (default `RGB,BGR,I420`), `VCAM_FPS_CANDIDATES` (default `<CAM_FPS>,30,25,24`).
+- Compatibility knobs (for broader GPU/driver support): `CAM_BACKENDS` (default `DSHOW,ANY,MSMF`), `CV2_USE_OPENCL` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MODE` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MIN_PIXELS` (default `180000`), `OVERLAY_RENDERER_BACKEND` (default `auto`, accepts `auto|cpu|skia`), `VCAM_BACKENDS` (default `obs,unitycapture,auto`), `VCAM_FORMATS` (default `BGR,RGB,I420`), `VCAM_FPS_CANDIDATES` (default `<CAM_FPS>,30,25,24`), `FFMPEG_PROBE_ON_START` (default `1`).
 - Recommended for hybrid AMD Radeon + NVIDIA GeForce RTX systems:
 ```powershell
 $env:CAM_BACKENDS="DSHOW,ANY,MSMF"
 $env:CV2_USE_OPENCL="auto"
 $env:OVERLAY_GPU_MODE="auto"
+$env:OVERLAY_GPU_MIN_PIXELS="180000"
+$env:OVERLAY_RENDERER_BACKEND="auto"
 $env:VCAM_BACKENDS="obs,unitycapture,auto"
-$env:VCAM_FORMATS="RGB,BGR,I420"
+$env:VCAM_FORMATS="BGR,RGB,I420"
 ```
+- Optional GPU-native text/primitives path (Skia/OpenGL):
+```powershell
+pip install skia-python glfw
+$env:OVERLAY_RENDERER_BACKEND="skia"
+```
+Notes: this Skia path currently falls back to CPU renderer when overlay rotation/flip is enabled. Do not use `--collect-all OpenGL` unless your own code directly uses PyOpenGL.
+- Performance knobs: `AUTO_QUALITY_ENABLED` (default `1`), `AUTO_QUALITY_LEVELS` (default `1.0,0.9,0.8,0.7`), `AUTO_QUALITY_DOWNGRADE_FRAMES` (default `45`), `AUTO_QUALITY_UPGRADE_FRAMES` (default `240`), `PERF_LOG_INTERVAL_SECS` (default `5`), `CAM_READER_RESTART_STALE_SECS` (default `1.0`).
 - GPU logging knobs: `GPU_LOG_INTERVAL_SECS` (default `0`, disabled; set e.g. `5` for periodic logs), `GPU_NVIDIA_SMI_BIN` (default `nvidia-smi`).
 - Select the created virtual camera in TikTok LIVE Studio.
 - Build a Windows executable (PyInstaller):
 ```powershell
-.\.venv\Scripts\python.exe -m PyInstaller --onefile --name virtual_cam_compositor --console --paths scripts --hidden-import overlay_renderer scripts\virtual_cam_compositor.py
+.\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --name virtual_cam_compositor --console --paths scripts --hidden-import overlay_renderer --hidden-import gpu_overlay_renderer --hidden-import skia --hidden-import glfw --collect-all glfw scripts\virtual_cam_compositor.py
 ```
 
 ### B) OBS-based overlay

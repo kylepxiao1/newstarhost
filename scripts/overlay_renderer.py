@@ -25,6 +25,7 @@ def _parse_gpu_mode(raw: str) -> str:
 
 OVERLAY_GPU_MODE_RAW = os.environ.get("OVERLAY_GPU_MODE", "auto").strip()
 OVERLAY_GPU_MODE = _parse_gpu_mode(OVERLAY_GPU_MODE_RAW)
+OVERLAY_GPU_MIN_PIXELS = max(0, int(os.environ.get("OVERLAY_GPU_MIN_PIXELS", "180000")))
 
 
 def _normalize_overlay_transform(state: Dict) -> tuple[int, bool, bool]:
@@ -347,13 +348,21 @@ class OverlayRenderer:
         self._dynamic_x = 0
         self._dynamic_y = 0
 
-    def _should_use_gpu_path(self) -> bool:
+    def _should_use_gpu_path(self, roi_pixels: int | None = None) -> bool:
         if self._gpu_mode == "off":
             return False
         available, enabled = _opencl_runtime_state()
+        if not (available and enabled):
+            return False
         if self._gpu_mode == "on":
-            return bool(available and enabled)
-        return bool(available and enabled)
+            return True
+        if roi_pixels is None:
+            return True
+        return int(roi_pixels) >= OVERLAY_GPU_MIN_PIXELS
+
+    def _should_use_gpu_for_roi(self, roi_w: int, roi_h: int) -> bool:
+        pixels = max(0, int(roi_w)) * max(0, int(roi_h))
+        return self._should_use_gpu_path(pixels)
 
     def pipeline_mode(self) -> str:
         available, enabled = _opencl_runtime_state()
@@ -361,12 +370,12 @@ class OverlayRenderer:
         if gpu_active:
             return (
                 f"Hybrid GPU (mode={self._gpu_mode} requested='{self._gpu_mode_raw}' "
-                f"OpenCL available={available} enabled={enabled}; "
-                "dynamic overlay compositing on UMat, rasterization on CPU)"
+                f"OpenCL available={available} enabled={enabled} min_pixels={OVERLAY_GPU_MIN_PIXELS}; "
+                "ROI overlay compositing on UMat when large enough, rasterization on CPU)"
             )
         return (
             f"CPU (mode={self._gpu_mode} requested='{self._gpu_mode_raw}' "
-            f"OpenCL available={available} enabled={enabled})"
+            f"OpenCL available={available} enabled={enabled} min_pixels={OVERLAY_GPU_MIN_PIXELS})"
         )
 
     def _resolve_ops_for_frame(
@@ -1100,7 +1109,7 @@ class OverlayRenderer:
             x2 = x1 + static_w
             y2 = y1 + static_h
             out_roi = out[y1:y2, x1:x2]
-            if use_gpu:
+            if use_gpu and self._should_use_gpu_for_roi(static_w, static_h):
                 if self._static_opaque_layer_u is None or self._static_opaque_mask_u is None:
                     self._static_opaque_layer_u = cv2.UMat(self._static_opaque_layer_cpu)
                     self._static_opaque_mask_u = cv2.UMat(self._static_opaque_mask_cpu)
@@ -1149,7 +1158,7 @@ class OverlayRenderer:
             x2 = x1 + dyn_w
             y2 = y1 + dyn_h
             out_roi = out[y1:y2, x1:x2]
-            if use_gpu:
+            if use_gpu and self._should_use_gpu_for_roi(dyn_w, dyn_h):
                 if self._dynamic_layer_u is None or self._dynamic_mask_u is None:
                     self._dynamic_layer_u = cv2.UMat(self._dynamic_layer_cpu)
                     self._dynamic_mask_u = cv2.UMat(self._dynamic_mask_cpu)
