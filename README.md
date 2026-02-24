@@ -57,7 +57,15 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 ### A) Lightweight virtual camera (no OBS)
 - Uses `scripts/virtual_cam_compositor.py` with `pyvirtualcam` + `opencv` to capture your real camera, draw names/scores/mode + dotted center line, and expose a virtual camera device.
 - Configure env vars as needed: `INPUT_CAM_INDEX`, `CAM_WIDTH`, `CAM_HEIGHT`, `CAM_FPS`, `STATE_POLL_SECS`.
-- Compatibility knobs (for broader GPU/driver support): `VCAM_BACKENDS` (default `auto,obs,unitycapture`), `VCAM_FORMATS` (default `BGR,RGB,I420`), `VCAM_FPS_CANDIDATES` (default `<CAM_FPS>,30,25,24`).
+- Compatibility knobs (for broader GPU/driver support): `CAM_BACKENDS` (default `DSHOW,ANY,MSMF`), `CV2_USE_OPENCL` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MODE` (default `auto`, accepts `auto|1|0`), `VCAM_BACKENDS` (default `obs,unitycapture,auto`), `VCAM_FORMATS` (default `RGB,BGR,I420`), `VCAM_FPS_CANDIDATES` (default `<CAM_FPS>,30,25,24`).
+- Recommended for hybrid AMD Radeon + NVIDIA GeForce RTX systems:
+```powershell
+$env:CAM_BACKENDS="DSHOW,ANY,MSMF"
+$env:CV2_USE_OPENCL="auto"
+$env:OVERLAY_GPU_MODE="auto"
+$env:VCAM_BACKENDS="obs,unitycapture,auto"
+$env:VCAM_FORMATS="RGB,BGR,I420"
+```
 - GPU logging knobs: `GPU_LOG_INTERVAL_SECS` (default `0`, disabled; set e.g. `5` for periodic logs), `GPU_NVIDIA_SMI_BIN` (default `nvidia-smi`).
 - Select the created virtual camera in TikTok LIVE Studio.
 - Build a Windows executable (PyInstaller):

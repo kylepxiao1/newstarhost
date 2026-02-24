@@ -1,3 +1,4 @@
+import os
 import cv2
 import numpy as np
 from typing import Dict
@@ -9,6 +10,21 @@ DEFAULT_OVERLAYS = {
     "BattleScore": True,
     "TotalLikesOverlay": True,
 }
+
+
+def _parse_gpu_mode(raw: str) -> str:
+    token = (raw or "").strip().lower()
+    if token in {"1", "true", "yes", "on", "enable", "enabled"}:
+        return "on"
+    if token in {"0", "false", "no", "off", "disable", "disabled"}:
+        return "off"
+    if token in {"", "auto", "default"}:
+        return "auto"
+    return "auto"
+
+
+OVERLAY_GPU_MODE_RAW = os.environ.get("OVERLAY_GPU_MODE", "auto").strip()
+OVERLAY_GPU_MODE = _parse_gpu_mode(OVERLAY_GPU_MODE_RAW)
 
 
 def _normalize_overlay_transform(state: Dict) -> tuple[int, bool, bool]:
@@ -261,8 +277,26 @@ def _clamp_op_origin(x: int, y: int, op_w: int, op_h: int, frame_w: int, frame_h
             cy = max(frame_h - op_h, min(0, cy))
     return cx, cy
 
+
+def _opencl_runtime_state() -> tuple[bool, bool]:
+    available = False
+    enabled = False
+    try:
+        if hasattr(cv2, "ocl"):
+            if hasattr(cv2.ocl, "haveOpenCL"):
+                available = bool(cv2.ocl.haveOpenCL())
+            if hasattr(cv2.ocl, "useOpenCL"):
+                enabled = bool(cv2.ocl.useOpenCL())
+    except Exception:
+        available = False
+        enabled = False
+    return available, enabled
+
+
 class OverlayRenderer:
     def __init__(self) -> None:
+        self._gpu_mode = OVERLAY_GPU_MODE
+        self._gpu_mode_raw = OVERLAY_GPU_MODE_RAW or "auto"
         self._static_key: tuple | None = None
         self._dynamic_key: tuple | None = None
         self._static_source_boxes: list[tuple[int, int, int, int]] = []
@@ -270,7 +304,39 @@ class OverlayRenderer:
         self._center_ops: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
         self._burst_ops: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
         self._dynamic_ops: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
+        self._dynamic_layer_cpu: np.ndarray | None = None
+        self._dynamic_mask_cpu: np.ndarray | None = None
+        self._dynamic_layer_u: cv2.UMat | None = None
+        self._dynamic_mask_u: cv2.UMat | None = None
         self._font = cv2.FONT_HERSHEY_SIMPLEX
+
+    def _invalidate_dynamic_gpu_cache(self) -> None:
+        self._dynamic_layer_cpu = None
+        self._dynamic_mask_cpu = None
+        self._dynamic_layer_u = None
+        self._dynamic_mask_u = None
+
+    def _should_use_gpu_path(self) -> bool:
+        if self._gpu_mode == "off":
+            return False
+        available, enabled = _opencl_runtime_state()
+        if self._gpu_mode == "on":
+            return bool(available and enabled)
+        return bool(available and enabled)
+
+    def pipeline_mode(self) -> str:
+        available, enabled = _opencl_runtime_state()
+        gpu_active = self._should_use_gpu_path()
+        if gpu_active:
+            return (
+                f"Hybrid GPU (mode={self._gpu_mode} requested='{self._gpu_mode_raw}' "
+                f"OpenCL available={available} enabled={enabled}; "
+                "dynamic overlay compositing on UMat, rasterization on CPU)"
+            )
+        return (
+            f"CPU (mode={self._gpu_mode} requested='{self._gpu_mode_raw}' "
+            f"OpenCL available={available} enabled={enabled})"
+        )
 
     def _overlay_layout(self, layouts: Dict, name: str) -> tuple[int, int, float]:
         raw = layouts.get(name) if isinstance(layouts, dict) else None
@@ -754,6 +820,29 @@ class OverlayRenderer:
                 if op is not None:
                     self._dynamic_ops.append(op)
 
+    def _compose_dynamic_opaque_layer(
+        self,
+        frame_w: int,
+        frame_h: int,
+        apply_independent_clamp: bool,
+    ) -> None:
+        layer = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
+        mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
+        wrote = False
+        for sprite, sprite_mask, x, y, _ in self._dynamic_ops:
+            ox, oy = int(x), int(y)
+            if apply_independent_clamp:
+                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+            wrote = _blit_opaque(layer, mask, sprite, sprite_mask, ox, oy) or wrote
+        if wrote:
+            self._dynamic_layer_cpu = layer
+            self._dynamic_mask_cpu = mask
+        else:
+            self._dynamic_layer_cpu = None
+            self._dynamic_mask_cpu = None
+        self._dynamic_layer_u = None
+        self._dynamic_mask_u = None
+
     def render(self, frame: np.ndarray, state: Dict, likes_overlay: Dict | None = None) -> np.ndarray:
         frame_h, frame_w = frame.shape[:2]
         if frame_w <= 0 or frame_h <= 0:
@@ -865,6 +954,7 @@ class OverlayRenderer:
                 transform_mat,
             )
             self._dynamic_key = dynamic_key
+            self._invalidate_dynamic_gpu_cache()
 
         apply_independent_clamp = bool(rot or flip_x or flip_y)
         out = frame.copy()
@@ -880,16 +970,31 @@ class OverlayRenderer:
                 ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
             _blend_masked(out, sprite, sprite_mask, ox, oy, alpha)
 
-        for sprite, sprite_mask, x, y, _ in self._dynamic_ops:
-            ox, oy = int(x), int(y)
-            if apply_independent_clamp:
-                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
-            _blit_opaque(out, None, sprite, sprite_mask, ox, oy)
+        if self._should_use_gpu_path() and self._dynamic_ops:
+            if self._dynamic_layer_cpu is None or self._dynamic_mask_cpu is None:
+                self._compose_dynamic_opaque_layer(frame_w, frame_h, apply_independent_clamp)
+            if self._dynamic_layer_cpu is not None and self._dynamic_mask_cpu is not None:
+                if self._dynamic_layer_u is None or self._dynamic_mask_u is None:
+                    self._dynamic_layer_u = cv2.UMat(self._dynamic_layer_cpu)
+                    self._dynamic_mask_u = cv2.UMat(self._dynamic_mask_cpu)
+                out_u = cv2.UMat(out)
+                cv2.copyTo(self._dynamic_layer_u, self._dynamic_mask_u, out_u)
+                out = out_u.get()
+        else:
+            for sprite, sprite_mask, x, y, _ in self._dynamic_ops:
+                ox, oy = int(x), int(y)
+                if apply_independent_clamp:
+                    ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+                _blit_opaque(out, None, sprite, sprite_mask, ox, oy)
 
         return out
 
 
 _renderer = OverlayRenderer()
+
+
+def get_render_pipeline_mode() -> str:
+    return _renderer.pipeline_mode()
 
 
 def draw_overlay(frame: np.ndarray, state: Dict, likes_overlay: Dict | None = None) -> np.ndarray:

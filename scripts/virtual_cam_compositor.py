@@ -17,7 +17,7 @@ import numpy as np
 import pyvirtualcam
 import pyvirtualcam.camera as pyvirtualcam_camera
 import websockets
-from overlay_renderer import draw_overlay as optimized_draw_overlay
+from overlay_renderer import draw_overlay as optimized_draw_overlay, get_render_pipeline_mode
 from pyvirtualcam import PixelFormat
 
 API_BASE = os.environ.get("API_BASE", "https://newstarhost.fly.dev") # http://127.0.0.1:8000
@@ -30,6 +30,7 @@ LIKE_OVERLAY_POLL_INTERVAL = float(os.environ.get("LIKE_OVERLAY_POLL_SECS", "5.0
 WS_PATH = os.environ.get("STATE_WS_PATH", "/ws/state")
 CAM_OPEN_RETRIES = int(os.environ.get("CAM_OPEN_RETRIES", 4))
 CAM_OPEN_DELAY = float(os.environ.get("CAM_OPEN_DELAY", 0.35))
+CAM_BACKENDS = os.environ.get("CAM_BACKENDS", "DSHOW,ANY,MSMF").strip()
 # Disabled by default to keep camera switches responsive during live runs.
 CAM_PROBE_MAX_RES = os.environ.get("CAM_PROBE_MAX_RES", "0").strip().lower() not in {"0", "false", "no", "off"}
 CAM_MAX_RES_CANDIDATES = os.environ.get(
@@ -41,9 +42,11 @@ CAM_PROBE_MAX_CANDIDATES = max(1, int(os.environ.get("CAM_PROBE_MAX_CANDIDATES",
 CAM_PROBE_BUDGET_SECS = max(0.0, float(os.environ.get("CAM_PROBE_BUDGET_SECS", "0.5")))
 CAM_PROBE_SETTLE_SECS = max(0.0, float(os.environ.get("CAM_PROBE_SETTLE_SECS", "0.02")))
 CAM_VERBOSE_LOGS = os.environ.get("CAM_VERBOSE_LOGS", "0").strip().lower() in {"1", "true", "yes", "on"}
-VCAM_BACKENDS = os.environ.get("VCAM_BACKENDS", "auto,obs,unitycapture").strip()
-VCAM_FORMATS = os.environ.get("VCAM_FORMATS", "BGR,RGB,I420").strip()
+CV2_USE_OPENCL_REQUEST = os.environ.get("CV2_USE_OPENCL", "auto").strip()
+VCAM_BACKENDS = os.environ.get("VCAM_BACKENDS", "obs,unitycapture,auto").strip()
+VCAM_FORMATS = os.environ.get("VCAM_FORMATS", "RGB,BGR,I420").strip()
 VCAM_FPS_CANDIDATES = os.environ.get("VCAM_FPS_CANDIDATES", f"{FPS},30,25,24").strip()
+OVERLAY_GPU_MODE = os.environ.get("OVERLAY_GPU_MODE", "auto").strip()
 GPU_LOG_INTERVAL_SECS = max(0.0, float(os.environ.get("GPU_LOG_INTERVAL_SECS", "0")))
 GPU_NVIDIA_SMI_BIN = os.environ.get("GPU_NVIDIA_SMI_BIN", "nvidia-smi").strip() or "nvidia-smi"
 
@@ -66,6 +69,63 @@ try:
         cv2.utils.logging.setLogLevel(getattr(cv2.utils.logging, "LOG_LEVEL_ERROR", 3))
 except Exception:
     pass
+
+
+def _parse_opencl_mode(raw: str) -> str:
+    token = (raw or "").strip().lower()
+    if token in {"1", "true", "yes", "on", "enable", "enabled"}:
+        return "on"
+    if token in {"0", "false", "no", "off", "disable", "disabled"}:
+        return "off"
+    if token in {"", "auto", "default"}:
+        return "auto"
+    logger.warning("Ignoring unsupported CV2_USE_OPENCL value '%s'; falling back to auto", raw)
+    return "auto"
+
+
+def _configure_opencl(request_raw: str) -> tuple[str, bool, bool, str]:
+    mode = _parse_opencl_mode(request_raw)
+    available = False
+    enabled = False
+    device_name = ""
+    try:
+        if hasattr(cv2, "ocl"):
+            if hasattr(cv2.ocl, "haveOpenCL"):
+                available = bool(cv2.ocl.haveOpenCL())
+            desired = available if mode == "auto" else (mode == "on")
+            if hasattr(cv2.ocl, "setUseOpenCL"):
+                cv2.ocl.setUseOpenCL(bool(desired))
+            if hasattr(cv2.ocl, "useOpenCL"):
+                enabled = bool(cv2.ocl.useOpenCL())
+            else:
+                enabled = bool(desired and available)
+            dev = None
+            if hasattr(cv2.ocl, "Device_getDefault"):
+                dev = cv2.ocl.Device_getDefault()
+            elif hasattr(cv2.ocl, "Device") and hasattr(cv2.ocl.Device, "getDefault"):
+                dev = cv2.ocl.Device.getDefault()
+            if dev is not None:
+                try:
+                    device_name = str(dev.name()).strip()
+                except Exception:
+                    device_name = ""
+    except Exception as exc:
+        logger.warning("OpenCL configuration probe failed: %s", exc)
+
+    logger.info(
+        "OpenCL config: request='%s' mode=%s available=%s enabled=%s%s",
+        request_raw or "auto",
+        mode,
+        available,
+        enabled,
+        f" device='{device_name}'" if device_name else "",
+    )
+    if mode == "on" and not available:
+        logger.warning("CV2_USE_OPENCL requested on, but OpenCL is unavailable in this OpenCV runtime")
+    return mode, available, enabled, device_name
+
+
+OPENCL_MODE, OPENCL_AVAILABLE, OPENCL_ENABLED, OPENCL_DEVICE = _configure_opencl(CV2_USE_OPENCL_REQUEST)
 
 
 def _parse_resolution_candidates(text: str) -> list[tuple[int, int]]:
@@ -167,8 +227,7 @@ def _log_graphics_diagnostics() -> None:
     if cuda_devices:
         logger.info("CUDA devices: %s", " | ".join(cuda_devices))
 
-    # Current overlay renderer path is CPU (NumPy/OpenCV) unless explicitly ported to cv2.cuda/UMat.
-    logger.info("Render pipeline mode: CPU (overlay ops run on NumPy/OpenCV CPU kernels)")
+    logger.info("Render pipeline mode: %s", get_render_pipeline_mode())
 
 
 def _poll_nvidia_smi() -> str | None:
@@ -192,6 +251,59 @@ def _poll_nvidia_smi() -> str | None:
     if not lines:
         return None
     return " | ".join(lines)
+
+
+def _parse_cam_backends(text: str) -> list[int]:
+    known: dict[str, int | None] = {
+        "ANY": getattr(cv2, "CAP_ANY", None),
+        "DSHOW": getattr(cv2, "CAP_DSHOW", None),
+        "MSMF": getattr(cv2, "CAP_MSMF", None),
+        "V4L2": getattr(cv2, "CAP_V4L2", None),
+        "GSTREAMER": getattr(cv2, "CAP_GSTREAMER", None),
+        "FFMPEG": getattr(cv2, "CAP_FFMPEG", None),
+    }
+    parsed: list[int] = []
+    for part in text.split(","):
+        token = part.strip().upper()
+        if not token:
+            continue
+        if token in {"AUTO", "DEFAULT"}:
+            token = "ANY"
+        backend_val: int | None
+        if token.lstrip("+-").isdigit():
+            try:
+                backend_val = int(token)
+            except Exception:
+                backend_val = None
+        else:
+            backend_val = known.get(token)
+        if backend_val is None:
+            logger.warning(
+                "Ignoring unsupported CAM_BACKENDS entry '%s' (supported tokens: %s or numeric backend ids)",
+                token,
+                ",".join(sorted([k for k, v in known.items() if v is not None])),
+            )
+            continue
+        if backend_val not in parsed:
+            parsed.append(backend_val)
+    if not parsed:
+        parsed = [getattr(cv2, "CAP_ANY", 0)]
+    return parsed
+
+
+def _cam_backend_label(backend: int) -> str:
+    known_labels: list[tuple[str, int | None]] = [
+        ("ANY", getattr(cv2, "CAP_ANY", None)),
+        ("DSHOW", getattr(cv2, "CAP_DSHOW", None)),
+        ("MSMF", getattr(cv2, "CAP_MSMF", None)),
+        ("V4L2", getattr(cv2, "CAP_V4L2", None)),
+        ("GSTREAMER", getattr(cv2, "CAP_GSTREAMER", None)),
+        ("FFMPEG", getattr(cv2, "CAP_FFMPEG", None)),
+    ]
+    for label, value in known_labels:
+        if value is not None and value == backend:
+            return label
+    return str(backend)
 
 
 def _parse_vcam_backends(text: str) -> list[str | None]:
@@ -270,6 +382,7 @@ def _parse_vcam_fps_candidates(text: str, base_fps: int) -> list[float]:
     return parsed
 
 
+CAM_BACKEND_CANDIDATES = _parse_cam_backends(CAM_BACKENDS)
 VCAM_BACKEND_CANDIDATES = _parse_vcam_backends(VCAM_BACKENDS)
 VCAM_FORMAT_CANDIDATES = _parse_vcam_formats(VCAM_FORMATS)
 VCAM_FPS_CANDIDATE_VALUES = _parse_vcam_fps_candidates(VCAM_FPS_CANDIDATES, FPS)
@@ -705,16 +818,17 @@ def _probe_best_resolution(
 
 
 def open_cam(idx: int, label: str = "") -> cv2.VideoCapture:
-    backends = [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]
+    backends = CAM_BACKEND_CANDIDATES
     _verbose_log("Attempting camera open idx=%s label='%s'", idx, label)
     if label:
         _verbose_log("Ignoring label '%s' (index-only selection enabled)", label)
     for backend in backends:
+        backend_label = _cam_backend_label(backend)
         for attempt in range(1, CAM_OPEN_RETRIES + 1):
             _verbose_log(
                 "Trying index %s via backend %s (attempt %s/%s)",
                 idx,
-                backend,
+                backend_label,
                 attempt,
                 CAM_OPEN_RETRIES,
             )
@@ -733,7 +847,7 @@ def open_cam(idx: int, label: str = "") -> cv2.VideoCapture:
                     logger.info(
                         "Opened camera index %s via backend %s (attempt %s/%s) at %sx%s%s",
                         idx,
-                        backend,
+                        backend_label,
                         attempt,
                         CAM_OPEN_RETRIES,
                         actual_w,
@@ -771,20 +885,42 @@ def _prepare_virtual_cam_frame(frame: np.ndarray, fmt: PixelFormat) -> np.ndarra
 
     if fmt == PixelFormat.BGR:
         out = src
-    elif fmt == PixelFormat.RGB:
-        out = cv2.cvtColor(src, cv2.COLOR_BGR2RGB)
-    elif fmt == PixelFormat.RGBA:
-        out = cv2.cvtColor(src, cv2.COLOR_BGR2RGBA)
-    elif fmt == PixelFormat.GRAY:
-        out = cv2.cvtColor(src, cv2.COLOR_BGR2GRAY)
-    elif fmt == PixelFormat.I420:
-        out = cv2.cvtColor(src, cv2.COLOR_BGR2YUV_I420)
     else:
-        raise ValueError(f"Unsupported pixel format for virtual camera frame conversion: {fmt}")
+        use_umat = bool(OPENCL_ENABLED and hasattr(cv2, "UMat"))
+        color_code: int
+        if fmt == PixelFormat.RGB:
+            color_code = cv2.COLOR_BGR2RGB
+        elif fmt == PixelFormat.RGBA:
+            color_code = cv2.COLOR_BGR2RGBA
+        elif fmt == PixelFormat.GRAY:
+            color_code = cv2.COLOR_BGR2GRAY
+        elif fmt == PixelFormat.I420:
+            color_code = cv2.COLOR_BGR2YUV_I420
+        else:
+            raise ValueError(f"Unsupported pixel format for virtual camera frame conversion: {fmt}")
+
+        if use_umat:
+            try:
+                out = cv2.cvtColor(cv2.UMat(src), color_code).get()
+            except Exception:
+                out = cv2.cvtColor(src, color_code)
+        else:
+            out = cv2.cvtColor(src, color_code)
 
     if not out.flags.c_contiguous:
         out = np.ascontiguousarray(out)
     return out
+
+
+def _resize_frame(frame: np.ndarray, width: int, height: int) -> np.ndarray:
+    if frame.shape[1] == width and frame.shape[0] == height:
+        return frame
+    if OPENCL_ENABLED and hasattr(cv2, "UMat"):
+        try:
+            return cv2.resize(cv2.UMat(frame), (width, height), interpolation=cv2.INTER_AREA).get()
+        except Exception:
+            pass
+    return cv2.resize(frame, (width, height), interpolation=cv2.INTER_AREA)
 
 
 def _restart_virtual_camera(
@@ -955,6 +1091,23 @@ def log_dshow_devices() -> None:
 
 async def main() -> None:
     _log_graphics_diagnostics()
+    logger.info(
+        "Capture compatibility config: CAM_BACKENDS=%s (resolved=%s), CAM_PROBE_MAX_RES=%s, CV2_USE_OPENCL='%s' (mode=%s available=%s enabled=%s), OVERLAY_GPU_MODE='%s'",
+        CAM_BACKENDS,
+        ",".join(_cam_backend_label(b) for b in CAM_BACKEND_CANDIDATES),
+        CAM_PROBE_MAX_RES,
+        CV2_USE_OPENCL_REQUEST or "auto",
+        OPENCL_MODE,
+        OPENCL_AVAILABLE,
+        OPENCL_ENABLED,
+        OVERLAY_GPU_MODE or "auto",
+    )
+    logger.info(
+        "Virtual cam compatibility config: VCAM_BACKENDS=%s, VCAM_FORMATS=%s, VCAM_FPS_CANDIDATES=%s",
+        VCAM_BACKENDS,
+        VCAM_FORMATS,
+        VCAM_FPS_CANDIDATES,
+    )
     log_dshow_devices()
     last_open_attempt = 0.0
     next_gpu_log = 0.0
@@ -1133,7 +1286,7 @@ async def main() -> None:
                         output_height,
                     )
                 if frame_w != output_width or frame_h != output_height:
-                    frame = cv2.resize(frame, (output_width, output_height), interpolation=cv2.INTER_AREA)
+                    frame = _resize_frame(frame, output_width, output_height)
                 overlayed = optimized_draw_overlay(
                     frame,
                     state_holder.get("state") or {},
