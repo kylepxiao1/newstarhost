@@ -99,6 +99,19 @@
     let settingsFadeIn = true;
     let settingsFadeOut = true;
     let settingsLoopSameSongAfterFinish = false;
+    const PRACTICE_ROLE = "practice_song";
+
+    function normalizeRoleToken(role) {
+      return String(role || "").trim().toLowerCase().replace(/\s+/g, "_");
+    }
+
+    function isPracticeSong(song) {
+      return (song?.roles || []).some((r) => normalizeRoleToken(r) === PRACTICE_ROLE);
+    }
+
+    function shouldDisplayForPracticeMode(song) {
+      return !isPracticeSong(song) || settingsLoopSameSongAfterFinish;
+    }
 
     async function loadSettings() {
       const data = await window.PageShared.fetchAppSettings(api);
@@ -107,6 +120,7 @@
       settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
       hotkeyMap = data.hotkeys || {};
       window.PageShared.setPracticeModeHeader(settingsLoopSameSongAfterFinish);
+      renderSongs();
     }
 
     function handleHotkey(evt) {
@@ -158,6 +172,7 @@
           return Number.isFinite(d) && d > 0 ? ` <span class="duration">(${d}s)</span>` : "";
         };
         Object.values(library)
+          .filter(shouldDisplayForPracticeMode)
           .filter(s => {
             if (!selectedFront) return true;
             return (s.front_dancers||[]).map(x=>x.toLowerCase()).includes(selectedFront);
@@ -183,7 +198,8 @@
             const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
             card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${details ? `<div>${details}</div>` : ""}`;
             const hasClosingRole = (song.roles || []).some(r => String(r || "").toLowerCase() === "closing");
-            if (song.camera_dance || hasClosingRole) {
+            const hasPracticeRole = isPracticeSong(song);
+            if (song.camera_dance || hasClosingRole || hasPracticeRole) {
               const flags = document.createElement("div");
               flags.className = "corner-flags";
               if (song.camera_dance) {
@@ -199,6 +215,13 @@
                 closing.alt = "Closing dance";
                 closing.className = "corner-flag";
                 flags.appendChild(closing);
+              }
+              if (hasPracticeRole) {
+                const practice = document.createElement("img");
+                practice.src = "/media/practice-song.svg";
+                practice.alt = "Practice song";
+                practice.className = "corner-flag";
+                flags.appendChild(practice);
               }
               card.appendChild(flags);
             }

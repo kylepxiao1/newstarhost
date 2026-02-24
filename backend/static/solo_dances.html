@@ -102,6 +102,19 @@
     let settingsFadeIn = true;
     let settingsFadeOut = true;
     let settingsLoopSameSongAfterFinish = false;
+    const PRACTICE_ROLE = "practice_song";
+
+    function normalizeRoleToken(role) {
+      return String(role || "").trim().toLowerCase().replace(/\s+/g, "_");
+    }
+
+    function isPracticeSong(song) {
+      return (song?.roles || []).some((r) => normalizeRoleToken(r) === PRACTICE_ROLE);
+    }
+
+    function shouldDisplayForPracticeMode(song) {
+      return !isPracticeSong(song) || settingsLoopSameSongAfterFinish;
+    }
 
     async function loadSettings() {
       const data = await window.PageShared.fetchAppSettings(api);
@@ -110,6 +123,7 @@
       settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
       hotkeyMap = data.hotkeys || {};
       window.PageShared.setPracticeModeHeader(settingsLoopSameSongAfterFinish);
+      renderSongs();
     }
 
     function handleHotkey(evt) {
@@ -202,9 +216,10 @@
     }
 
     function baseFilterSong(song) {
-      const hasRole = (song.roles || []).length > 0;
+      const roles = (song.roles || []).map(normalizeRoleToken);
+      const hasNonPracticeRole = roles.some((r) => r !== PRACTICE_ROLE);
       const hasDancers = (song.dancers || []).length > 0;
-      return !hasRole && hasDancers;
+      return !hasNonPracticeRole && hasDancers;
     }
 
     function hasFilterToggle() {
@@ -222,6 +237,7 @@
       const includeKnows = document.getElementById("filterKnows")?.checked === true;
       const includeMvp = document.getElementById("filterMvp")?.checked === true;
       return Object.values(library)
+        .filter(shouldDisplayForPracticeMode)
         .filter(s => {
           if (baseFilterSong(s)) return true;
           return includeMvp && !!(s.exclusive_mvp_for || "");
@@ -344,6 +360,13 @@
           difficulty.alt = `${diff} difficulty`;
           difficulty.className = "corner-flag";
           flags.appendChild(difficulty);
+          if (isPracticeSong(song)) {
+            const practice = document.createElement("img");
+            practice.src = "/media/practice-song.svg";
+            practice.alt = "Practice song";
+            practice.className = "corner-flag";
+            flags.appendChild(practice);
+          }
           card.appendChild(flags);
           const playBtn = document.createElement("button");
           playBtn.textContent = "Play Song";

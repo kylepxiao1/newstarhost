@@ -157,6 +157,7 @@
     let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","applause","attention","background","win","closing"];
+    const PRACTICE_SONG_ROLE = "practice_song";
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
     const CENTER_LINE = "CenterDottedLine";
@@ -208,6 +209,15 @@
       } else {
         if (cancelBtn.parentElement !== controlRow) controlRow.appendChild(cancelBtn);
       }
+    }
+
+    function normalizeSongRoleToken(role) {
+      return String(role || "").trim().toLowerCase().replace(/\s+/g, "_");
+    }
+
+    function songHasRole(song, roleToken) {
+      const target = normalizeSongRoleToken(roleToken);
+      return (song?.roles || []).some((r) => normalizeSongRoleToken(r) === target);
     }
 
     let _randSeed = 1;
@@ -1247,8 +1257,9 @@
             const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
             const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
             card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${details ? `<div>${details}</div>` : ""}`;
-            const hasClosingRole = (song.roles || []).some(r => String(r || "").toLowerCase() === "closing");
-            if (song.camera_dance || hasClosingRole) {
+            const hasClosingRole = songHasRole(song, "closing");
+            const hasPracticeRole = songHasRole(song, PRACTICE_SONG_ROLE);
+            if (song.camera_dance || hasClosingRole || hasPracticeRole) {
               const flags = document.createElement("div");
               flags.className = "corner-flags";
               if (song.camera_dance) {
@@ -1264,6 +1275,13 @@
                 closing.alt = "Closing dance";
                 closing.className = "corner-flag";
                 flags.appendChild(closing);
+              }
+              if (hasPracticeRole) {
+                const practice = document.createElement("img");
+                practice.src = "/media/practice-song.svg";
+                practice.alt = "Practice song";
+                practice.className = "corner-flag";
+                flags.appendChild(practice);
               }
               card.appendChild(flags);
             }

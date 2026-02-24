@@ -132,10 +132,10 @@ fly machines start <APP_MACHINE_ID>
 flyctl logs -a newstarhost --machine <APP_MACHINE_ID>
 
 # Download a file from the machine (one-shot)
-flyctl ssh sftp get -a newstarhost /path/on/machine/filename.ext C:\path\to\local\filename.ext
+flyctl ssh sftp get -a newstarhost -g app /path/on/machine/filename.ext C:\path\to\local\filename.ext
 
 # Upload a file to the machine (one-shot)
-flyctl ssh sftp put -a newstarhost C:\path\to\local\file.ext /path/on/machine/file.ext
+flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/machine/file.ext
 ```
 
 ### Fly.io Discord Worker

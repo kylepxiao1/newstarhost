@@ -143,7 +143,10 @@
   let difficultyValue = "medium";
   let volumeSaveInFlight = false;
   let volumeQueued = null;
-  const ROLE_OPTIONS = ["bell","applause","mvp","attention","background","win","closing"];
+  const ROLE_OPTIONS = ["bell","applause","mvp","attention","background","win","closing","practice_song"];
+  const ROLE_LABELS = {
+    practice_song: "practice song",
+  };
 
     function renderSongsList() {
       const list = document.getElementById("songList");
@@ -429,7 +432,7 @@
         cb.checked = rolesAssigned.includes(role);
         cb.onchange = () => toggleRole(role, cb.checked);
         const span = document.createElement("span");
-        span.textContent = role;
+        span.textContent = ROLE_LABELS[role] || role;
         wrap.appendChild(cb);
         wrap.appendChild(span);
         c.appendChild(wrap);

@@ -15,6 +15,20 @@ try:
 except Exception:
     MutagenFile = None
 
+_UNIQUE_SONG_ROLES = {
+    "bell",
+    "applause",
+    "mvp",
+    "attention",
+    "background",
+    "win",
+    "closing",
+}
+
+
+def _normalize_role(role: Any) -> str:
+    return str(role or "").strip().lower().replace(" ", "_")
+
 
 @dataclass
 class BattleState:
@@ -564,13 +578,16 @@ class BattleStateManager:
     def _clear_roles(self, roles: list, keep_song_id: str, lib: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Ensure each role is unique across songs."""
         lib = lib or self._state.songs.get("library", {}) or {}
-        role_set = set(roles or [])
+        role_set = {_normalize_role(r) for r in (roles or []) if _normalize_role(r) in _UNIQUE_SONG_ROLES}
+        if not role_set:
+            return lib
         for sid, meta in lib.items():
             if sid == keep_song_id:
                 continue
-            existing = set(meta.get("roles", []))
-            if existing & role_set:
-                meta["roles"] = list(existing - role_set)
+            existing = list(meta.get("roles", []) or [])
+            kept = [r for r in existing if _normalize_role(r) not in role_set]
+            if len(kept) != len(existing):
+                meta["roles"] = kept
                 lib[sid] = meta
         return lib
 
