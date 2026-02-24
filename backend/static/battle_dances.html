@@ -985,6 +985,7 @@
         }
       }
       renderPointsBar();
+      renderMusicControlLabels(slotOneRaw, slotTwoRaw);
       renderGroupSelect();
       renderSlotSelects();
       renderEnabledDancers();
@@ -992,6 +993,13 @@
       renderOverlays();
       renderSongs();
       renderTimer();
+    }
+
+    function renderMusicControlLabels(slotOneRaw, slotTwoRaw) {
+      const tabOne = document.getElementById("tabOne");
+      const tabTwo = document.getElementById("tabTwo");
+      if (tabOne) tabOne.textContent = slotOneRaw || "Dancer 1";
+      if (tabTwo) tabTwo.textContent = slotTwoRaw || "Dancer 2";
     }
 
     function renderPointsBar() {
