@@ -13,6 +13,10 @@ import httpx
 import numpy as np
 import pyvirtualcam
 import websockets
+try:
+    from overlay_renderer import draw_overlay as optimized_draw_overlay
+except Exception:
+    from scripts.overlay_renderer import draw_overlay as optimized_draw_overlay
 from pyvirtualcam import PixelFormat
 
 API_BASE = os.environ.get("API_BASE", "https://newstarhost.fly.dev") # http://127.0.0.1:8000
@@ -25,7 +29,8 @@ LIKE_OVERLAY_POLL_INTERVAL = float(os.environ.get("LIKE_OVERLAY_POLL_SECS", "5.0
 WS_PATH = os.environ.get("STATE_WS_PATH", "/ws/state")
 CAM_OPEN_RETRIES = int(os.environ.get("CAM_OPEN_RETRIES", 4))
 CAM_OPEN_DELAY = float(os.environ.get("CAM_OPEN_DELAY", 0.35))
-CAM_PROBE_MAX_RES = os.environ.get("CAM_PROBE_MAX_RES", "1").strip().lower() not in {"0", "false", "no", "off"}
+# Disabled by default to keep camera switches responsive during live runs.
+CAM_PROBE_MAX_RES = os.environ.get("CAM_PROBE_MAX_RES", "0").strip().lower() not in {"0", "false", "no", "off"}
 CAM_MAX_RES_CANDIDATES = os.environ.get(
     "CAM_MAX_RES_CANDIDATES",
     # include common landscape + portrait camera modes
@@ -553,7 +558,7 @@ def open_cam(idx: int, label: str = "") -> cv2.VideoCapture:
                 ret, frame = cap.read()
                 if ret and frame is not None:
                     actual_w, actual_h = _capture_size(cap, frame)
-                    best = _probe_best_resolution(cap, label, (actual_w, actual_h))
+                    best = _probe_best_resolution(cap, label, (actual_w, actual_h)) if CAM_PROBE_MAX_RES else None
                     if best and best != (actual_w, actual_h):
                         ret2, frame2 = cap.read()
                         if ret2 and frame2 is not None:
@@ -807,7 +812,7 @@ async def main() -> None:
 
                 if not cap.isOpened():
                     blank = np.zeros((output_height, output_width, 3), dtype=np.uint8)
-                    overlayed = draw_overlay(
+                    overlayed = optimized_draw_overlay(
                         blank,
                         state_holder.get("state") or {},
                         likes_overlay_holder.get("summary") or {},
@@ -855,7 +860,7 @@ async def main() -> None:
                     )
                 if frame_w != output_width or frame_h != output_height:
                     frame = cv2.resize(frame, (output_width, output_height), interpolation=cv2.INTER_AREA)
-                overlayed = draw_overlay(
+                overlayed = optimized_draw_overlay(
                     frame,
                     state_holder.get("state") or {},
                     likes_overlay_holder.get("summary") or {},
