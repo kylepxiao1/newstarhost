@@ -1137,6 +1137,9 @@ async def main() -> None:
 
         fail_count = 0
         ws_task = asyncio.create_task(ws_state_listener(state_holder))
+        state_poll_interval = max(0.25, POLL_INTERVAL) if POLL_INTERVAL >= 0 else -1.0
+        next_state_poll = 0.0
+        state_poll_task: asyncio.Task | None = None
         source_width = max(1, DEFAULT_WIDTH)
         source_height = max(1, DEFAULT_HEIGHT)
         output_width = source_width
@@ -1218,6 +1221,21 @@ async def main() -> None:
                                 "GPU usage telemetry unavailable (nvidia-smi not found or unsupported). "
                                 "Set GPU_NVIDIA_SMI_BIN if needed."
                             )
+
+                if state_poll_interval >= 0:
+                    now_state_poll = time.monotonic()
+                    if state_poll_task is not None and state_poll_task.done():
+                        try:
+                            polled_state = state_poll_task.result()
+                            if isinstance(polled_state, dict) and polled_state:
+                                state_holder["state"] = polled_state
+                        except Exception as exc:
+                            logger.debug("State poll task failed: %s", exc)
+                        finally:
+                            state_poll_task = None
+                            next_state_poll = now_state_poll + state_poll_interval
+                    if state_poll_task is None and now_state_poll >= next_state_poll:
+                        state_poll_task = asyncio.create_task(fetch_state(client))
 
                 if not cap.isOpened():
                     blank = np.zeros((output_height, output_width, 3), dtype=np.uint8)
@@ -1314,17 +1332,16 @@ async def main() -> None:
                     )
                     await asyncio.sleep(0.02)
                     continue
-                try:
-                    state_task = asyncio.create_task(fetch_state(client))
-                    await asyncio.wait_for(asyncio.shield(state_task), timeout=POLL_INTERVAL)
-                    state_holder["state"] = state_task.result() or state_holder.get("state") or {}
-                except asyncio.TimeoutError:
-                    pass
         finally:
             try:
                 ws_task.cancel()
             except Exception:
                 pass
+            if state_poll_task is not None:
+                try:
+                    state_poll_task.cancel()
+                except Exception:
+                    pass
             try:
                 cap.release()
             except Exception:

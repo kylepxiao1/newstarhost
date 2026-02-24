@@ -191,15 +191,14 @@ def _blit_opaque(
 
     sprite_roi = sprite[sy1:sy2, sx1:sx2]
     mask_roi = sprite_mask[sy1:sy2, sx1:sx2]
-    idx = mask_roi > 0
-    if not np.any(idx):
+    if cv2.countNonZero(mask_roi) == 0:
         return False
 
     dst_roi = dst[y1:y2, x1:x2]
-    dst_roi[idx] = sprite_roi[idx]
+    cv2.copyTo(sprite_roi, mask_roi, dst_roi)
     if dst_mask is not None:
         mask_dst_roi = dst_mask[y1:y2, x1:x2]
-        np.maximum(mask_dst_roi, mask_roi, out=mask_dst_roi)
+        cv2.bitwise_or(mask_dst_roi, mask_roi, dst=mask_dst_roi)
     return True
 
 
@@ -304,17 +303,49 @@ class OverlayRenderer:
         self._center_ops: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
         self._burst_ops: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
         self._dynamic_ops: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
+        self._static_opaque_layer_cpu: np.ndarray | None = None
+        self._static_opaque_mask_cpu: np.ndarray | None = None
+        self._static_opaque_layer_u: cv2.UMat | None = None
+        self._static_opaque_mask_u: cv2.UMat | None = None
+        self._static_opaque_x = 0
+        self._static_opaque_y = 0
+        self._static_blend_layer_cpu: np.ndarray | None = None
+        self._static_blend_mask_cpu: np.ndarray | None = None
+        self._static_blend_layer_u: cv2.UMat | None = None
+        self._static_blend_mask_u: cv2.UMat | None = None
+        self._static_blend_x = 0
+        self._static_blend_y = 0
+        self._static_blend_alpha = 0.0
         self._dynamic_layer_cpu: np.ndarray | None = None
         self._dynamic_mask_cpu: np.ndarray | None = None
         self._dynamic_layer_u: cv2.UMat | None = None
         self._dynamic_mask_u: cv2.UMat | None = None
+        self._dynamic_x = 0
+        self._dynamic_y = 0
         self._font = cv2.FONT_HERSHEY_SIMPLEX
+
+    def _invalidate_static_gpu_cache(self) -> None:
+        self._static_opaque_layer_cpu = None
+        self._static_opaque_mask_cpu = None
+        self._static_opaque_layer_u = None
+        self._static_opaque_mask_u = None
+        self._static_opaque_x = 0
+        self._static_opaque_y = 0
+        self._static_blend_layer_cpu = None
+        self._static_blend_mask_cpu = None
+        self._static_blend_layer_u = None
+        self._static_blend_mask_u = None
+        self._static_blend_x = 0
+        self._static_blend_y = 0
+        self._static_blend_alpha = 0.0
 
     def _invalidate_dynamic_gpu_cache(self) -> None:
         self._dynamic_layer_cpu = None
         self._dynamic_mask_cpu = None
         self._dynamic_layer_u = None
         self._dynamic_mask_u = None
+        self._dynamic_x = 0
+        self._dynamic_y = 0
 
     def _should_use_gpu_path(self) -> bool:
         if self._gpu_mode == "off":
@@ -337,6 +368,67 @@ class OverlayRenderer:
             f"CPU (mode={self._gpu_mode} requested='{self._gpu_mode_raw}' "
             f"OpenCL available={available} enabled={enabled})"
         )
+
+    def _resolve_ops_for_frame(
+        self,
+        ops: list[tuple[np.ndarray, np.ndarray, int, int, float]],
+        frame_w: int,
+        frame_h: int,
+        apply_independent_clamp: bool,
+    ) -> list[tuple[np.ndarray, np.ndarray, int, int, float]]:
+        resolved: list[tuple[np.ndarray, np.ndarray, int, int, float]] = []
+        for sprite, sprite_mask, x, y, alpha in ops:
+            ox, oy = int(x), int(y)
+            if apply_independent_clamp:
+                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+            sh, sw = sprite.shape[:2]
+            if sh <= 0 or sw <= 0:
+                continue
+            if ox >= frame_w or oy >= frame_h or (ox + sw) <= 0 or (oy + sh) <= 0:
+                continue
+            resolved.append((sprite, sprite_mask, ox, oy, alpha))
+        return resolved
+
+    def _compose_opaque_roi_cache(
+        self,
+        ops: list[tuple[np.ndarray, np.ndarray, int, int, float]],
+        frame_w: int,
+        frame_h: int,
+        apply_independent_clamp: bool,
+    ) -> tuple[np.ndarray, np.ndarray, int, int] | None:
+        resolved = self._resolve_ops_for_frame(ops, frame_w, frame_h, apply_independent_clamp)
+        if not resolved:
+            return None
+
+        min_x = frame_w
+        min_y = frame_h
+        max_x = -1
+        max_y = -1
+        for sprite, _sprite_mask, ox, oy, _alpha in resolved:
+            sh, sw = sprite.shape[:2]
+            x1 = max(0, ox)
+            y1 = max(0, oy)
+            x2 = min(frame_w, ox + sw)
+            y2 = min(frame_h, oy + sh)
+            if x1 >= x2 or y1 >= y2:
+                continue
+            min_x = min(min_x, x1)
+            min_y = min(min_y, y1)
+            max_x = max(max_x, x2 - 1)
+            max_y = max(max_y, y2 - 1)
+        if max_x < min_x or max_y < min_y:
+            return None
+
+        roi_w = max_x - min_x + 1
+        roi_h = max_y - min_y + 1
+        layer = np.zeros((roi_h, roi_w, 3), dtype=np.uint8)
+        mask = np.zeros((roi_h, roi_w), dtype=np.uint8)
+        wrote = False
+        for sprite, sprite_mask, ox, oy, _alpha in resolved:
+            wrote = _blit_opaque(layer, mask, sprite, sprite_mask, ox - min_x, oy - min_y) or wrote
+        if not wrote or cv2.countNonZero(mask) == 0:
+            return None
+        return layer, mask, min_x, min_y
 
     def _overlay_layout(self, layouts: Dict, name: str) -> tuple[int, int, float]:
         raw = layouts.get(name) if isinstance(layouts, dict) else None
@@ -820,26 +912,66 @@ class OverlayRenderer:
                 if op is not None:
                     self._dynamic_ops.append(op)
 
+    def _compose_static_cached_layers(
+        self,
+        frame_w: int,
+        frame_h: int,
+        apply_independent_clamp: bool,
+    ) -> None:
+        self._invalidate_static_gpu_cache()
+
+        static_opaque = self._compose_opaque_roi_cache(
+            self._center_ops,
+            frame_w,
+            frame_h,
+            apply_independent_clamp,
+        )
+        if static_opaque is not None:
+            (
+                self._static_opaque_layer_cpu,
+                self._static_opaque_mask_cpu,
+                self._static_opaque_x,
+                self._static_opaque_y,
+            ) = static_opaque
+
+        # Burst layer uses masked blending. We collapse to one cached ROI when safe.
+        if len(self._burst_ops) == 1:
+            alpha = float(self._burst_ops[0][4])
+            if alpha > 0.0:
+                static_blend = self._compose_opaque_roi_cache(
+                    self._burst_ops,
+                    frame_w,
+                    frame_h,
+                    apply_independent_clamp,
+                )
+                if static_blend is not None:
+                    (
+                        self._static_blend_layer_cpu,
+                        self._static_blend_mask_cpu,
+                        self._static_blend_x,
+                        self._static_blend_y,
+                    ) = static_blend
+                    self._static_blend_alpha = alpha
+
     def _compose_dynamic_opaque_layer(
         self,
         frame_w: int,
         frame_h: int,
         apply_independent_clamp: bool,
     ) -> None:
-        layer = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
-        mask = np.zeros((frame_h, frame_w), dtype=np.uint8)
-        wrote = False
-        for sprite, sprite_mask, x, y, _ in self._dynamic_ops:
-            ox, oy = int(x), int(y)
-            if apply_independent_clamp:
-                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
-            wrote = _blit_opaque(layer, mask, sprite, sprite_mask, ox, oy) or wrote
-        if wrote:
-            self._dynamic_layer_cpu = layer
-            self._dynamic_mask_cpu = mask
+        cached = self._compose_opaque_roi_cache(
+            self._dynamic_ops,
+            frame_w,
+            frame_h,
+            apply_independent_clamp,
+        )
+        if cached is not None:
+            self._dynamic_layer_cpu, self._dynamic_mask_cpu, self._dynamic_x, self._dynamic_y = cached
         else:
             self._dynamic_layer_cpu = None
             self._dynamic_mask_cpu = None
+            self._dynamic_x = 0
+            self._dynamic_y = 0
         self._dynamic_layer_u = None
         self._dynamic_mask_u = None
 
@@ -880,6 +1012,7 @@ class OverlayRenderer:
 
         rot, flip_x, flip_y = _normalize_overlay_transform(state)
         transform_mat = _overlay_transform_matrix(frame_w, frame_h, rot, flip_x, flip_y)
+        apply_independent_clamp = bool(rot or flip_x or flip_y)
 
         base_h = max(1, frame_h)
         scale = max(0.7, (base_h / 720.0) * 0.9)
@@ -919,6 +1052,7 @@ class OverlayRenderer:
                 flip_y,
                 transform_mat,
             )
+            self._compose_static_cached_layers(frame_w, frame_h, apply_independent_clamp)
             self._static_key = static_key
 
         dynamic_key = (
@@ -954,32 +1088,76 @@ class OverlayRenderer:
                 transform_mat,
             )
             self._dynamic_key = dynamic_key
-            self._invalidate_dynamic_gpu_cache()
+            self._compose_dynamic_opaque_layer(frame_w, frame_h, apply_independent_clamp)
 
-        apply_independent_clamp = bool(rot or flip_x or flip_y)
+        use_gpu = self._should_use_gpu_path()
         out = frame.copy()
-        for sprite, sprite_mask, x, y, _ in self._center_ops:
-            ox, oy = int(x), int(y)
-            if apply_independent_clamp:
-                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
-            _blit_opaque(out, None, sprite, sprite_mask, ox, oy)
 
-        for sprite, sprite_mask, x, y, alpha in self._burst_ops:
-            ox, oy = int(x), int(y)
-            if apply_independent_clamp:
-                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
-            _blend_masked(out, sprite, sprite_mask, ox, oy, alpha)
+        if self._static_opaque_layer_cpu is not None and self._static_opaque_mask_cpu is not None:
+            static_h, static_w = self._static_opaque_layer_cpu.shape[:2]
+            x1 = self._static_opaque_x
+            y1 = self._static_opaque_y
+            x2 = x1 + static_w
+            y2 = y1 + static_h
+            out_roi = out[y1:y2, x1:x2]
+            if use_gpu:
+                if self._static_opaque_layer_u is None or self._static_opaque_mask_u is None:
+                    self._static_opaque_layer_u = cv2.UMat(self._static_opaque_layer_cpu)
+                    self._static_opaque_mask_u = cv2.UMat(self._static_opaque_mask_cpu)
+                out_roi_u = cv2.UMat(out_roi)
+                cv2.copyTo(self._static_opaque_layer_u, self._static_opaque_mask_u, out_roi_u)
+                out[y1:y2, x1:x2] = out_roi_u.get()
+            else:
+                cv2.copyTo(self._static_opaque_layer_cpu, self._static_opaque_mask_cpu, out_roi)
+        else:
+            for sprite, sprite_mask, x, y, _ in self._center_ops:
+                ox, oy = int(x), int(y)
+                if apply_independent_clamp:
+                    ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+                _blit_opaque(out, None, sprite, sprite_mask, ox, oy)
 
-        if self._should_use_gpu_path() and self._dynamic_ops:
-            if self._dynamic_layer_cpu is None or self._dynamic_mask_cpu is None:
-                self._compose_dynamic_opaque_layer(frame_w, frame_h, apply_independent_clamp)
-            if self._dynamic_layer_cpu is not None and self._dynamic_mask_cpu is not None:
+        if (
+            self._static_blend_layer_cpu is not None
+            and self._static_blend_mask_cpu is not None
+            and self._static_blend_alpha > 0.0
+        ):
+            blend_h, blend_w = self._static_blend_layer_cpu.shape[:2]
+            x1 = self._static_blend_x
+            y1 = self._static_blend_y
+            x2 = x1 + blend_w
+            y2 = y1 + blend_h
+            dst_roi = out[y1:y2, x1:x2]
+            blended = cv2.addWeighted(
+                dst_roi,
+                1.0 - self._static_blend_alpha,
+                self._static_blend_layer_cpu,
+                self._static_blend_alpha,
+                0.0,
+            )
+            cv2.copyTo(blended, self._static_blend_mask_cpu, dst_roi)
+        else:
+            for sprite, sprite_mask, x, y, alpha in self._burst_ops:
+                ox, oy = int(x), int(y)
+                if apply_independent_clamp:
+                    ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+                _blend_masked(out, sprite, sprite_mask, ox, oy, alpha)
+
+        if self._dynamic_layer_cpu is not None and self._dynamic_mask_cpu is not None:
+            dyn_h, dyn_w = self._dynamic_layer_cpu.shape[:2]
+            x1 = self._dynamic_x
+            y1 = self._dynamic_y
+            x2 = x1 + dyn_w
+            y2 = y1 + dyn_h
+            out_roi = out[y1:y2, x1:x2]
+            if use_gpu:
                 if self._dynamic_layer_u is None or self._dynamic_mask_u is None:
                     self._dynamic_layer_u = cv2.UMat(self._dynamic_layer_cpu)
                     self._dynamic_mask_u = cv2.UMat(self._dynamic_mask_cpu)
-                out_u = cv2.UMat(out)
-                cv2.copyTo(self._dynamic_layer_u, self._dynamic_mask_u, out_u)
-                out = out_u.get()
+                out_roi_u = cv2.UMat(out_roi)
+                cv2.copyTo(self._dynamic_layer_u, self._dynamic_mask_u, out_roi_u)
+                out[y1:y2, x1:x2] = out_roi_u.get()
+            else:
+                cv2.copyTo(self._dynamic_layer_cpu, self._dynamic_mask_cpu, out_roi)
         else:
             for sprite, sprite_mask, x, y, _ in self._dynamic_ops:
                 ox, oy = int(x), int(y)
