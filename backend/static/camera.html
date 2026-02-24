@@ -57,6 +57,7 @@
     .preview-overlay-handle {
       position: absolute;
       transform: translate(-50%, -50%);
+      will-change: left, top, transform;
       pointer-events: auto;
       border: 1px solid rgba(148, 163, 184, 0.9);
       background: rgba(15, 23, 42, 0.9);
@@ -70,6 +71,19 @@
       touch-action: none;
       white-space: nowrap;
       box-shadow: 0 1px 6px rgba(0,0,0,.35);
+    }
+    .preview-overlay-handle::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 6px;
+      height: 6px;
+      transform: translate(-50%, -50%);
+      border-radius: 999px;
+      background: rgba(255,255,255,.95);
+      box-shadow: 0 0 0 1px rgba(15,23,42,.9);
+      pointer-events: none;
     }
     .preview-overlay-handle.is-dragging {
       cursor: grabbing;
@@ -142,19 +156,21 @@
       <div id="overlays"></div>
       <div class="likes-overlay-config">
         <h3 class="overlay-name">Total Likes Overlay</h3>
-        <div class="row">
-          <input id="likeGoalInput" type="text" placeholder="Like Goal (optional, e.g. 250000)">
-          <input id="prizeInput" type="text" placeholder="Prize (optional, e.g. Group Dance)">
-          <button type="button" onclick="saveLikesOverlaySettings()">Save</button>
-          <button id="likeOverlayToggleBtn" type="button" onclick="toggleLikesOverlay()">Hide</button>
+        <div class="row overlay-row" style="padding:6px 8px;">
+          <div class="overlay-controls likes-layout-controls" style="width:100%;justify-content:flex-start;">
+            <input id="likeGoalInput" type="text" placeholder="Like Goal (optional, e.g. 250000)">
+            <input id="prizeInput" type="text" placeholder="Prize (optional, e.g. Group Dance)">
+            <label class="likes-group-label">Group <select id="likeTargetGroupSelect" title="Target group for total likes overlay"></select></label>
+            <button type="button" onclick="saveLikesOverlaySettings()">Save</button>
+          </div>
         </div>
         <div class="row overlay-row" style="padding:6px 8px;">
-          <div class="overlay-controls likes-layout-controls">
-            <label class="likes-group-label">Group <select id="likeTargetGroupSelect" title="Target group for total likes overlay"></select></label>
+          <div class="overlay-controls likes-layout-controls" style="width:100%;justify-content:flex-end;">
             <label>X <input id="overlay-TotalLikesOverlay-x_offset" type="number" step="1" min="-10000" max="10000"></label>
             <label>Y <input id="overlay-TotalLikesOverlay-y_offset" type="number" step="1" min="-10000" max="10000"></label>
             <label>Scale <input id="overlay-TotalLikesOverlay-scale" type="number" step="0.1" min="0.1" max="8"></label>
             <button type="button" id="applyTotalLikesLayoutBtn">Apply</button>
+            <button id="likeOverlayToggleBtn" type="button" onclick="toggleLikesOverlay()">Hide</button>
           </div>
         </div>
         <div id="likesProgressWrap" class="likes-progress-wrap" style="display:none;">
@@ -198,6 +214,8 @@
     const overlayDragSyncState = new Map();
     const overlayLayoutRequestSeq = new Map();
     let activeOverlayDrag = null;
+    let dragMoveRafId = 0;
+    let pendingDragPoint = null;
     let previewMarkersVisible = true;
     const MAX_PREVIEW_WIDTH = 7680;
     const MAX_PREVIEW_HEIGHT = 4320;
@@ -458,6 +476,347 @@
       return { x: cx + d.x, y: cy + d.y };
     }
 
+    function _overlayMeasureCtx() {
+      if (!window.__overlayMeasureCanvas) {
+        const c = document.createElement("canvas");
+        c.width = 16;
+        c.height = 16;
+        window.__overlayMeasureCanvas = c;
+      }
+      return window.__overlayMeasureCanvas.getContext("2d");
+    }
+
+    function _measureOverlayText(text, fontPx) {
+      const ctx = _overlayMeasureCtx();
+      if (!ctx) {
+        const px = Math.max(1, _numOr(fontPx, 12));
+        const width = Math.max(1, String(text || "").length * (px * 0.58));
+        const ascent = px * 0.75;
+        const descent = px * 0.25;
+        return { width, ascent, descent };
+      }
+      const px = Math.max(1, _numOr(fontPx, 12));
+      ctx.font = `${Math.round(px)}px sans-serif`;
+      const m = ctx.measureText(String(text || ""));
+      const ascent = _numOr(m.actualBoundingBoxAscent, px * 0.75);
+      const descent = _numOr(m.actualBoundingBoxDescent, px * 0.25);
+      const width = Math.max(1, _numOr(m.width, 1));
+      return { width, ascent, descent };
+    }
+
+    function _bboxUnion(a, b) {
+      if (!a) return b ? { ...b } : null;
+      if (!b) return a ? { ...a } : null;
+      return {
+        x1: Math.min(a.x1, b.x1),
+        y1: Math.min(a.y1, b.y1),
+        x2: Math.max(a.x2, b.x2),
+        y2: Math.max(a.y2, b.y2),
+      };
+    }
+
+    function _overlayTransformMatrix(frameW, frameH, rot, flipX, flipY) {
+      const cx = (Math.max(1, frameW) - 1) / 2.0;
+      const cy = (Math.max(1, frameH) - 1) / 2.0;
+      const angle = -Number(rot || 0);
+      const r = (angle * Math.PI) / 180.0;
+      const alpha = Math.cos(r);
+      const beta = Math.sin(r);
+      let mat = [
+        [alpha, beta, ((1.0 - alpha) * cx) - (beta * cy)],
+        [-beta, alpha, (beta * cx) + ((1.0 - alpha) * cy)],
+        [0.0, 0.0, 1.0],
+      ];
+      const _mul3 = (a, b) => {
+        const out = [
+          [0, 0, 0],
+          [0, 0, 0],
+          [0, 0, 0],
+        ];
+        for (let i = 0; i < 3; i += 1) {
+          for (let j = 0; j < 3; j += 1) {
+            out[i][j] = (a[i][0] * b[0][j]) + (a[i][1] * b[1][j]) + (a[i][2] * b[2][j]);
+          }
+        }
+        return out;
+      };
+      if (flipX) {
+        mat = _mul3(
+          [
+            [-1.0, 0.0, 2.0 * cx],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+          ],
+          mat,
+        );
+      }
+      if (flipY) {
+        mat = _mul3(
+          [
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 2.0 * cy],
+            [0.0, 0.0, 1.0],
+          ],
+          mat,
+        );
+      }
+      return mat;
+    }
+
+    function _transformBBox(mat, bbox) {
+      const corners = [
+        [bbox.x1, bbox.y1, 1.0],
+        [bbox.x2, bbox.y1, 1.0],
+        [bbox.x1, bbox.y2, 1.0],
+        [bbox.x2, bbox.y2, 1.0],
+      ];
+      const pts = corners.map((p) => ({
+        x: (mat[0][0] * p[0]) + (mat[0][1] * p[1]) + (mat[0][2] * p[2]),
+        y: (mat[1][0] * p[0]) + (mat[1][1] * p[1]) + (mat[1][2] * p[2]),
+      }));
+      return {
+        minX: Math.min(...pts.map((p) => p.x)),
+        minY: Math.min(...pts.map((p) => p.y)),
+        maxX: Math.max(...pts.map((p) => p.x)),
+        maxY: Math.max(...pts.map((p) => p.y)),
+      };
+    }
+
+    function _anchoredClampedShift(srcMin, srcMax, targetMin, maxBound) {
+      const desired = _numOr(targetMin, 0) - _numOr(srcMin, 0);
+      const low = -_numOr(srcMin, 0);
+      const high = _numOr(maxBound, 0) - _numOr(srcMax, 0);
+      if (low > high) return (((_numOr(maxBound, 0) - (_numOr(srcMax, 0) - _numOr(srcMin, 0))) / 2.0) - _numOr(srcMin, 0));
+      return Math.min(high, Math.max(low, desired));
+    }
+
+    function _clampOpOrigin(x, y, opW, opH, frameW, frameH) {
+      let cx = Math.round(_numOr(x, 0));
+      let cy = Math.round(_numOr(y, 0));
+      const fw = Math.max(1, Math.round(_numOr(frameW, 1)));
+      const fh = Math.max(1, Math.round(_numOr(frameH, 1)));
+      const w = Math.max(1, Math.round(_numOr(opW, 1)));
+      const h = Math.max(1, Math.round(_numOr(opH, 1)));
+      if (w <= fw) cx = Math.max(0, Math.min(fw - w, cx));
+      else cx = Math.max(fw - w, Math.min(0, cx));
+      if (h <= fh) cy = Math.max(0, Math.min(fh - h, cy));
+      else cy = Math.max(fh - h, Math.min(0, cy));
+      return { x: cx, y: cy };
+    }
+
+    function _likesLineForOverlay() {
+      const totalLikesRaw = Number(latestTotalLikes || 0);
+      const totalLikes = Number.isFinite(totalLikesRaw) ? Math.max(0, Math.floor(totalLikesRaw)) : 0;
+      const goalText = String(state.like_goal || "").trim();
+      const goalValue = parseLikeGoalFromState();
+      const prizeText = String(state.prize || "").trim();
+      const goalDisplay = goalValue > 0 ? goalValue.toLocaleString() : (goalText || "0");
+      let likesLine = `${totalLikes.toLocaleString()} / ${goalDisplay} Likes`;
+      if (prizeText) likesLine = `${prizeText} - ${likesLine}`;
+      const progress = goalValue > 0 ? Math.max(0, Math.min(1, totalLikes / goalValue)) : 0;
+      return { likesLine, goalValue, progress };
+    }
+
+    function _battleEntriesForOverlay() {
+      const enabled = new Set(state?.enabled_dancers || []);
+      const dancers = Array.isArray(state?.dancers) ? state.dancers : [];
+      const display = !enabled.size ? dancers : dancers.filter((d) => enabled.has(String(d?.name || "")));
+      const wins = state?.win_counts || {};
+      const entries = [];
+      display.forEach((d) => {
+        const dn = String(d?.name || "Waiting");
+        const ww = Math.max(0, Math.trunc(_numOr(wins?.[dn], 0)));
+        entries.push({ name: dn, wins: ww });
+      });
+      if (!entries.length) entries.push({ name: "Waiting", wins: 0 });
+      return entries;
+    }
+
+    function _overlaySourceBBoxInFrame(name, layout, frameW, frameH, t) {
+      const xOff = _numOr(layout?.x_offset, 0);
+      const yOff = _numOr(layout?.y_offset, 0);
+      const sOff = Math.max(0.1, _numOr(layout?.scale, 1));
+      const baseScale = Math.max(0.7, (Math.max(1, frameH) / 720.0) * 0.9);
+      const thick = Math.max(1, Math.floor(baseScale * 2));
+      const allowOutOfBounds = !!(t?.rot || t?.flipX || t?.flipY);
+      if (name === "CenterDottedLine") {
+        const centerX = Math.max(0, Math.min(frameW - 1, Math.floor(frameW / 2) + Math.round(xOff)));
+        const whiteThick = Math.max(2, Math.floor(baseScale * 3.2 * sOff));
+        const x1 = Math.max(0, centerX - whiteThick - 2);
+        const x2 = Math.min(frameW - 1, centerX + whiteThick + 2);
+        return { x1, y1: 0, x2, y2: Math.max(0, frameH - 1), anchorCenter: true, extraYShift: Math.round(yOff) };
+      }
+      if (name === "BurstOverlay") {
+        const rad = Math.max(6, Math.floor(Math.min(frameH, frameW) * 0.18 * sOff));
+        const c1 = {
+          x: Math.max(0, Math.min(frameW - 1, Math.floor(frameW * 0.25) + Math.round(xOff))),
+          y: Math.max(0, Math.min(frameH - 1, Math.floor(frameH * 0.25) + Math.round(yOff))),
+        };
+        const c2 = {
+          x: Math.max(0, Math.min(frameW - 1, Math.floor(frameW * 0.75) + Math.round(xOff))),
+          y: Math.max(0, Math.min(frameH - 1, Math.floor(frameH * 0.75) + Math.round(yOff))),
+        };
+        return {
+          x1: Math.max(0, Math.min(c1.x - rad, c2.x - rad)),
+          y1: Math.max(0, Math.min(c1.y - rad, c2.y - rad)),
+          x2: Math.min(frameW - 1, Math.max(c1.x + rad, c2.x + rad)),
+          y2: Math.min(frameH - 1, Math.max(c1.y + rad, c2.y + rad)),
+          anchorCenter: false,
+          extraYShift: 0,
+        };
+      }
+      if (name === "BattleScore") {
+        const entries = _battleEntriesForOverlay();
+        const bsScale = Math.max(0.25, baseScale * sOff);
+        const bsThick = Math.max(1, Math.floor(thick * sOff));
+        const fontPx = Math.max(10, bsScale * 22.0);
+        let y = Math.floor(50 * baseScale) + Math.round(yOff);
+        let x = 40 + Math.round(xOff);
+        if (!allowOutOfBounds) {
+          y = Math.max(16, y);
+          x = Math.max(8, x);
+        }
+        const step = Math.max(14, Math.floor(36 * baseScale * sOff));
+        let box = null;
+        entries.forEach((entry, idx) => {
+          const text = `${entry.name}: ${entry.wins} wins`;
+          const m = _measureOverlayText(text, fontPx);
+          const baselineY = y + (idx * step);
+          const pad = bsThick + 1;
+          const lineBox = {
+            x1: x - pad,
+            y1: baselineY - m.ascent - pad,
+            x2: x + m.width + pad,
+            y2: baselineY + m.descent + pad,
+          };
+          box = _bboxUnion(box, lineBox);
+        });
+        if (!box) return null;
+        return {
+          x1: Math.floor(box.x1),
+          y1: Math.floor(box.y1),
+          x2: Math.ceil(box.x2),
+          y2: Math.ceil(box.y2),
+          anchorCenter: false,
+          extraYShift: 0,
+        };
+      }
+      if (name === "TotalLikesOverlay") {
+        const likesInfo = _likesLineForOverlay();
+        const textScale = Math.max(0.3, baseScale * sOff);
+        const textThick = Math.max(1, Math.floor(thick * sOff));
+        const fontPx = Math.max(10, textScale * 22.0);
+        let m = _measureOverlayText(likesInfo.likesLine, fontPx);
+        const maxTextWidth = Math.max(120, Math.floor(frameW - 40));
+        let textScaleAdj = textScale;
+        if (m.width > maxTextWidth) {
+          const shrinkRatio = maxTextWidth / Math.max(1, m.width);
+          textScaleAdj = Math.max(0.25, textScaleAdj * shrinkRatio);
+          m = _measureOverlayText(likesInfo.likesLine, Math.max(10, textScaleAdj * 22.0));
+        }
+        let textX = Math.floor((frameW - m.width) / 2) + Math.round(xOff);
+        let textY = Math.floor(54 * baseScale) + Math.round(yOff);
+        if (!allowOutOfBounds) {
+          textX = Math.max(8, Math.min(frameW - Math.floor(m.width) - 8, textX));
+          textY = Math.max(Math.floor(m.ascent) + 18, textY);
+          textY = Math.min(frameH - 8, textY);
+        }
+        const textPad = textThick + 2;
+        let box = {
+          x1: textX - textPad,
+          y1: textY - m.ascent - textPad,
+          x2: textX + m.width + textPad,
+          y2: textY + m.descent + textPad,
+        };
+        if (likesInfo.goalValue > 0) {
+          const barH = Math.max(14, Math.floor(20 * baseScale * sOff));
+          const barY1 = textY + Math.max(8, Math.floor(12 * baseScale * sOff));
+          const barY2 = barY1 + barH;
+          const barW = Math.min(
+            Math.max(180, Math.floor((m.width + Math.floor(42 * textScaleAdj)) * Math.max(0.75, sOff))),
+            Math.max(180, Math.floor(frameW * 0.72)),
+          );
+          let barX1 = Math.floor((frameW - barW) / 2) + Math.round(xOff);
+          let barX2 = barX1 + barW;
+          if (!allowOutOfBounds) {
+            barX1 = Math.max(8, Math.min(frameW - barW - 8, barX1));
+            barX2 = Math.min(frameW - 8, barX1 + barW);
+          }
+          const border = Math.max(1, textThick - 1);
+          box = _bboxUnion(box, { x1: barX1 - border, y1: barY1 - border, x2: barX2 + border, y2: barY2 + border });
+          const pctText = `${Math.round(likesInfo.progress * 100)}%`;
+          const pctScale = Math.max(0.32, textScaleAdj * 0.72);
+          const pctM = _measureOverlayText(pctText, Math.max(10, pctScale * 22.0));
+          const pctX = Math.floor((barX1 + barX2 - pctM.width) / 2);
+          const pctY = barY1 + Math.floor((barH + pctM.ascent) / 2) - 2;
+          box = _bboxUnion(box, {
+            x1: pctX - textThick,
+            y1: pctY - pctM.ascent - textThick,
+            x2: pctX + pctM.width + textThick,
+            y2: pctY + pctM.descent + textThick,
+          });
+        }
+        return {
+          x1: Math.floor(box.x1),
+          y1: Math.floor(box.y1),
+          x2: Math.ceil(box.x2),
+          y2: Math.ceil(box.y2),
+          anchorCenter: false,
+          extraYShift: 0,
+        };
+      }
+      const cx = (frameW / 2) + xOff;
+      const cy = (frameH / 2) + yOff;
+      return { x1: cx - 1, y1: cy - 1, x2: cx + 1, y2: cy + 1, anchorCenter: false, extraYShift: 0 };
+    }
+
+    function _overlayRenderedBBoxInFrame(source, frameW, frameH, t) {
+      if (!source) return null;
+      const rot = normalizeRightAngle(t?.rot || 0);
+      const flipX = !!t?.flipX;
+      const flipY = !!t?.flipY;
+      const applyIndependentClamp = !!(rot || flipX || flipY);
+      const src = {
+        x1: _numOr(source.x1, 0),
+        y1: _numOr(source.y1, 0),
+        x2: _numOr(source.x2, 0),
+        y2: _numOr(source.y2, 0),
+      };
+      const anchorCenter = !!source.anchorCenter;
+      const extraYShift = Math.round(_numOr(source.extraYShift, 0));
+      if (!applyIndependentClamp) {
+        return {
+          x1: src.x1,
+          y1: src.y1 + extraYShift,
+          x2: src.x2,
+          y2: src.y2 + extraYShift,
+        };
+      }
+      const mat = _overlayTransformMatrix(frameW, frameH, rot, flipX, flipY);
+      const tb = _transformBBox(mat, src);
+      const srcCx = 0.5 * (src.x1 + src.x2);
+      const srcCy = 0.5 * (src.y1 + src.y2);
+      const tCx = 0.5 * (tb.minX + tb.maxX);
+      const tCy = 0.5 * (tb.minY + tb.maxY);
+      const targetMinX = anchorCenter ? (tb.minX + (srcCx - tCx)) : src.x1;
+      const targetMinY = anchorCenter ? (tb.minY + (srcCy - tCy)) : src.y1;
+      const dx = _anchoredClampedShift(tb.minX, tb.maxX, targetMinX, Math.max(0, frameW - 1));
+      const dy = _anchoredClampedShift(tb.minY, tb.maxY, targetMinY, Math.max(0, frameH - 1));
+      const opW = Math.max(1, Math.ceil(tb.maxX) - Math.floor(tb.minX) + 1);
+      const opH = Math.max(1, Math.ceil(tb.maxY) - Math.floor(tb.minY) + 1);
+      let opX = Math.floor(tb.minX) + Math.round(dx);
+      let opY = Math.floor(tb.minY) + Math.round(dy) + extraYShift;
+      const clamped = _clampOpOrigin(opX, opY, opW, opH, frameW, frameH);
+      opX = clamped.x;
+      opY = clamped.y;
+      return {
+        x1: opX,
+        y1: opY,
+        x2: opX + opW - 1,
+        y2: opY + opH - 1,
+      };
+    }
+
     function updatePreviewMarkerToggleButton() {
       const btn = document.getElementById("togglePreviewMarkersBtn");
       if (!btn) return;
@@ -466,7 +825,14 @@
 
     function togglePreviewOverlayMarkers() {
       previewMarkersVisible = !previewMarkersVisible;
-      if (!previewMarkersVisible) activeOverlayDrag = null;
+      if (!previewMarkersVisible) {
+        activeOverlayDrag = null;
+        pendingDragPoint = null;
+        if (dragMoveRafId) {
+          cancelAnimationFrame(dragMoveRafId);
+          dragMoveRafId = 0;
+        }
+      }
       updatePreviewMarkerToggleButton();
       renderPreviewOverlayHandles();
     }
@@ -547,46 +913,18 @@
     }
 
     function overlayAnchorInFrame(name, layout, frameW, frameH) {
+      const t = getOverlayTransformForUi();
+      const source = _overlaySourceBBoxInFrame(name, layout, frameW, frameH, t);
+      const rendered = _overlayRenderedBBoxInFrame(source, frameW, frameH, t);
+      if (rendered) {
+        return {
+          x: (rendered.x1 + rendered.x2) / 2.0,
+          y: (rendered.y1 + rendered.y2) / 2.0,
+        };
+      }
       const xOff = _numOr(layout?.x_offset, 0);
       const yOff = _numOr(layout?.y_offset, 0);
-      const sOff = Math.max(0.1, _numOr(layout?.scale, 1));
-      const baseScale = Math.max(0.7, (Math.max(1, frameH) / 720.0) * 0.9);
-      let basePoint;
-      if (name === "CenterDottedLine") {
-        basePoint = { x: (frameW / 2) + xOff, y: (frameH / 2) + yOff };
-      } else if (name === "BurstOverlay") {
-        basePoint = { x: (frameW * 0.25) + xOff, y: (frameH * 0.25) + yOff };
-      } else if (name === "BattleScore") {
-        const enabled = new Set(state?.enabled_dancers || []);
-        const dancers = Array.isArray(state?.dancers) ? state.dancers : [];
-        const display = !enabled.size ? dancers : dancers.filter((d) => enabled.has(String(d?.name || "")));
-        const wins = state?.win_counts || {};
-        const lines = Math.max(1, display.length || 0);
-        const step = Math.max(14, Math.floor(36 * baseScale * sOff));
-        const xStart = Math.max(8, 40 + xOff);
-        const yStart = Math.max(16, Math.floor(50 * baseScale) + yOff);
-        let maxChars = 0;
-        if (display.length) {
-          for (const dancer of display) {
-            const dn = String(dancer?.name || "Waiting");
-            const ww = _numOr(wins?.[dn], 0);
-            const text = `${dn}: ${Math.max(0, Math.trunc(ww))} wins`;
-            maxChars = Math.max(maxChars, text.length);
-          }
-        } else {
-          maxChars = "Waiting: 0 wins".length;
-        }
-        const estCharPx = Math.max(6, Math.floor(10 * baseScale * sOff));
-        const estWidth = Math.max(120, maxChars * estCharPx);
-        const centerY = yStart + (((lines - 1) * step) / 2);
-        basePoint = { x: xStart + (estWidth / 2), y: centerY };
-      } else if (name === "TotalLikesOverlay") {
-        basePoint = { x: (frameW / 2) + xOff, y: Math.max(18, Math.floor(54 * baseScale)) + yOff };
-      } else {
-        basePoint = { x: (frameW / 2) + xOff, y: (frameH / 2) + yOff };
-      }
-      const t = getOverlayTransformForUi();
-      return transformOverlayPoint(basePoint.x, basePoint.y, frameW, frameH, t.rot, t.flipX, t.flipY);
+      return { x: (frameW / 2) + xOff, y: (frameH / 2) + yOff };
     }
 
     function getOverlayLayoutForUi(name) {
@@ -606,7 +944,7 @@
       if (sEl && document.activeElement !== sEl) sEl.value = String(Math.max(0.1, _numOr(layout?.scale, 1)));
     }
 
-    function queueOverlayLayoutSync(name, layout, minIntervalMs = 100) {
+    function queueOverlayLayoutSync(name, layout, minIntervalMs = 50) {
       const payload = {
         x_offset: Math.round(_numOr(layout?.x_offset, 0)),
         y_offset: Math.round(_numOr(layout?.y_offset, 0)),
@@ -626,8 +964,7 @@
         entry.pending = null;
         if (!nextPayload) return;
         entry.lastSent = Date.now();
-        await applyOverlayLayout(name, nextPayload, true);
-        renderPreviewOverlayHandles();
+        await applyOverlayLayout(name, nextPayload, true, { persistCookie: false, renderHandles: false });
         if (entry.pending) queueOverlayLayoutSync(name, entry.pending, minIntervalMs);
       }, wait);
     }
@@ -639,8 +976,19 @@
         entry.timer = null;
       }
       if (entry) entry.pending = null;
-      await applyOverlayLayout(name, layout, true);
-      renderPreviewOverlayHandles();
+      await applyOverlayLayout(name, layout, true, { persistCookie: true, renderHandles: false });
+    }
+
+    function updateSinglePreviewHandle(name, layout, geom, dragging = false) {
+      const el = getOrCreatePreviewHandle(name);
+      if (!el || !geom) return;
+      const anchor = overlayAnchorInFrame(name, layout, geom.frameW, geom.frameH);
+      const p = frameToPreviewPoint(anchor.x, anchor.y, geom);
+      const x = Math.max(0, Math.min(geom.shellW, p.x));
+      const y = Math.max(0, Math.min(geom.shellH, p.y));
+      el.style.left = `${x}px`;
+      el.style.top = `${y}px`;
+      el.classList.toggle("is-dragging", !!dragging);
     }
 
     function getOrCreatePreviewHandle(name) {
@@ -654,6 +1002,11 @@
       el.dataset.overlayName = name;
       el.textContent = PREVIEW_DRAG_LABELS[name] || name;
       el.addEventListener("pointerdown", (ev) => {
+        pendingDragPoint = null;
+        if (dragMoveRafId) {
+          cancelAnimationFrame(dragMoveRafId);
+          dragMoveRafId = 0;
+        }
         const geom = getPreviewGeometry();
         if (!geom) return;
         const localX = ev.clientX - geom.rect.left;
@@ -663,6 +1016,7 @@
         activeOverlayDrag = {
           name,
           pointerId: ev.pointerId,
+          geom,
           startFrame,
           startLayout: {
             x_offset: _numOr(startLayout?.x_offset, 0),
@@ -702,43 +1056,60 @@
         el.style.display = "";
         el.classList.toggle("is-dragging", activeOverlayDrag?.name === name);
         const layout = getOverlayLayoutForUi(name);
-        const anchor = overlayAnchorInFrame(name, layout, geom.frameW, geom.frameH);
-        const p = frameToPreviewPoint(anchor.x, anchor.y, geom);
-        const x = Math.max(0, Math.min(geom.shellW, p.x));
-        const y = Math.max(0, Math.min(geom.shellH, p.y));
-        el.style.left = `${x}px`;
-        el.style.top = `${y}px`;
+        updateSinglePreviewHandle(name, layout, geom, activeOverlayDrag?.name === name);
       });
     }
 
-    function onOverlayDragMove(ev) {
-      if (!activeOverlayDrag || ev.pointerId !== activeOverlayDrag.pointerId) return;
-      const geom = getPreviewGeometry();
+    function applyOverlayDragPoint(clientX, clientY) {
+      if (!activeOverlayDrag) return;
+      const geom = activeOverlayDrag.geom || getPreviewGeometry();
       if (!geom) return;
       const name = activeOverlayDrag.name;
-      const localX = ev.clientX - geom.rect.left;
-      const localY = ev.clientY - geom.rect.top;
+      const localX = clientX - geom.rect.left;
+      const localY = clientY - geom.rect.top;
       const currFrame = previewToFramePoint(localX, localY, geom);
       const dx = currFrame.x - activeOverlayDrag.startFrame.x;
       const dy = currFrame.y - activeOverlayDrag.startFrame.y;
       const t = getOverlayTransformForUi();
       const dLayout = inverseTransformOverlayDelta(dx, dy, t.rot, t.flipX, t.flipY);
-      const nextLayout = {
+      let nextLayout = {
         x_offset: Math.round(activeOverlayDrag.startLayout.x_offset + dLayout.x),
         y_offset: Math.round(activeOverlayDrag.startLayout.y_offset + dLayout.y),
         scale: activeOverlayDrag.startLayout.scale,
       };
       if (!state.overlay_layouts) state.overlay_layouts = {};
       state.overlay_layouts[name] = nextLayout;
-      persistOverlayLayoutCookies(name, nextLayout);
       setOverlayLayoutInputs(name, nextLayout);
       queueOverlayLayoutSync(name, nextLayout);
-      renderPreviewOverlayHandles();
+      updateSinglePreviewHandle(name, nextLayout, geom, true);
+    }
+
+    function onOverlayDragMove(ev) {
+      if (!activeOverlayDrag || ev.pointerId !== activeOverlayDrag.pointerId) return;
+      pendingDragPoint = { x: ev.clientX, y: ev.clientY };
+      if (!dragMoveRafId) {
+        dragMoveRafId = requestAnimationFrame(() => {
+          dragMoveRafId = 0;
+          if (!pendingDragPoint) return;
+          const pt = pendingDragPoint;
+          pendingDragPoint = null;
+          applyOverlayDragPoint(pt.x, pt.y);
+        });
+      }
       ev.preventDefault();
     }
 
     async function onOverlayDragEnd(ev) {
       if (!activeOverlayDrag || ev.pointerId !== activeOverlayDrag.pointerId) return;
+      if (dragMoveRafId) {
+        cancelAnimationFrame(dragMoveRafId);
+        dragMoveRafId = 0;
+      }
+      if (pendingDragPoint) {
+        const pt = pendingDragPoint;
+        pendingDragPoint = null;
+        applyOverlayDragPoint(pt.x, pt.y);
+      }
       const name = activeOverlayDrag.name;
       const el = previewHandleEls.get(name);
       if (el) el.classList.remove("is-dragging");
@@ -1267,7 +1638,9 @@
       setCookie(_layoutCookieKey(name, "scale"), String(Math.max(0.1, _numOr(layout?.scale, 1))));
     }
 
-    async function applyOverlayLayout(name, layout, optimistic = true) {
+    async function applyOverlayLayout(name, layout, optimistic = true, options = null) {
+      const persistCookie = options?.persistCookie !== false;
+      const renderHandles = options?.renderHandles !== false;
       const payload = {
         x_offset: _numOr(layout?.x_offset, 0),
         y_offset: _numOr(layout?.y_offset, 0),
@@ -1275,7 +1648,7 @@
       };
       const seq = (overlayLayoutRequestSeq.get(name) || 0) + 1;
       overlayLayoutRequestSeq.set(name, seq);
-      persistOverlayLayoutCookies(name, payload);
+      if (persistCookie) persistOverlayLayoutCookies(name, payload);
       if (!state.overlay_layouts) state.overlay_layouts = {};
       if (optimistic || !Object.prototype.hasOwnProperty.call(state.overlay_layouts, name)) {
         state.overlay_layouts[name] = payload;
@@ -1292,7 +1665,7 @@
       } catch (e) {
         // ignore transient failures
       }
-      renderPreviewOverlayHandles();
+      if (renderHandles) renderPreviewOverlayHandles();
     }
 
     function getOverlayLayoutForRender(name) {
