@@ -1784,12 +1784,16 @@
       return pickGroup?.url || null;
     }
 
-    function groupSongs() {
+    function groupSongs(includeCameraDances=false, includeClosingSongs=false) {
       const group = (state.group_name || "").toLowerCase();
       const lib = state.songs?.library || {};
       return Object.values(lib).filter(s => {
         const dancers = (s.dancers||[]).map(x=>x.toLowerCase());
-        return group && dancers.includes(group);
+        if (!group || !dancers.includes(group)) return false;
+        if (!includeCameraDances && !!s.camera_dance) return false;
+        const hasClosingRole = (s.roles || []).some(r => String(r || "").toLowerCase() === "closing");
+        if (!includeClosingSongs && hasClosingRole) return false;
+        return true;
       });
     }
 
