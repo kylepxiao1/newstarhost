@@ -210,18 +210,19 @@
       }
     }
 
-    let _randSeed = (Date.now() % 2147483647) || 1;
+    let _randSeed = 1;
+    function reseedRandWithTimestamp() {
+      const nowMs = Date.now() & 0x7fffffff;
+      const perfUs = ((typeof performance !== "undefined" && performance.now) ? Math.floor(performance.now() * 1000) : 0) & 0x7fffffff;
+      const mixed = (nowMs ^ perfUs ^ ((_randSeed * 1103515245) & 0x7fffffff)) % 2147483647;
+      _randSeed = mixed > 0 ? mixed : 1;
+    }
+    reseedRandWithTimestamp();
     function rand() {
-      if (window.crypto && window.crypto.getRandomValues) {
-        const buf = new Uint32Array(1);
-        window.crypto.getRandomValues(buf);
-        return buf[0] / 4294967296;
-      }
-      // time-seeded LCG fallback
-      const t = Date.now() ^ (performance && performance.now ? Math.floor(performance.now()*1000) : 0);
-      _randSeed = (_randSeed + t) % 2147483647;
+      // Always reseed with timestamp-derived entropy before stepping.
+      reseedRandWithTimestamp();
       _randSeed = (_randSeed * 48271) % 2147483647;
-      return _randSeed / 2147483647;
+      return (_randSeed - 1) / 2147483646;
     }
 
     async function getSupabaseConfig() {
@@ -1474,12 +1475,12 @@
      * Weight by cooldown factor: w = 1 - exp(-x / tau), where x = plays_after_last.
      * Missing songs are treated as x = infinity (w = 1).
      */
-    async function pickWithRecencyPenalty(songs, tau = 20) {
+    async function pickWithRecencyPenalty(songs, tau = 50) {
       const list = Array.isArray(songs)
         ? songs.filter(Boolean)
         : Array.from(songs || []).filter(Boolean);
       if (!list.length) return null;
-      if (!Number.isFinite(tau) || tau <= 0) tau = 20;
+      if (!Number.isFinite(tau) || tau <= 0) tau = 50;
       const pickByWeights = (items, weights) => {
         const total = weights.reduce((sum, w) => sum + (Number.isFinite(w) ? w : 0), 0);
         if (!Number.isFinite(total) || total <= 0) {
@@ -1493,9 +1494,44 @@
         }
         return items[items.length - 1] ?? null;
       };
+      const normalizeWeights = (weights) => {
+        const safe = (weights || []).map((w) => {
+          const n = Number(w);
+          return Number.isFinite(n) && n > 0 ? n : 0;
+        });
+        const total = safe.reduce((sum, w) => sum + w, 0);
+        if (!Number.isFinite(total) || total <= 0) {
+          const n = safe.length;
+          if (n <= 0) return [];
+          const uniform = 1 / n;
+          return safe.map(() => uniform);
+        }
+        const normalized = safe.map((w) => w / total);
+        if (normalized.length > 0) {
+          const sumWithoutLast = normalized.slice(0, -1).reduce((sum, w) => sum + w, 0);
+          normalized[normalized.length - 1] = Math.max(0, 1 - sumWithoutLast);
+          const finalSum = normalized.reduce((sum, w) => sum + w, 0);
+          if (Number.isFinite(finalSum) && finalSum > 0 && Math.abs(finalSum - 1) > 1e-12) {
+            return normalized.map((w) => w / finalSum);
+          }
+        }
+        return normalized;
+      };
       const client = await ensureSupabaseClient();
       if (!client) {
-        return pickByWeights(list, list.map(() => 1));
+        const fallbackWeights = normalizeWeights(list.map(() => 1));
+        const chosenFallback = pickByWeights(list, fallbackWeights);
+        try {
+          console.groupCollapsed(`[battle-pick] recencyPenalty fallback (no supabase), tau=${tau}`);
+          console.table(list.map((song, i) => ({
+            song: song?.name || "",
+            weight: Number((fallbackWeights[i] || 0).toFixed(6)),
+          })));
+          console.log("[battle-pick] weight_sum", fallbackWeights.reduce((sum, w) => sum + (Number(w) || 0), 0));
+          console.log("[battle-pick] chosen", chosenFallback?.name || null);
+          console.groupEnd();
+        } catch (e) {}
+        return chosenFallback;
       }
 
       const names = Array.from(new Set(list.map(s => s?.name).filter(Boolean)));
@@ -1518,14 +1554,32 @@
         }
       }
 
-      const weights = list.map(song => {
+      const rawWeights = list.map(song => {
         const name = song?.name;
         const x = playsMap.has(name) ? playsMap.get(name) : Number.POSITIVE_INFINITY;
         const safeX = Number.isFinite(x) ? Math.max(0, x) : Number.POSITIVE_INFINITY;
         const factor = safeX === Number.POSITIVE_INFINITY ? 1 : (1 - Math.exp(-safeX / tau));
         return Math.max(0, factor);
       });
-      return pickByWeights(list, weights);
+      const weights = normalizeWeights(rawWeights);
+      const chosen = pickByWeights(list, weights);
+      try {
+        console.groupCollapsed(`[battle-pick] recencyPenalty, tau=${tau}`);
+        console.table(list.map((song, i) => {
+          const name = song?.name;
+          const playsAfterLast = playsMap.has(name) ? playsMap.get(name) : null;
+          return {
+            song: name || "",
+            raw_weight: Number((rawWeights[i] || 0).toFixed(6)),
+            weight: Number((weights[i] || 0).toFixed(6)),
+            plays_after_last: playsAfterLast,
+          };
+        }));
+        console.log("[battle-pick] weight_sum", weights.reduce((sum, w) => sum + (Number(w) || 0), 0));
+        console.log("[battle-pick] chosen", chosen?.name || null);
+        console.groupEnd();
+      } catch (e) {}
+      return chosen;
     }
 
     function tickPoints() {
