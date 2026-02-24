@@ -243,6 +243,24 @@ def _clamp_shift_to_bounds(shift: int, src_min: int, src_max: int, max_bound: in
         return int(round((low + high) / 2.0))
     return int(min(high, max(low, shift)))
 
+
+def _clamp_op_origin(x: int, y: int, op_w: int, op_h: int, frame_w: int, frame_h: int) -> tuple[int, int]:
+    cx = int(round(x))
+    cy = int(round(y))
+    if frame_w > 0:
+        if op_w <= frame_w:
+            cx = max(0, min(frame_w - op_w, cx))
+        else:
+            # If an overlay is wider than frame, allow panning across full range.
+            cx = max(frame_w - op_w, min(0, cx))
+    if frame_h > 0:
+        if op_h <= frame_h:
+            cy = max(0, min(frame_h - op_h, cy))
+        else:
+            # If an overlay is taller than frame, allow panning across full range.
+            cy = max(frame_h - op_h, min(0, cy))
+    return cx, cy
+
 class OverlayRenderer:
     def __init__(self) -> None:
         self._static_key: tuple | None = None
@@ -280,6 +298,8 @@ class OverlayRenderer:
         sprite: np.ndarray,
         sprite_mask: np.ndarray,
         source_bbox: tuple[int, int, int, int],
+        frame_w: int,
+        frame_h: int,
         rot: int,
         flip_x: bool,
         flip_y: bool,
@@ -303,6 +323,17 @@ class OverlayRenderer:
             if sprite.shape[1] != dest_w or sprite.shape[0] != dest_h:
                 sprite = cv2.resize(sprite, (dest_w, dest_h), interpolation=cv2.INTER_LINEAR)
                 sprite_mask = cv2.resize(sprite_mask, (dest_w, dest_h), interpolation=cv2.INTER_NEAREST)
+            # Remove transparent padding introduced by rotate/resize so clamp uses visible bounds.
+            cropped = _crop_to_mask(sprite, sprite_mask)
+            if cropped is not None:
+                sprite, sprite_mask, (cx1, cy1, _, _) = cropped
+                tx1 += cx1
+                ty1 += cy1
+            # Re-anchor each transformed overlay to its original top-left as closely as bounds allow.
+            dx = _anchored_clamped_shift(min_x, max_x, float(x1), float(max(0, frame_w - 1)))
+            dy = _anchored_clamped_shift(min_y, max_y, float(y1), float(max(0, frame_h - 1)))
+            tx1 += int(round(dx))
+            ty1 += int(round(dy))
             return sprite, sprite_mask, tx1, ty1, alpha
 
         return sprite, sprite_mask, x1, y1, alpha
@@ -393,6 +424,7 @@ class OverlayRenderer:
         battle_entries: tuple[tuple[str, int], ...],
         scale: float,
         thick: int,
+        allow_out_of_bounds: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]] | None:
         if not battle_entries:
             return None
@@ -400,8 +432,11 @@ class OverlayRenderer:
         x_off, y_off, s_off = layout
         bs_scale = max(0.25, scale * s_off)
         bs_thick = max(1, int(thick * s_off))
-        y = max(16, int(50 * scale) + y_off)
-        x = max(8, 40 + x_off)
+        y = int(50 * scale) + y_off
+        x = 40 + x_off
+        if not allow_out_of_bounds:
+            y = max(16, y)
+            x = max(8, x)
         step = max(14, int(36 * scale * s_off))
 
         layer = np.zeros((frame_h, frame_w, 3), dtype=np.uint8)
@@ -469,6 +504,7 @@ class OverlayRenderer:
         likes_norm: Dict,
         scale: float,
         thick: int,
+        allow_out_of_bounds: bool = False,
     ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]] | None:
         x_off, y_off, s_off = layout
         likes_line = str(likes_norm.get("likes_line") or "").strip()
@@ -491,9 +527,11 @@ class OverlayRenderer:
             (text_w, text_h), _ = cv2.getTextSize(likes_line, self._font, text_scale, text_thick)
 
         text_x = int((frame_w - text_w) / 2) + x_off
-        text_x = max(8, min(frame_w - text_w - 8, text_x))
-        text_y = max(text_h + 18, int(54 * scale) + y_off)
-        text_y = min(frame_h - 8, text_y)
+        text_y = int(54 * scale) + y_off
+        if not allow_out_of_bounds:
+            text_x = max(8, min(frame_w - text_w - 8, text_x))
+            text_y = max(text_h + 18, text_y)
+            text_y = min(frame_h - 8, text_y)
 
         # Two-pass headline to reduce CPU while preserving readability.
         cv2.putText(layer, likes_line, (text_x, text_y), self._font, text_scale, (0, 0, 0), text_thick + 2, cv2.LINE_AA)
@@ -520,8 +558,10 @@ class OverlayRenderer:
                 max(180, int(frame_w * 0.72)),
             )
             bar_x1 = int((frame_w - bar_w) / 2) + x_off
-            bar_x1 = max(8, min(frame_w - bar_w - 8, bar_x1))
-            bar_x2 = min(frame_w - 8, bar_x1 + bar_w)
+            bar_x2 = bar_x1 + bar_w
+            if not allow_out_of_bounds:
+                bar_x1 = max(8, min(frame_w - bar_w - 8, bar_x1))
+                bar_x2 = min(frame_w - 8, bar_x1 + bar_w)
 
             _draw_pill(layer, bar_x1, bar_y1, bar_x2, bar_y2, (30, 41, 59), -1)
             _draw_pill(mask, bar_x1, bar_y1, bar_x2, bar_y2, 255, -1)
@@ -591,6 +631,8 @@ class OverlayRenderer:
                     sprite,
                     sprite_mask,
                     bbox,
+                    frame_w,
+                    frame_h,
                     rot,
                     flip_x,
                     flip_y,
@@ -609,6 +651,8 @@ class OverlayRenderer:
                     sprite,
                     sprite_mask,
                     bbox,
+                    frame_w,
+                    frame_h,
                     rot,
                     flip_x,
                     flip_y,
@@ -637,9 +681,18 @@ class OverlayRenderer:
     ) -> None:
         self._dynamic_ops = []
         self._dynamic_source_boxes = []
+        allow_out_of_bounds = bool(rot or flip_x or flip_y)
 
         if battle_visible:
-            battle_sprite = self._build_battle_score_sprite(frame_w, frame_h, battle_layout, battle_entries, scale, thick)
+            battle_sprite = self._build_battle_score_sprite(
+                frame_w,
+                frame_h,
+                battle_layout,
+                battle_entries,
+                scale,
+                thick,
+                allow_out_of_bounds=allow_out_of_bounds,
+            )
             if battle_sprite is not None:
                 sprite, sprite_mask, bbox = battle_sprite
                 self._dynamic_source_boxes.append(bbox)
@@ -647,6 +700,8 @@ class OverlayRenderer:
                     sprite,
                     sprite_mask,
                     bbox,
+                    frame_w,
+                    frame_h,
                     rot,
                     flip_x,
                     flip_y,
@@ -657,7 +712,15 @@ class OverlayRenderer:
                     self._dynamic_ops.append(op)
 
         if likes_visible:
-            likes_sprite = self._build_likes_sprite(frame_w, frame_h, likes_layout, likes_norm, scale, thick)
+            likes_sprite = self._build_likes_sprite(
+                frame_w,
+                frame_h,
+                likes_layout,
+                likes_norm,
+                scale,
+                thick,
+                allow_out_of_bounds=allow_out_of_bounds,
+            )
             if likes_sprite is not None:
                 sprite, sprite_mask, bbox = likes_sprite
                 self._dynamic_source_boxes.append(bbox)
@@ -665,6 +728,8 @@ class OverlayRenderer:
                     sprite,
                     sprite_mask,
                     bbox,
+                    frame_w,
+                    frame_h,
                     rot,
                     flip_x,
                     flip_y,
@@ -786,31 +851,25 @@ class OverlayRenderer:
             )
             self._dynamic_key = dynamic_key
 
-        group_shift_x, group_shift_y = 0, 0
-        if rot or flip_x or flip_y:
-            source_boxes = [*self._static_source_boxes, *self._dynamic_source_boxes]
-            group_shift_x, group_shift_y = _resolve_group_anchor_shift(
-                transform_mat,
-                source_boxes,
-                frame_w,
-                frame_h,
-            )
-            all_ops = [*self._center_ops, *self._burst_ops, *self._dynamic_ops]
-            op_union = _ops_union_bounds(all_ops)
-            if op_union is not None:
-                op_min_x, op_min_y, op_max_x, op_max_y = op_union
-                group_shift_x = _clamp_shift_to_bounds(group_shift_x, op_min_x, op_max_x, frame_w - 1)
-                group_shift_y = _clamp_shift_to_bounds(group_shift_y, op_min_y, op_max_y, frame_h - 1)
-
+        apply_independent_clamp = bool(rot or flip_x or flip_y)
         out = frame.copy()
         for sprite, sprite_mask, x, y, _ in self._center_ops:
-            _blit_opaque(out, None, sprite, sprite_mask, x + group_shift_x, y + group_shift_y)
+            ox, oy = int(x), int(y)
+            if apply_independent_clamp:
+                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+            _blit_opaque(out, None, sprite, sprite_mask, ox, oy)
 
         for sprite, sprite_mask, x, y, alpha in self._burst_ops:
-            _blend_masked(out, sprite, sprite_mask, x + group_shift_x, y + group_shift_y, alpha)
+            ox, oy = int(x), int(y)
+            if apply_independent_clamp:
+                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+            _blend_masked(out, sprite, sprite_mask, ox, oy, alpha)
 
         for sprite, sprite_mask, x, y, _ in self._dynamic_ops:
-            _blit_opaque(out, None, sprite, sprite_mask, x + group_shift_x, y + group_shift_y)
+            ox, oy = int(x), int(y)
+            if apply_independent_clamp:
+                ox, oy = _clamp_op_origin(ox, oy, sprite.shape[1], sprite.shape[0], frame_w, frame_h)
+            _blit_opaque(out, None, sprite, sprite_mask, ox, oy)
 
         return out
 

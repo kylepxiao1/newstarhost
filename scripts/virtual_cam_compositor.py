@@ -21,8 +21,8 @@ from pyvirtualcam import PixelFormat
 
 API_BASE = os.environ.get("API_BASE", "https://newstarhost.fly.dev") # http://127.0.0.1:8000
 DEFAULT_CAM_INDEX = int(os.environ.get("INPUT_CAM_INDEX", -1))  # -1 => auto-pick first working camera
-DEFAULT_WIDTH = int(os.environ.get("CAM_WIDTH", 1280))
-DEFAULT_HEIGHT = int(os.environ.get("CAM_HEIGHT", 720))
+DEFAULT_WIDTH = int(os.environ.get("CAM_WIDTH", 1920))
+DEFAULT_HEIGHT = int(os.environ.get("CAM_HEIGHT", 1080))
 FPS = int(os.environ.get("CAM_FPS", 30))
 POLL_INTERVAL = float(os.environ.get("STATE_POLL_SECS", 5.0))
 LIKE_OVERLAY_POLL_INTERVAL = float(os.environ.get("LIKE_OVERLAY_POLL_SECS", "5.0"))
