@@ -304,6 +304,7 @@ class OverlayRenderer:
         flip_x: bool,
         flip_y: bool,
         transform_mat: np.ndarray,
+        anchor_center: bool = False,
         alpha: float = 1.0,
     ) -> tuple[np.ndarray, np.ndarray, int, int, float] | None:
         if sprite.size == 0 or sprite_mask.size == 0:
@@ -329,9 +330,21 @@ class OverlayRenderer:
                 sprite, sprite_mask, (cx1, cy1, _, _) = cropped
                 tx1 += cx1
                 ty1 += cy1
-            # Re-anchor each transformed overlay to its original top-left as closely as bounds allow.
-            dx = _anchored_clamped_shift(min_x, max_x, float(x1), float(max(0, frame_w - 1)))
-            dy = _anchored_clamped_shift(min_y, max_y, float(y1), float(max(0, frame_h - 1)))
+
+            if anchor_center:
+                src_cx = 0.5 * float(source_bbox[0] + source_bbox[2])
+                src_cy = 0.5 * float(source_bbox[1] + source_bbox[3])
+                t_cx = 0.5 * float(min_x + max_x)
+                t_cy = 0.5 * float(min_y + max_y)
+                target_min_x = float(min_x + (src_cx - t_cx))
+                target_min_y = float(min_y + (src_cy - t_cy))
+            else:
+                # Re-anchor transformed overlay to its original top-left as closely as bounds allow.
+                target_min_x = float(x1)
+                target_min_y = float(y1)
+
+            dx = _anchored_clamped_shift(min_x, max_x, target_min_x, float(max(0, frame_w - 1)))
+            dy = _anchored_clamped_shift(min_y, max_y, target_min_y, float(max(0, frame_h - 1)))
             tx1 += int(round(dx))
             ty1 += int(round(dy))
             return sprite, sprite_mask, tx1, ty1, alpha
@@ -346,7 +359,7 @@ class OverlayRenderer:
         scale: float,
         line_step: int,
     ) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int]] | None:
-        x_off, y_off, s_off = layout
+        x_off, _y_off, s_off = layout
         if frame_w <= 0 or frame_h <= 0:
             return None
         center_x = max(0, min(frame_w - 1, (frame_w // 2) + x_off))
@@ -365,7 +378,7 @@ class OverlayRenderer:
         sprite_mask = np.zeros((frame_h, width), dtype=np.uint8)
         local_x = center_x - x1
         cycle = max(1, dash + gap)
-        y = y_off % cycle
+        y = 0
         while y < frame_h:
             y2 = min(frame_h - 1, y + dash)
             cv2.line(sprite, (local_x, y), (local_x, y2), (255, 255, 255), white_thick, cv2.LINE_8)
@@ -637,10 +650,12 @@ class OverlayRenderer:
                     flip_x,
                     flip_y,
                     transform_mat,
+                    anchor_center=True,
                     alpha=1.0,
                 )
                 if op is not None:
-                    self._center_ops.append(op)
+                    y_shift = int(center_layout[1])
+                    self._center_ops.append((op[0], op[1], int(op[2]), int(op[3]) + y_shift, op[4]))
 
         if burst_visible:
             burst_sprite = self._build_burst_sprite(frame_w, frame_h, burst_layout)

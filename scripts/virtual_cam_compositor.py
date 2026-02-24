@@ -13,10 +13,7 @@ import httpx
 import numpy as np
 import pyvirtualcam
 import websockets
-try:
-    from overlay_renderer import draw_overlay as optimized_draw_overlay
-except Exception:
-    from scripts.overlay_renderer import draw_overlay as optimized_draw_overlay
+from overlay_renderer import draw_overlay as optimized_draw_overlay
 from pyvirtualcam import PixelFormat
 
 API_BASE = os.environ.get("API_BASE", "https://newstarhost.fly.dev") # http://127.0.0.1:8000
