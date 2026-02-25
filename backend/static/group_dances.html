@@ -473,6 +473,13 @@
       }
       await loadSettings();
       const bellUrl = getRoleUrl("bell");
+      const applauseUrl = getRoleUrl("applause");
+      const backgroundUrl = getRoleUrl("background");
+      // Prime local cache up-front so playback can survive transient network loss.
+      window.PageShared?.primeAudioCache?.(url);
+      if (bellUrl) window.PageShared?.primeAudioCache?.(bellUrl);
+      if (applauseUrl) window.PageShared?.primeAudioCache?.(applauseUrl);
+      if (backgroundUrl) window.PageShared?.primeAudioCache?.(backgroundUrl);
       api("/songs/play", {method:"POST", body:{target: currentTab, url, context: "group dances"}}).catch(()=>{});
       if (!songsState) songsState = {};
       songsState.current = url;

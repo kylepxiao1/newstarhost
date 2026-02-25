@@ -23,6 +23,84 @@
     return Math.max(0, Math.min(1, v / 200));
   }
 
+  var AUDIO_CACHE_NAME = "newstarhost-song-cache-v1";
+  var AUDIO_BLOB_URL_LIMIT = 80;
+  var _audioBlobUrlBySource = Object.create(null);
+  var _audioBlobUrlOrder = [];
+
+  function toAbsoluteUrl(url) {
+    try {
+      return new URL(String(url || ""), window.location.href).toString();
+    } catch (e) {
+      return String(url || "");
+    }
+  }
+
+  function isCacheableAudioUrl(absUrl) {
+    if (!absUrl || typeof caches === "undefined") return false;
+    if (!/^https?:/i.test(absUrl)) return false;
+    try {
+      var parsed = new URL(absUrl);
+      return parsed.origin === window.location.origin;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function rememberAudioBlobUrl(absUrl, blobUrl) {
+    if (!absUrl || !blobUrl) return;
+    if (_audioBlobUrlBySource[absUrl]) return;
+    _audioBlobUrlBySource[absUrl] = blobUrl;
+    _audioBlobUrlOrder.push(absUrl);
+    if (_audioBlobUrlOrder.length <= AUDIO_BLOB_URL_LIMIT) return;
+    var evictKey = _audioBlobUrlOrder.shift();
+    if (!evictKey) return;
+    var evictUrl = _audioBlobUrlBySource[evictKey];
+    delete _audioBlobUrlBySource[evictKey];
+    if (evictUrl && typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+      try { URL.revokeObjectURL(evictUrl); } catch (e) {}
+    }
+  }
+
+  async function resolveAudioUrlFromCache(url) {
+    var absUrl = toAbsoluteUrl(url);
+    if (!isCacheableAudioUrl(absUrl)) return String(url || "");
+    var remembered = _audioBlobUrlBySource[absUrl];
+    if (remembered) return remembered;
+    try {
+      var cache = await caches.open(AUDIO_CACHE_NAME);
+      var resp = await cache.match(absUrl);
+      if (!resp || !resp.ok) return absUrl;
+      var blob = await resp.blob();
+      if (!blob || !blob.size) return absUrl;
+      var blobUrl = URL.createObjectURL(blob);
+      rememberAudioBlobUrl(absUrl, blobUrl);
+      return blobUrl;
+    } catch (e) {
+      return absUrl;
+    }
+  }
+
+  async function cacheAudioUrl(url) {
+    var absUrl = toAbsoluteUrl(url);
+    if (!isCacheableAudioUrl(absUrl)) return false;
+    try {
+      var cache = await caches.open(AUDIO_CACHE_NAME);
+      var hit = await cache.match(absUrl);
+      if (hit && hit.ok) return true;
+      var resp = await fetch(absUrl, { credentials: "same-origin" });
+      if (!resp || !resp.ok) return false;
+      await cache.put(absUrl, resp.clone());
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function primeAudioCache(url) {
+    cacheAudioUrl(url).catch(function () {});
+  }
+
   function getGlobalAudioPlayer() {
     if (window.top && window.top !== window) {
       var gp = window.top.document.getElementById("globalPlayer");
@@ -203,19 +281,33 @@
     if (!cfg || !cfg.url) return;
     var player = cfg.player || getGlobalAudioPlayer();
     if (!player) return;
-    try { player.pause(); } catch (e) {}
-    player.onended = null;
-    player.loop = false;
-    player.src = cfg.url;
-    player.currentTime = 0;
-    var songVol = 1;
-    if (typeof cfg.getSongVolume === "function") {
-      songVol = normalizeVolume(cfg.getSongVolume(cfg.url));
-    }
-    player.volume = songVol;
-    if (typeof cfg.setCurrent === "function") {
-      cfg.setCurrent(cfg.url);
-    }
+    var originalUrl = String(cfg.url || "");
+    var loadToken = String(Date.now()) + ":" + String(Math.random());
+    try { player.dataset.audioLoadToken = loadToken; } catch (e) {}
+    resolveAudioUrlFromCache(originalUrl)
+      .then(function (playUrl) {
+        try {
+          if (player.dataset.audioLoadToken !== loadToken) return;
+          try { player.pause(); } catch (e) {}
+          player.onended = null;
+          player.loop = false;
+          player.src = playUrl || originalUrl;
+          try { player.dataset.originalSrc = originalUrl; } catch (e) {}
+          player.currentTime = 0;
+          var songVol = 1;
+          if (typeof cfg.getSongVolume === "function") {
+            songVol = normalizeVolume(cfg.getSongVolume(originalUrl));
+          }
+          player.volume = songVol;
+          if (typeof cfg.setCurrent === "function") {
+            cfg.setCurrent(originalUrl);
+          }
+        } catch (e) {}
+      })
+      .catch(function () {})
+      .finally(function () {
+        primeAudioCache(originalUrl);
+      });
   }
 
   function startAudio(cfg) {
@@ -237,41 +329,53 @@
     var fadeOut = isBellOrApplause ? false : (opts.fadeOut ?? cfg.settingsFadeOut ?? true);
 
     var doPlay = function () {
-      try { player.pause(); } catch (e) {}
-      player.loop = !!opts.loop;
-      player.onended = function () {
-        if (typeof opts.onEnd === "function") {
-          opts.onEnd();
-          return;
-        }
-        if (typeof cfg.onEndedDefault === "function") {
-          cfg.onEndedDefault({player: player, url: url, opts: opts});
-        }
-      };
-      player.src = url;
-      if (!opts.isRole && typeof cfg.onTrackPlay === "function") {
-        cfg.onTrackPlay({player: player, url: url, opts: opts});
-      }
-      if (fadeIn) {
-        var vol = 0.0;
-        player.volume = 0;
-        var p1 = player.play();
-        if (p1 && typeof p1.catch === "function") p1.catch(function () {});
-        var steps = 10;
-        var stepMs = 50;
-        var inc = targetVolume / steps;
-        var count = 0;
-        var intv = setInterval(function () {
-          count += 1;
-          vol = Math.min(targetVolume, vol + inc);
-          player.volume = vol;
-          if (count >= steps) clearInterval(intv);
-        }, stepMs);
-      } else {
-        player.volume = targetVolume;
-        var p2 = player.play();
-        if (p2 && typeof p2.catch === "function") p2.catch(function () {});
-      }
+      var originalUrl = String(url || "");
+      var loadToken = String(Date.now()) + ":" + String(Math.random());
+      try { player.dataset.audioLoadToken = loadToken; } catch (e) {}
+      resolveAudioUrlFromCache(originalUrl)
+        .then(function (playUrl) {
+          if (player.dataset.audioLoadToken !== loadToken) return;
+          try { player.pause(); } catch (e) {}
+          player.loop = !!opts.loop;
+          player.onended = function () {
+            if (typeof opts.onEnd === "function") {
+              opts.onEnd();
+              return;
+            }
+            if (typeof cfg.onEndedDefault === "function") {
+              cfg.onEndedDefault({player: player, url: originalUrl, opts: opts});
+            }
+          };
+          player.src = playUrl || originalUrl;
+          try { player.dataset.originalSrc = originalUrl; } catch (e) {}
+          if (!opts.isRole && typeof cfg.onTrackPlay === "function") {
+            cfg.onTrackPlay({player: player, url: originalUrl, opts: opts});
+          }
+          if (fadeIn) {
+            var vol = 0.0;
+            player.volume = 0;
+            var p1 = player.play();
+            if (p1 && typeof p1.catch === "function") p1.catch(function () {});
+            var steps = 10;
+            var stepMs = 50;
+            var inc = targetVolume / steps;
+            var count = 0;
+            var intv = setInterval(function () {
+              count += 1;
+              vol = Math.min(targetVolume, vol + inc);
+              player.volume = vol;
+              if (count >= steps) clearInterval(intv);
+            }, stepMs);
+          } else {
+            player.volume = targetVolume;
+            var p2 = player.play();
+            if (p2 && typeof p2.catch === "function") p2.catch(function () {});
+          }
+        })
+        .catch(function () {})
+        .finally(function () {
+          primeAudioCache(originalUrl);
+        });
     };
 
     if (fadeOut && !opts.skipFadeOut && !player.paused && player.src) {
@@ -315,5 +419,7 @@
     connectWsStatus: connectWsStatus,
     queueSongPaused: queueSongPaused,
     startAudio: startAudio,
+    resolveAudioUrlFromCache: resolveAudioUrlFromCache,
+    primeAudioCache: primeAudioCache,
   };
 })();

@@ -439,8 +439,9 @@
 
     function persistAudio(player) {
       if (!player) return;
+      const canonicalSrc = (player.dataset && player.dataset.originalSrc) ? player.dataset.originalSrc : (player.src || "");
       const payload = {
-        src: player.src || "",
+        src: canonicalSrc,
         t: player.currentTime || 0,
         paused: player.paused,
         loop: player.loop,
@@ -454,7 +455,17 @@
       let saved = null;
       try { saved = JSON.parse(localStorage.getItem("globalAudioState") || "null"); } catch (e) {}
       if (!saved || !saved.src) return;
-      player.src = saved.src;
+      const src = String(saved.src || "");
+      const applySrc = (resolved) => {
+        player.src = resolved || src;
+        try { player.dataset.originalSrc = src; } catch (e) {}
+      };
+      if (window.PageShared?.resolveAudioUrlFromCache) {
+        window.PageShared.resolveAudioUrlFromCache(src).then(applySrc).catch(() => applySrc(src));
+        window.PageShared.primeAudioCache?.(src);
+      } else {
+        applySrc(src);
+      }
       player.loop = !!saved.loop;
       player.volume = typeof saved.volume === "number" ? saved.volume : 1;
       player.currentTime = saved.t || 0;

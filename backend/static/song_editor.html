@@ -299,13 +299,23 @@
     return window._sharedAudio;
   }
 
-  function playSelected() {
+  async function playSelected() {
     const id = document.getElementById("songList").value;
     if (!id) return;
     const song = songs[id] || {};
     if (!song.url) return;
     const audio = getAudioPlayer();
-    audio.src = song.url;
+    let playUrl = song.url;
+    if (window.PageShared?.resolveAudioUrlFromCache) {
+      try {
+        playUrl = await window.PageShared.resolveAudioUrlFromCache(song.url);
+      } catch (e) {
+        playUrl = song.url;
+      }
+      window.PageShared.primeAudioCache?.(song.url);
+    }
+    audio.src = playUrl;
+    try { audio.dataset.originalSrc = song.url; } catch (e) {}
     audio.volume = volumeToScalar(song.volume);
     audio.loop = false;
     audio.play().catch(()=>{});
