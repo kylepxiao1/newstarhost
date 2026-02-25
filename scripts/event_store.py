@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import random
 import re
 import time
@@ -164,7 +165,19 @@ class SupabaseEventStore:
             )
 
     def _retry_delay(self, attempt_idx: int) -> float:
-        delay = min(self._post_retry_base_seconds * (2 ** max(0, attempt_idx)), self._post_retry_max_seconds)
+        attempt = max(0, int(attempt_idx))
+        base_delay = max(0.1, float(self._post_retry_base_seconds))
+        max_delay = max(base_delay, float(self._post_retry_max_seconds))
+        if max_delay <= base_delay:
+            delay = max_delay
+        else:
+            # Cap growth before exponentiation so very large retry counters
+            # cannot overflow float conversion.
+            max_growth_attempt = max(0, int(math.ceil(math.log2(max_delay / base_delay))))
+            if attempt >= max_growth_attempt:
+                delay = max_delay
+            else:
+                delay = min(base_delay * (2 ** attempt), max_delay)
         jitter = random.uniform(0.8, 1.2)
         return max(0.1, delay * jitter)
 

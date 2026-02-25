@@ -82,22 +82,69 @@ run_shard_loop() {
   done
 }
 
-shard1_usernames="${TIKTOK_USERNAMES_SET_1:-wildcard_boys}"
-shard2_usernames="${TIKTOK_USERNAMES_SET_2:-afterdark_ns,valentinananaaaa,cardin_v_}"
-shard3_usernames="${TIKTOK_USERNAMES_SET_3:-snyki.live,sv_cloveris,superv_sv,visiondance.leo,millarboys233,primalkings_officialjwm,sunsetnova__,bdcuphedc3,play.zr4,play.hero8,vfm.aero,chaos001inc}"
+default_usernames_for_shard() {
+  local shard_idx="$1"
+  case "${shard_idx}" in
+    1) printf '%s\n' "wildcard_boys" ;;
+    2) printf '%s\n' "afterdark_ns,valentinananaaaa,cardin_v_" ;;
+    3) printf '%s\n' "snyki.live,sv_cloveris,superv_sv,visiondance.leo,millarboys233,primalkings_officialjwm,sunsetnova__,bdcuphedc3,play.zr4,play.hero8,vfm.aero,chaos001inc" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
 
-shard1_id="${LISTENER_HEARTBEAT_ID_SET_1:-listener-set-1}"
-shard2_id="${LISTENER_HEARTBEAT_ID_SET_2:-listener-set-2}"
-shard3_id="${LISTENER_HEARTBEAT_ID_SET_3:-listener-set-3}"
+collect_shard_indices() {
+  local var_name=""
+  local shard_idx=""
+  local found=()
+  while IFS= read -r var_name; do
+    shard_idx="${var_name#TIKTOK_USERNAMES_SET_}"
+    if [[ "${shard_idx}" =~ ^[0-9]+$ ]]; then
+      found+=("${shard_idx}")
+    fi
+  done < <(compgen -A variable TIKTOK_USERNAMES_SET_)
+
+  # Keep existing behavior when no shard env vars are defined.
+  if [ "${#found[@]}" -eq 0 ]; then
+    found=(1 2 3)
+  fi
+
+  printf '%s\n' "${found[@]}" | sort -n -u
+}
 
 pids=()
+started=0
+started_tags=()
 
-run_shard_loop "listener-set-1" "${shard1_usernames}" "${shard1_id}" &
-pids+=("$!")
-run_shard_loop "listener-set-2" "${shard2_usernames}" "${shard2_id}" &
-pids+=("$!")
-run_shard_loop "listener-set-3" "${shard3_usernames}" "${shard3_id}" &
-pids+=("$!")
+while IFS= read -r shard_idx; do
+  [ -n "${shard_idx}" ] || continue
+
+  usernames_var="TIKTOK_USERNAMES_SET_${shard_idx}"
+  heartbeat_var="LISTENER_HEARTBEAT_ID_SET_${shard_idx}"
+  shard_tag="listener-set-${shard_idx}"
+
+  usernames="${!usernames_var:-}"
+  if [ -z "${usernames}" ]; then
+    usernames="$(default_usernames_for_shard "${shard_idx}")"
+  fi
+  heartbeat_id="${!heartbeat_var:-listener-set-${shard_idx}}"
+
+  if [ -z "${usernames}" ] || [ -z "${heartbeat_id}" ]; then
+    log "Skipping ${shard_tag}: usernames or heartbeat_id is empty"
+    continue
+  fi
+
+  run_shard_loop "${shard_tag}" "${usernames}" "${heartbeat_id}" &
+  pids+=("$!")
+  started=$((started + 1))
+  started_tags+=("${shard_tag}:${heartbeat_id}")
+done < <(collect_shard_indices)
+
+if [ "${started}" -le 0 ]; then
+  log "No listener shards started; configure TIKTOK_USERNAMES_SET_<N>."
+  exit 1
+fi
+
+log "Started ${started} listener shard manager(s): ${started_tags[*]}"
 
 cleanup() {
   log "Stopping listener shard processes"
