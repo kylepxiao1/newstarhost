@@ -129,8 +129,7 @@
     </section>
 
     <div class="row">
-      <button onclick="saveSettings()">Save Settings</button>
-      <span id="saveStatusText" class="status"></span>
+      <span id="saveStatusText" class="status">Auto-save enabled</span>
     </div>
   </main>
 
@@ -142,6 +141,10 @@
     const DIGITS = ["1","2","3","4","5","6","7","8","9","0"];
     let settings = { fade_in: true, fade_out: true, loop_same_song_after_finish: false, hotkeys: {} };
     let hotkeyMap = {};
+    let autoSaveTimer = null;
+    let autoSaveInFlight = false;
+    let autoSaveQueued = false;
+    let bindingsInitialized = false;
 
     function getRoleUrl(role) {
       const entry = Object.values(songsLibrary || {}).find(s => (s.roles || []).includes(role));
@@ -198,6 +201,7 @@
           sel.appendChild(opt);
         });
         sel.value = settings.hotkeys?.[key] || "";
+        sel.onchange = () => scheduleAutoSave(150);
         tdSelect.appendChild(sel);
         const tdPreview = document.createElement("td");
         const btn = document.createElement("button");
@@ -225,9 +229,39 @@
       if (fadeOut) fadeOut.checked = !!settings.fade_out;
       if (practiceMode) practiceMode.checked = !!settings.loop_same_song_after_finish;
       renderHotkeys();
+      initAutoSaveBindings();
+    }
+
+    function scheduleAutoSave(delayMs = 200) {
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(() => {
+        autoSaveTimer = null;
+        void saveSettings();
+      }, Math.max(0, Number(delayMs) || 0));
+    }
+
+    function setSaveStatus(text) {
+      const status = document.getElementById("saveStatusText");
+      if (status) status.textContent = text;
+    }
+
+    function initAutoSaveBindings() {
+      if (bindingsInitialized) return;
+      bindingsInitialized = true;
+      const fadeIn = document.getElementById("fadeInToggle");
+      const fadeOut = document.getElementById("fadeOutToggle");
+      const practiceMode = document.getElementById("practiceModeToggle");
+      if (fadeIn) fadeIn.addEventListener("change", () => scheduleAutoSave(120));
+      if (fadeOut) fadeOut.addEventListener("change", () => scheduleAutoSave(120));
+      if (practiceMode) practiceMode.addEventListener("change", () => scheduleAutoSave(80));
     }
 
     async function saveSettings() {
+      if (autoSaveInFlight) {
+        autoSaveQueued = true;
+        return;
+      }
+      autoSaveInFlight = true;
       const fadeIn = document.getElementById("fadeInToggle")?.checked ?? true;
       const fadeOut = document.getElementById("fadeOutToggle")?.checked ?? true;
       const practiceMode = document.getElementById("practiceModeToggle")?.checked === true;
@@ -243,21 +277,26 @@
         loop_same_song_after_finish: practiceMode,
         hotkeys,
       };
-      const status = document.getElementById("saveStatusText");
-      if (status) status.textContent = "Saving...";
+      setSaveStatus("Saving...");
       try {
         const res = await api("/settings/data", {method:"POST", body: payload});
         await res.json();
         window.PageShared.writePracticeModeLocal(practiceMode);
-        if (status) status.textContent = "Saved";
+        settings = payload;
+        hotkeyMap = hotkeys;
+        setSaveStatus("Saved");
+        window.PageShared.setPracticeModeHeader(practiceMode === true);
         if (window.top && window.top !== window) {
           window.top.postMessage({type:"settings-updated"}, "*");
         }
-        setTimeout(() => {
-          window.location.reload();
-        }, 200);
       } catch (e) {
-        if (status) status.textContent = "Save failed";
+        setSaveStatus("Save failed");
+      } finally {
+        autoSaveInFlight = false;
+        if (autoSaveQueued) {
+          autoSaveQueued = false;
+          scheduleAutoSave(80);
+        }
       }
     }
 
