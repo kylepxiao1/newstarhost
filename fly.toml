@@ -38,16 +38,16 @@ primary_region = 'lax'
 
 [[vm]]
   processes = ['discord']
-  memory = '1gb'
+  memory = '768mb'
   cpus = 1
-  memory_mb = 1024
+  memory_mb = 768
 
 [[vm]]
   processes = ['listener']
-  memory = '1gb'
+  memory = '2gb'
   cpus = 2
-  memory_mb = 1024
+  memory_mb = 2048
 
 [[restart]]
   policy = 'always'
-  processes = ['listener']
+  processes = ['listener', 'discord']
