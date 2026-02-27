@@ -1229,6 +1229,7 @@ class PointsRequest(BaseModel):
 
 class StreamNoteRequest(BaseModel):
     host: str = ""
+    stream_date: str = ""
     group: str = ""
     outfit_theme: str = ""
     members_present: List[str] = []
@@ -1317,6 +1318,14 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
     now_dt = datetime.now(timezone.utc)
     iso_ts = now_dt.isoformat()
     unix_ts = int(now_dt.timestamp())
+    stream_date_raw = (body.stream_date or "").strip()
+    if stream_date_raw:
+        try:
+            stream_date_value = datetime.strptime(stream_date_raw, "%Y-%m-%d").date().isoformat()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "stream_date must be in YYYY-MM-DD format."}, status_code=400)
+    else:
+        stream_date_value = now_dt.date().isoformat()
     stream_format_rows, stream_format_err = _parse_stream_format_jsonl(body.stream_format)
     if stream_format_err:
         return JSONResponse({"ok": False, "error": stream_format_err}, status_code=400)
@@ -1333,6 +1342,7 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
     row = {
         "iso_ts": iso_ts,
         "unix_ts": unix_ts,
+        "stream_date": stream_date_value,
         "host": (body.host or "").strip(),
         "group_name": (body.group or "").strip(),
         "outfit_theme": (body.outfit_theme or "").strip(),

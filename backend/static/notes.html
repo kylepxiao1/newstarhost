@@ -174,6 +174,11 @@
         </div>
 
         <div class="field">
+          <label for="streamDateInput">Stream Date</label>
+          <input id="streamDateInput" type="date">
+        </div>
+
+        <div class="field">
           <label for="groupSelect">Group</label>
           <select id="groupSelect"></select>
         </div>
@@ -262,6 +267,14 @@
       const host = getCookie(HOST_COOKIE_KEY);
       const streamFormat = getCookie(STREAM_FORMAT_COOKIE_KEY);
       if (host) document.getElementById("hostInput").value = host;
+      const streamDateInput = document.getElementById("streamDateInput");
+      if (streamDateInput && !streamDateInput.value) {
+        const now = new Date();
+        const year = now.getFullYear();
+        const month = String(now.getMonth() + 1).padStart(2, "0");
+        const day = String(now.getDate()).padStart(2, "0");
+        streamDateInput.value = `${year}-${month}-${day}`;
+      }
       loadStreamSegmentsFromCookie(streamFormat);
       renderStreamSegments();
     }
@@ -604,6 +617,7 @@
       }
       const body = {
         host: document.getElementById("hostInput").value.trim(),
+        stream_date: document.getElementById("streamDateInput").value.trim(),
         group: document.getElementById("groupSelect").value.trim(),
         outfit_theme: document.getElementById("outfitThemeInput").value.trim(),
         members_present: selectedMembers(),
