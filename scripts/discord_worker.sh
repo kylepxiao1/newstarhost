@@ -27,6 +27,8 @@ HEARTBEAT_WATCHDOG_CMD="${LISTENER_HEARTBEAT_WATCHDOG_CMD:-python /app/scripts/l
 HEARTBEAT_WATCHDOG_ENABLED="${LISTENER_HEARTBEAT_WATCHDOG_ENABLED:-1}"
 LISTENER_HEARTBEAT_INTERVAL_SECONDS="${LISTENER_HEARTBEAT_INTERVAL_SECONDS:-60}"
 TRENDBOT_ENV_FILE="${TRENDBOT_ENV_FILE:-/app/app.env}"
+REMINDER_CMD="${WILDCARDZ_REMINDER_CMD:-python /app/scripts/reminder_bot.py}"
+REMINDER_ENABLED="${WILDCARDZ_REMINDER_ENABLED:-1}"
 
 log() {
   printf '%s [discord] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$*"
@@ -93,6 +95,7 @@ trendbot_loop() {
 trendbot_pid=""
 verify_pid=""
 watchdog_pid=""
+reminder_pid=""
 
 shutdown_children() {
   log "Shutting down discord worker children"
@@ -104,6 +107,9 @@ shutdown_children() {
   fi
   if [ -n "${watchdog_pid}" ] && kill -0 "${watchdog_pid}" 2>/dev/null; then
     kill "${watchdog_pid}" 2>/dev/null || true
+  fi
+  if [ -n "${reminder_pid}" ] && kill -0 "${reminder_pid}" 2>/dev/null; then
+    kill "${reminder_pid}" 2>/dev/null || true
   fi
   wait || true
 }
@@ -126,9 +132,24 @@ else
   log "Listener heartbeat watchdog disabled (LISTENER_HEARTBEAT_WATCHDOG_ENABLED=${HEARTBEAT_WATCHDOG_ENABLED})"
 fi
 
+if [ "${REMINDER_ENABLED}" = "1" ] || [ "${REMINDER_ENABLED}" = "true" ]; then
+  if [ -z "${WILDCARDZ_CALENDAR_ID:-}" ] || [ -z "${WILDCARDZ_CALENDAR_API_KEY:-}" ]; then
+    log "Wildcardz reminder bot not started (missing WILDCARDZ_CALENDAR_ID or WILDCARDZ_CALENDAR_API_KEY)"
+  else
+    log "Starting Wildcardz reminder bot: ${REMINDER_CMD}"
+    bash -lc "${REMINDER_CMD}" &
+    reminder_pid=$!
+  fi
+else
+  log "Wildcardz reminder bot disabled (WILDCARDZ_REMINDER_ENABLED=${REMINDER_ENABLED})"
+fi
+
 pids=("${trendbot_pid}" "${verify_pid}")
 if [ -n "${watchdog_pid}" ]; then
   pids+=("${watchdog_pid}")
+fi
+if [ -n "${reminder_pid}" ]; then
+  pids+=("${reminder_pid}")
 fi
 
 set +e

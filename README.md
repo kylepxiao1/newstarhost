@@ -163,13 +163,20 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
 - `fly.toml` runs:
   - `app` process: backend + `scripts/s3_sync.sh`
   - `discord` process: `scripts/discord_worker.sh` (separate process group)
-    This worker runs both:
-    an internal trendbot loop and `scripts/discord_verify_bot.py`.
+    This worker runs:
+    an internal trendbot loop, `scripts/discord_verify_bot.py`,
+    and `scripts/reminder_bot.py` (daily Wildcardz calendar reminder).
 - The `/app/media` Fly volume is scoped to `app` machines only.
 - Trendbot defaults (inside `scripts/discord_worker.sh`):
   - `TRENDBOT_INTERVAL=43200` (12 hours)
   - `TRENDBOT_CMD='python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --api-max-attempts 5 --supabase-min-velocity 100'`
 - Optional env file for trendbot: `TRENDBOT_ENV_FILE` (default `/app/app.env`).
+- Wildcardz reminder env:
+  - Required: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
+  - Defaults: `WILDCARDZ_REMINDER_TIMEZONE=America/Denver`, `WILDCARDZ_REMINDER_HOUR=12`, `WILDCARDZ_REMINDER_MINUTE=0`
+  - Event name match (case/whitespace-insensitive): `WILDCARDZ_REMINDER_EVENT_NAME=Wildcardz Live`
+  - Webhook (default set in script): `WILDCARDZ_REMINDER_WEBHOOK=https://discord.com/api/webhooks/1476419365741138041/Sp6yo-J4I6bJvvinZnALFClmDTMAg4Aowkk_YRjW60UWt3niUKeF3IG6O5PrH6YXUOEp`
+  - Optional toggles: `WILDCARDZ_REMINDER_ENABLED=1`, `WILDCARDZ_REMINDER_SEND_IF_NONE=0`
 - Scale process groups explicitly:
 ```powershell
 fly scale count app=1 listener=1 discord=1 -a newstarhost
