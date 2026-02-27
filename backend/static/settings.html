@@ -114,6 +114,20 @@
     </section>
 
     <section>
+      <h2>Display Background Timer</h2>
+      <div class="row">
+        <label class="switch">
+          <input type="checkbox" id="displayBackgroundTimerToggle">
+          <span class="slider"></span>
+        </label>
+        <span>Enabled</span>
+      </div>
+      <div class="row">
+        <span class="status">Shows a draggable background-song timestamp box on Group Dances and Solo Dances pages.</span>
+      </div>
+    </section>
+
+    <section>
       <h2>Bind Hotkeys</h2>
       <div class="row" style="margin-bottom:12px;">
         <span class="status">Map number keys to role SFX.</span>
@@ -139,7 +153,7 @@
     const api = window.PageShared.api;
     const ROLE_OPTIONS = ["", "bell", "applause", "attention", "background", "win", "mvp", "closing"];
     const DIGITS = ["1","2","3","4","5","6","7","8","9","0"];
-    let settings = { fade_in: true, fade_out: true, loop_same_song_after_finish: false, hotkeys: {} };
+    let settings = { fade_in: true, fade_out: true, loop_same_song_after_finish: false, display_background_timer: false, hotkeys: {} };
     let hotkeyMap = {};
     let autoSaveTimer = null;
     let autoSaveInFlight = false;
@@ -225,9 +239,11 @@
       const fadeIn = document.getElementById("fadeInToggle");
       const fadeOut = document.getElementById("fadeOutToggle");
       const practiceMode = document.getElementById("practiceModeToggle");
+      const displayBackgroundTimer = document.getElementById("displayBackgroundTimerToggle");
       if (fadeIn) fadeIn.checked = !!settings.fade_in;
       if (fadeOut) fadeOut.checked = !!settings.fade_out;
       if (practiceMode) practiceMode.checked = !!settings.loop_same_song_after_finish;
+      if (displayBackgroundTimer) displayBackgroundTimer.checked = !!settings.display_background_timer;
       renderHotkeys();
       initAutoSaveBindings();
     }
@@ -251,9 +267,11 @@
       const fadeIn = document.getElementById("fadeInToggle");
       const fadeOut = document.getElementById("fadeOutToggle");
       const practiceMode = document.getElementById("practiceModeToggle");
+      const displayBackgroundTimer = document.getElementById("displayBackgroundTimerToggle");
       if (fadeIn) fadeIn.addEventListener("change", () => scheduleAutoSave(120));
       if (fadeOut) fadeOut.addEventListener("change", () => scheduleAutoSave(120));
       if (practiceMode) practiceMode.addEventListener("change", () => scheduleAutoSave(80));
+      if (displayBackgroundTimer) displayBackgroundTimer.addEventListener("change", () => scheduleAutoSave(80));
     }
 
     async function saveSettings() {
@@ -265,6 +283,7 @@
       const fadeIn = document.getElementById("fadeInToggle")?.checked ?? true;
       const fadeOut = document.getElementById("fadeOutToggle")?.checked ?? true;
       const practiceMode = document.getElementById("practiceModeToggle")?.checked === true;
+      const displayBackgroundTimer = document.getElementById("displayBackgroundTimerToggle")?.checked === true;
       const hotkeys = {};
       document.querySelectorAll("#hotkeyRows select").forEach(sel => {
         const key = sel.dataset.key;
@@ -275,6 +294,7 @@
         fade_in: fadeIn,
         fade_out: fadeOut,
         loop_same_song_after_finish: practiceMode,
+        display_background_timer: displayBackgroundTimer,
         hotkeys,
       };
       setSaveStatus("Saving...");

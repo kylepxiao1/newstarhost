@@ -132,6 +132,7 @@
       fade_in: true,
       fade_out: true,
       loop_same_song_after_finish: readPracticeModeLocal(),
+      display_background_timer: false,
       hotkeys: {},
     };
     try {
@@ -140,6 +141,7 @@
       out.fade_in = data.fade_in !== false;
       out.fade_out = data.fade_out !== false;
       out.loop_same_song_after_finish = data.loop_same_song_after_finish === true;
+      out.display_background_timer = data.display_background_timer === true;
       out.hotkeys = (data.hotkeys && typeof data.hotkeys === "object") ? data.hotkeys : {};
       writePracticeModeLocal(out.loop_same_song_after_finish);
     } catch (e) {}

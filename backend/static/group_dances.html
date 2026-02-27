@@ -29,6 +29,25 @@
     .formation-canvas { background:#0b1222; border:1px solid #1f2937; border-radius:8px; }
     .formation-list { font-size: 13px; line-height: 1.5; }
     .formation-enabled { display:flex; flex-wrap:wrap; gap:10px 14px; }
+    .bg-timer-box {
+      position: fixed;
+      left: 20px;
+      bottom: 20px;
+      z-index: 40;
+      min-width: 136px;
+      padding: 8px 10px;
+      border-radius: 10px;
+      border: 1px solid #334155;
+      background: rgba(11, 18, 34, 0.94);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+      display: none;
+    }
+    .bg-timer-box.dragging { cursor: grabbing; }
+    .bg-timer-label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.04em; }
+    .bg-timer-value { margin-top: 2px; font-size: 20px; font-weight: 800; color: #e2e8f0; font-variant-numeric: tabular-nums; }
     @media (max-width: 900px) {
       header { padding: 12px 12px 0px; flex-direction: column; align-items: flex-start; gap: 8px; }
       h1 { font-size: 18px; }
@@ -40,6 +59,7 @@
       .card { width: 100%; }
       .formation-wrap { grid-template-columns: 1fr; }
       #formationCanvas { width: 100%; max-width: 360px; height: auto; }
+      .bg-timer-box { left: 12px; bottom: 12px; }
     }
   </style>
 </head>
@@ -53,6 +73,10 @@
       <span id="statusText">Connecting</span>
     </div>
   </header>
+  <div id="backgroundTimerBox" class="bg-timer-box" aria-live="polite">
+    <div class="bg-timer-label">Background Timer</div>
+    <div id="backgroundTimerValue" class="bg-timer-value">00:00</div>
+  </div>
   <main>
   <section>
     <h2>Select Front Dancer</h2>
@@ -99,6 +123,8 @@
     let settingsFadeIn = true;
     let settingsFadeOut = true;
     let settingsLoopSameSongAfterFinish = false;
+    let settingsDisplayBackgroundTimer = false;
+    let backgroundTimerTickHandle = null;
     const PRACTICE_ROLE = "practice_song";
 
     function normalizeRoleToken(role) {
@@ -118,9 +144,11 @@
       settingsFadeIn = data.fade_in !== false;
       settingsFadeOut = data.fade_out !== false;
       settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
+      settingsDisplayBackgroundTimer = data.display_background_timer === true;
       hotkeyMap = data.hotkeys || {};
       window.PageShared.setPracticeModeHeader(settingsLoopSameSongAfterFinish);
       renderSongs();
+      updateBackgroundTimerOverlay();
     }
 
     function handleHotkey(evt) {
@@ -522,6 +550,110 @@
         settingsFadeOut,
         onTrackPlay: () => { notePlay(url); },
       });
+      updateBackgroundTimerOverlay();
+    }
+
+    function normalizeAudioUrl(url) {
+      if (!url) return "";
+      try { return new URL(String(url), window.location.href).toString(); }
+      catch (e) { return String(url); }
+    }
+
+    function formatBackgroundTime(seconds) {
+      const total = Math.max(0, Math.floor(Number(seconds) || 0));
+      const mm = String(Math.floor(total / 60)).padStart(2, "0");
+      const ss = String(total % 60).padStart(2, "0");
+      return `${mm}:${ss}`;
+    }
+
+    function isBackgroundPlaybackActive() {
+      const player = getAudioPlayer();
+      const bgUrl = getRoleUrl("background");
+      if (!player || !bgUrl) return false;
+      const currentSrc = player.dataset?.originalSrc || player.currentSrc || player.src || "";
+      return !player.paused && normalizeAudioUrl(currentSrc) === normalizeAudioUrl(bgUrl);
+    }
+
+    function updateBackgroundTimerOverlay() {
+      const box = document.getElementById("backgroundTimerBox");
+      const value = document.getElementById("backgroundTimerValue");
+      const player = getAudioPlayer();
+      if (!box || !value || !player) return;
+      const shouldShow = settingsDisplayBackgroundTimer && isBackgroundPlaybackActive();
+      if (!shouldShow) {
+        box.style.display = "none";
+        return;
+      }
+      value.textContent = formatBackgroundTime(player.currentTime || 0);
+      box.style.display = "block";
+    }
+
+    function startBackgroundTimerTick() {
+      if (backgroundTimerTickHandle) return;
+      backgroundTimerTickHandle = setInterval(updateBackgroundTimerOverlay, 250);
+    }
+
+    function initBackgroundTimerOverlay() {
+      const box = document.getElementById("backgroundTimerBox");
+      const storageKey = "background_timer_pos_group";
+      if (!box) return;
+      try {
+        const raw = localStorage.getItem(storageKey);
+        const pos = raw ? JSON.parse(raw) : null;
+        if (pos && Number.isFinite(pos.x) && Number.isFinite(pos.y)) {
+          box.style.left = `${Math.max(0, pos.x)}px`;
+          box.style.top = `${Math.max(0, pos.y)}px`;
+          box.style.bottom = "auto";
+        }
+      } catch (e) {}
+
+      let drag = null;
+      box.addEventListener("pointerdown", (evt) => {
+        if (evt.button !== undefined && evt.button !== 0) return;
+        const rect = box.getBoundingClientRect();
+        drag = {
+          id: evt.pointerId,
+          dx: evt.clientX - rect.left,
+          dy: evt.clientY - rect.top,
+        };
+        box.classList.add("dragging");
+        try { box.setPointerCapture(evt.pointerId); } catch (e) {}
+        evt.preventDefault();
+      });
+
+      box.addEventListener("pointermove", (evt) => {
+        if (!drag || evt.pointerId !== drag.id) return;
+        const maxX = Math.max(0, window.innerWidth - box.offsetWidth);
+        const maxY = Math.max(0, window.innerHeight - box.offsetHeight);
+        const x = Math.min(maxX, Math.max(0, evt.clientX - drag.dx));
+        const y = Math.min(maxY, Math.max(0, evt.clientY - drag.dy));
+        box.style.left = `${x}px`;
+        box.style.top = `${y}px`;
+        box.style.bottom = "auto";
+      });
+
+      const finishDrag = (evt) => {
+        if (!drag || evt.pointerId !== drag.id) return;
+        box.classList.remove("dragging");
+        try { box.releasePointerCapture(evt.pointerId); } catch (e) {}
+        try {
+          const left = parseFloat(box.style.left || "0");
+          const top = parseFloat(box.style.top || "0");
+          localStorage.setItem(storageKey, JSON.stringify({x: left, y: top}));
+        } catch (e) {}
+        drag = null;
+      };
+      box.addEventListener("pointerup", finishDrag);
+      box.addEventListener("pointercancel", finishDrag);
+
+      const player = getAudioPlayer();
+      if (player) {
+        ["play", "pause", "ended", "timeupdate", "loadedmetadata", "seeked", "ratechange"].forEach((eventName) => {
+          player.addEventListener(eventName, updateBackgroundTimerOverlay);
+        });
+      }
+      startBackgroundTimerTick();
+      updateBackgroundTimerOverlay();
     }
 
     function getRoleUrl(role) {
@@ -644,6 +776,7 @@
     }
 
     window.PageShared.initPracticeModeHeader({apiFn: api});
+    initBackgroundTimerOverlay();
     loadSettings();
     refreshData();
     refreshState();

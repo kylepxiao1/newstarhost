@@ -58,6 +58,7 @@ def _load_hotkeys() -> dict:
         "fade_in": True,
         "fade_out": True,
         "loop_same_song_after_finish": False,
+        "display_background_timer": False,
         "hotkeys": {},
     }
     if not HOTKEYS_PATH.exists():
@@ -71,11 +72,13 @@ def _load_hotkeys() -> dict:
     fade_in = payload.get("fade_in")
     fade_out = payload.get("fade_out")
     loop_same_song_after_finish = payload.get("loop_same_song_after_finish")
+    display_background_timer = payload.get("display_background_timer")
     hotkeys = payload.get("hotkeys")
     data = {
         "fade_in": True if fade_in is None else bool(fade_in),
         "fade_out": True if fade_out is None else bool(fade_out),
         "loop_same_song_after_finish": bool(loop_same_song_after_finish),
+        "display_background_timer": bool(display_background_timer),
         "hotkeys": hotkeys if isinstance(hotkeys, dict) else {},
     }
     return data
@@ -368,6 +371,7 @@ class SettingsRequest(BaseModel):
     fade_in: Optional[bool] = None
     fade_out: Optional[bool] = None
     loop_same_song_after_finish: Optional[bool] = None
+    display_background_timer: Optional[bool] = None
     hotkeys: Optional[dict] = None
 
 
@@ -385,6 +389,8 @@ async def update_settings(body: SettingsRequest) -> JSONResponse:
         data["fade_out"] = bool(body.fade_out)
     if body.loop_same_song_after_finish is not None:
         data["loop_same_song_after_finish"] = bool(body.loop_same_song_after_finish)
+    if body.display_background_timer is not None:
+        data["display_background_timer"] = bool(body.display_background_timer)
     if body.hotkeys is not None and isinstance(body.hotkeys, dict):
         cleaned = {}
         for key, role in body.hotkeys.items():
