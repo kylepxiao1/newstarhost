@@ -29,6 +29,8 @@ LISTENER_HEARTBEAT_INTERVAL_SECONDS="${LISTENER_HEARTBEAT_INTERVAL_SECONDS:-60}"
 TRENDBOT_ENV_FILE="${TRENDBOT_ENV_FILE:-/app/app.env}"
 REMINDER_CMD="${WILDCARDZ_REMINDER_CMD:-python /app/scripts/reminder_bot.py}"
 REMINDER_ENABLED="${WILDCARDZ_REMINDER_ENABLED:-1}"
+TOPGIFTER_CMD="${WILDCARDZ_TOPGIFTER_CMD:-python /app/scripts/top_gifters_bot.py}"
+TOPGIFTER_ENABLED="${WILDCARDZ_TOPGIFTER_ENABLED:-1}"
 
 log() {
   printf '%s [discord] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$*"
@@ -96,6 +98,7 @@ trendbot_pid=""
 verify_pid=""
 watchdog_pid=""
 reminder_pid=""
+topgifter_pid=""
 
 shutdown_children() {
   log "Shutting down discord worker children"
@@ -110,6 +113,9 @@ shutdown_children() {
   fi
   if [ -n "${reminder_pid}" ] && kill -0 "${reminder_pid}" 2>/dev/null; then
     kill "${reminder_pid}" 2>/dev/null || true
+  fi
+  if [ -n "${topgifter_pid}" ] && kill -0 "${topgifter_pid}" 2>/dev/null; then
+    kill "${topgifter_pid}" 2>/dev/null || true
   fi
   wait || true
 }
@@ -144,12 +150,29 @@ else
   log "Wildcardz reminder bot disabled (WILDCARDZ_REMINDER_ENABLED=${REMINDER_ENABLED})"
 fi
 
+if [ "${TOPGIFTER_ENABLED}" = "1" ] || [ "${TOPGIFTER_ENABLED}" = "true" ]; then
+  if [ -z "${WILDCARDZ_CALENDAR_ID:-}" ] || [ -z "${WILDCARDZ_CALENDAR_API_KEY:-}" ]; then
+    log "Wildcardz top-gifters bot not started (missing WILDCARDZ_CALENDAR_ID or WILDCARDZ_CALENDAR_API_KEY)"
+  elif [ -z "${WILDCARDZ_TOPGIFTER_WEBHOOK:-}" ]; then
+    log "Wildcardz top-gifters bot not started (missing WILDCARDZ_TOPGIFTER_WEBHOOK)"
+  else
+    log "Starting Wildcardz top-gifters bot: ${TOPGIFTER_CMD}"
+    bash -lc "${TOPGIFTER_CMD}" &
+    topgifter_pid=$!
+  fi
+else
+  log "Wildcardz top-gifters bot disabled (WILDCARDZ_TOPGIFTER_ENABLED=${TOPGIFTER_ENABLED})"
+fi
+
 pids=("${trendbot_pid}" "${verify_pid}")
 if [ -n "${watchdog_pid}" ]; then
   pids+=("${watchdog_pid}")
 fi
 if [ -n "${reminder_pid}" ]; then
   pids+=("${reminder_pid}")
+fi
+if [ -n "${topgifter_pid}" ]; then
+  pids+=("${topgifter_pid}")
 fi
 
 set +e

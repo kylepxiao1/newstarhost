@@ -165,7 +165,8 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
   - `discord` process: `scripts/discord_worker.sh` (separate process group)
     This worker runs:
     an internal trendbot loop, `scripts/discord_verify_bot.py`,
-    and `scripts/reminder_bot.py` (daily Wildcardz calendar reminder).
+    `scripts/reminder_bot.py` (daily Wildcardz calendar reminder),
+    and `scripts/top_gifters_bot.py` (top gifters report after livestreams).
 - The `/app/media` Fly volume is scoped to `app` machines only.
 - Trendbot defaults (inside `scripts/discord_worker.sh`):
   - `TRENDBOT_INTERVAL=43200` (12 hours)
@@ -177,6 +178,15 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
   - Event name match (case/whitespace-insensitive): `WILDCARDZ_REMINDER_EVENT_NAME=Wildcardz Live`
   - Webhook (required, set in `app.env`): `WILDCARDZ_REMINDER_WEBHOOK`
   - Optional toggles: `WILDCARDZ_REMINDER_ENABLED=1`, `WILDCARDZ_REMINDER_SEND_IF_NONE=0`
+- Wildcardz top gifters env:
+  - Uses same calendar keys: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
+  - Defaults: `WILDCARDZ_TOPGIFTER_TIMEZONE=America/Denver`, `WILDCARDZ_TOPGIFTER_POLL_SECONDS=60`
+  - Event name match (case/whitespace-insensitive): `WILDCARDZ_TOPGIFTER_EVENT_NAME=Wildcardz Live`
+  - TikTok account filter: `WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME=wildcard_boys`
+  - Webhook: `WILDCARDZ_TOPGIFTER_WEBHOOK`
+  - Report behavior: at 7:15 PM local timezone each day, checks for the latest completed matching livestream on that calendar day, excludes members whose nickname contains `the host`, and sends per-member ranked blocks (`#`, `gifter`, `diamonds`, `usd`).
+  - Optional toggles: `WILDCARDZ_TOPGIFTER_ENABLED=1`, `WILDCARDZ_TOPGIFTER_SEND_EMPTY=1`
+  - Debug trigger: `WILDCARDZ_TOPGIFTER_DEBUG=1` sends immediately on startup for the latest completed matching livestream in the last `WILDCARDZ_TOPGIFTER_LOOKBACK_DAYS` (default `2`)
 - Scale process groups explicitly:
 ```powershell
 fly scale count app=1 listener=1 discord=1 -a newstarhost
