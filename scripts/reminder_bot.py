@@ -14,10 +14,7 @@ import httpx
 from utils import _env
 
 
-DEFAULT_WEBHOOK_URL = (
-    "https://discord.com/api/webhooks/1476419365741138041/"
-    "Sp6yo-J4I6bJvvinZnALFClmDTMAg4Aowkk_YRjW60UWt3niUKeF3IG6O5PrH6YXUOEp"
-)
+DEFAULT_WEBHOOK_URL = ""
 
 NAME_MENTION_MAP = {
     "kyle": "@sztakin",
@@ -354,7 +351,7 @@ def _load_config() -> Config:
     return Config(
         calendar_id=_env("WILDCARDZ_CALENDAR_ID", "").strip(),
         calendar_api_key=_env("WILDCARDZ_CALENDAR_API_KEY", "").strip(),
-        webhook_url=_env("WILDCARDZ_REMINDER_WEBHOOK", DEFAULT_WEBHOOK_URL).strip() or DEFAULT_WEBHOOK_URL,
+        webhook_url=_env("WILDCARDZ_REMINDER_WEBHOOK", DEFAULT_WEBHOOK_URL).strip(),
         event_name=_normalize_space(_env("WILDCARDZ_REMINDER_EVENT_NAME", "Wildcardz Live")) or "Wildcardz Live",
         timezone_name=_env("WILDCARDZ_REMINDER_TIMEZONE", "America/Denver").strip() or "America/Denver",
         run_hour=max(0, min(23, _env_int("WILDCARDZ_REMINDER_HOUR", 12))),

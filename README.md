@@ -175,7 +175,7 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
   - Required: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
   - Defaults: `WILDCARDZ_REMINDER_TIMEZONE=America/Denver`, `WILDCARDZ_REMINDER_HOUR=12`, `WILDCARDZ_REMINDER_MINUTE=0`
   - Event name match (case/whitespace-insensitive): `WILDCARDZ_REMINDER_EVENT_NAME=Wildcardz Live`
-  - Webhook (default set in script): `WILDCARDZ_REMINDER_WEBHOOK=https://discord.com/api/webhooks/1476419365741138041/Sp6yo-J4I6bJvvinZnALFClmDTMAg4Aowkk_YRjW60UWt3niUKeF3IG6O5PrH6YXUOEp`
+  - Webhook (required, set in `app.env`): `WILDCARDZ_REMINDER_WEBHOOK`
   - Optional toggles: `WILDCARDZ_REMINDER_ENABLED=1`, `WILDCARDZ_REMINDER_SEND_IF_NONE=0`
 - Scale process groups explicitly:
 ```powershell
