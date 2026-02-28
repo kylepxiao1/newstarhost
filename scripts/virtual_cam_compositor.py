@@ -45,7 +45,7 @@ CAM_PROBE_BUDGET_SECS = max(0.0, float(os.environ.get("CAM_PROBE_BUDGET_SECS", "
 CAM_PROBE_SETTLE_SECS = max(0.0, float(os.environ.get("CAM_PROBE_SETTLE_SECS", "0.02")))
 CAM_VERBOSE_LOGS = os.environ.get("CAM_VERBOSE_LOGS", "0").strip().lower() in {"1", "true", "yes", "on"}
 CV2_USE_OPENCL_REQUEST = os.environ.get("CV2_USE_OPENCL", "auto").strip()
-VCAM_BACKENDS = os.environ.get("VCAM_BACKENDS", "obs,unitycapture,auto").strip()
+VCAM_BACKENDS = os.environ.get("VCAM_BACKENDS", "unitycapture,obs,auto").strip()
 VCAM_FORMATS = os.environ.get("VCAM_FORMATS", "BGR,RGB,I420").strip()
 VCAM_FPS_CANDIDATES = os.environ.get("VCAM_FPS_CANDIDATES", f"{FPS},30,25,24").strip()
 OVERLAY_GPU_MODE = os.environ.get("OVERLAY_GPU_MODE", "auto").strip()
@@ -69,6 +69,7 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 _overlay_draw_fn = cpu_draw_overlay
 _overlay_pipeline_mode = cpu_render_pipeline_mode()
 _overlay_renderer_name = "cpu"
+_obs_backend_conflict_warned = False
 # Silence verbose OpenCV backend selection chatter (handle older OpenCVs)
 try:
     if hasattr(cv2, "setLogLevel"):
@@ -1091,6 +1092,8 @@ def _restart_virtual_camera(
     current_width: int,
     current_height: int,
 ) -> tuple[pyvirtualcam.Camera, int, int, PixelFormat, str, float]:
+    global _obs_backend_conflict_warned
+
     def _size_candidates(w: int, h: int) -> list[tuple[int, int]]:
         w = max(1, int(w))
         h = max(1, int(h))
@@ -1143,6 +1146,12 @@ def _restart_virtual_camera(
                             except Exception:
                                 pass
                         backend_label = str(getattr(new_cam, "backend", cand_backend or "auto"))
+                        if backend_label.lower() == "obs" and not _obs_backend_conflict_warned:
+                            _obs_backend_conflict_warned = True
+                            logger.warning(
+                                "Virtual camera backend 'obs' is active. Avoid running OBS Virtual Camera output at the same time "
+                                "as this compositor. To prefer a separate device, set VCAM_BACKENDS=unitycapture,obs,auto."
+                            )
                         is_preferred = (
                             cand_w == requested_width
                             and cand_h == requested_height

@@ -57,7 +57,7 @@ Config via env (see `backend/config.py`): `OBS_HOST`, `OBS_PORT`, `OBS_PASSWORD`
 ### A) Lightweight virtual camera (no OBS)
 - Uses `scripts/virtual_cam_compositor.py` with `pyvirtualcam` + `opencv` to capture your real camera, draw names/scores/mode + dotted center line, and expose a virtual camera device.
 - Configure env vars as needed: `INPUT_CAM_INDEX`, `CAM_WIDTH`, `CAM_HEIGHT`, `CAM_FPS`, `STATE_POLL_SECS`.
-- Compatibility knobs (for broader GPU/driver support): `CAM_BACKENDS` (default `DSHOW,ANY,MSMF`), `CV2_USE_OPENCL` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MODE` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MIN_PIXELS` (default `180000`), `OVERLAY_RENDERER_BACKEND` (default `auto`, accepts `auto|cpu|skia`), `VCAM_BACKENDS` (default `obs,unitycapture,auto`), `VCAM_FORMATS` (default `BGR,RGB,I420`), `VCAM_FPS_CANDIDATES` (default `<CAM_FPS>,30,25,24`), `FFMPEG_PROBE_ON_START` (default `1`).
+- Compatibility knobs (for broader GPU/driver support): `CAM_BACKENDS` (default `DSHOW,ANY,MSMF`), `CV2_USE_OPENCL` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MODE` (default `auto`, accepts `auto|1|0`), `OVERLAY_GPU_MIN_PIXELS` (default `180000`), `OVERLAY_RENDERER_BACKEND` (default `auto`, accepts `auto|cpu|skia`), `VCAM_BACKENDS` (default `unitycapture,obs,auto`), `VCAM_FORMATS` (default `BGR,RGB,I420`), `VCAM_FPS_CANDIDATES` (default `<CAM_FPS>,30,25,24`), `FFMPEG_PROBE_ON_START` (default `1`).
 - Recommended for hybrid AMD Radeon + NVIDIA GeForce RTX systems:
 ```powershell
 $env:CAM_BACKENDS="DSHOW,ANY,MSMF"
@@ -65,7 +65,7 @@ $env:CV2_USE_OPENCL="auto"
 $env:OVERLAY_GPU_MODE="auto"
 $env:OVERLAY_GPU_MIN_PIXELS="180000"
 $env:OVERLAY_RENDERER_BACKEND="auto"
-$env:VCAM_BACKENDS="obs,unitycapture,auto"
+$env:VCAM_BACKENDS="unitycapture,obs,auto"
 $env:VCAM_FORMATS="BGR,RGB,I420"
 ```
 - Optional GPU-native text/primitives path (Skia/OpenGL):
@@ -132,7 +132,7 @@ Shards are launched in numeric order of `<N>`, so adding shard 4+ is an env-only
 
 Notes:
 - If no `TIKTOK_USERNAMES_SET_*` vars exist, the launcher keeps the previous built-in defaults for sets 1-3.
-- If `LISTENER_HEARTBEAT_WATCH_IDS` is explicitly set, append new heartbeat IDs there when adding shards.
+- Heartbeat watchdog defaults to shard IDs `listener-set-<N>` based on discovered shard env vars.
 
 Useful commands when running the listener on Fly.io:
 ```powershell

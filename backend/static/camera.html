@@ -1503,6 +1503,16 @@
       if (meta) meta.textContent = "Preview resolution: -";
     }
 
+    function pickDefaultPreviewVirtualCamera(virtuals) {
+      if (!Array.isArray(virtuals) || !virtuals.length) return null;
+      const labelOf = (cam) => String(cam?.label || "").toLowerCase();
+      const nonObs = virtuals.filter((cam) => !/obs/i.test(labelOf(cam)));
+      const stronglyPreferred = nonObs.find((cam) => /(unity|compositor|newstar|new star)/i.test(labelOf(cam)));
+      if (stronglyPreferred) return stronglyPreferred;
+      if (nonObs.length) return nonObs[0];
+      return virtuals.find((cam) => /obs/i.test(labelOf(cam))) || virtuals[0];
+    }
+
     async function startPreview() {
       const video = document.getElementById("preview");
       if (!navigator.mediaDevices?.getUserMedia) return alert("getUserMedia not supported");
@@ -1525,7 +1535,7 @@
             return alert("Previous virtual camera not available. Not switching previews.");
           }
         } else {
-          target = virtuals.find(c => /obs/i.test(c.label || "")) || virtuals[0];
+          target = pickDefaultPreviewVirtualCamera(virtuals);
           if (!target) {
             return alert("No virtual camera found for preview. Start the virtual cam compositor and click Refresh Cameras.");
           }

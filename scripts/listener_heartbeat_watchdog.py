@@ -1,5 +1,7 @@
 import asyncio
 import logging
+import os
+import re
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -55,19 +57,45 @@ def _resolve_supabase_url() -> str:
 
 def _parse_watch_ids() -> list[str]:
     raw = _env("LISTENER_HEARTBEAT_WATCH_IDS", "").strip()
-    if not raw:
-        raw = _env("LISTENER_HEARTBEAT_ID", "").strip()
-    if not raw:
-        raw = "listener"
-    parts = [part.strip() for part in raw.replace(",", " ").split()]
-    seen = set()
-    out = []
-    for part in parts:
-        if not part or part in seen:
+    if raw:
+        parts = [part.strip() for part in raw.replace(",", " ").split()]
+        seen = set()
+        out = []
+        for part in parts:
+            if not part or part in seen:
+                continue
+            seen.add(part)
+            out.append(part)
+        if out:
+            return out
+
+    # Default shard-aware behavior:
+    # - detect shard indices from TIKTOK_USERNAMES_SET_<N> and LISTENER_HEARTBEAT_ID_SET_<N>
+    # - if no shard vars are present, keep launcher-compatible fallback sets 1..3
+    indices = set()
+    for key in os.environ.keys():
+        m = re.match(r"^TIKTOK_USERNAMES_SET_(\d+)$", key)
+        if m:
+            indices.add(int(m.group(1)))
             continue
-        seen.add(part)
-        out.append(part)
-    return out or ["listener"]
+        m = re.match(r"^LISTENER_HEARTBEAT_ID_SET_(\d+)$", key)
+        if m:
+            indices.add(int(m.group(1)))
+    if not indices:
+        single_id = _env("LISTENER_HEARTBEAT_ID", "").strip()
+        if single_id:
+            return [single_id]
+        indices = {1, 2, 3}
+
+    out = []
+    seen = set()
+    for idx in sorted(indices):
+        shard_id = _env(f"LISTENER_HEARTBEAT_ID_SET_{idx}", "").strip() or f"listener-set-{idx}"
+        if shard_id in seen:
+            continue
+        seen.add(shard_id)
+        out.append(shard_id)
+    return out
 
 
 async def _send_webhook(client: httpx.AsyncClient, webhook_url: str, content: str) -> None:
