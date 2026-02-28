@@ -28,6 +28,45 @@ def _env_int(key: str, default: int = 0) -> int:
         return default
 
 
+def _env_bool(key: str, default: bool = False) -> bool:
+    value = _env(key, "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "y", "on"}
+
+
+class _DiscordReconnectNoiseFilter(logging.Filter):
+    _TRANSIENT_EXC_NAMES = {
+        "TimeoutError",
+        "CancelledError",
+        "ClientConnectorError",
+        "ClientConnectionError",
+        "ClientOSError",
+        "ServerDisconnectedError",
+    }
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        logger_name = str(record.name or "")
+        if not logger_name.startswith("discord."):
+            return True
+        try:
+            message = record.getMessage()
+        except Exception:
+            message = str(record.msg or "")
+        if "Attempting a reconnect in" not in message:
+            return True
+        if not record.exc_info or len(record.exc_info) < 2:
+            return True
+        exc = record.exc_info[1]
+        return type(exc).__name__ not in self._TRANSIENT_EXC_NAMES
+
+
+def _install_discord_reconnect_noise_filter() -> None:
+    root = logging.getLogger()
+    for handler in root.handlers:
+        handler.addFilter(_DiscordReconnectNoiseFilter())
+
+
 def _parse_handles_csv(value: str) -> list[str]:
     parts = re.split(r"[,\s]+", str(value or "").strip())
     out: list[str] = []
@@ -909,6 +948,8 @@ def create_bot() -> FanVerifyBot:
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
+    if _env_bool("DISCORD_SUPPRESS_RECONNECT_TRACEBACKS", True):
+        _install_discord_reconnect_noise_filter()
     bot = FanVerifyBot()
     if bot.guild_id > 0:
         @bot.tree.command(

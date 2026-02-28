@@ -49,6 +49,13 @@ def _env_bool(key: str, default: bool = False) -> bool:
     return value in {"1", "true", "yes", "y", "on"}
 
 
+def _exc_text(exc: Exception) -> str:
+    message = str(exc).strip()
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    return type(exc).__name__
+
+
 def _normalize_space(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
@@ -450,7 +457,7 @@ async def run() -> None:
             try:
                 sent = await _run_for_day(client=client, cfg=cfg, tz=tz, target_day=today, logger=logger)
             except Exception as exc:
-                logger.warning("Immediate test reminder failed for %s: %s", today_key, exc)
+                logger.warning("Immediate test reminder failed for %s: %s", today_key, _exc_text(exc))
             else:
                 if sent:
                     last_sent_day = today_key
@@ -477,7 +484,7 @@ async def run() -> None:
             try:
                 sent = await _run_for_day(client=client, cfg=cfg, tz=tz, target_day=today, logger=logger)
             except Exception as exc:
-                logger.warning("Reminder run failed for %s: %s", today_key, exc)
+                logger.warning("Reminder run failed for %s: %s", today_key, _exc_text(exc))
                 await asyncio.sleep(cfg.poll_seconds)
                 continue
 

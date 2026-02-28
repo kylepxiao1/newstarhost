@@ -172,6 +172,9 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
   - `TRENDBOT_INTERVAL=43200` (12 hours)
   - `TRENDBOT_CMD='python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --api-max-attempts 5 --supabase-min-velocity 100'`
 - Optional env file for trendbot: `TRENDBOT_ENV_FILE` (default `/app/app.env`).
+- Discord reconnect log noise control:
+  - `DISCORD_SUPPRESS_RECONNECT_TRACEBACKS=1` (default) suppresses transient Discord gateway reconnect timeout tracebacks.
+  - Set `DISCORD_SUPPRESS_RECONNECT_TRACEBACKS=0` for full raw traceback logging while debugging connectivity.
 - Wildcardz reminder env:
   - Required: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
   - Defaults: `WILDCARDZ_REMINDER_TIMEZONE=America/Denver`, `WILDCARDZ_REMINDER_HOUR=12`, `WILDCARDZ_REMINDER_MINUTE=0`
