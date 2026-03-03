@@ -512,15 +512,11 @@
       if (!songsState) songsState = {};
       songsState.current = url;
       if (settingsLoopSameSongAfterFinish) {
-        // Practice mode: no bell cue before the selected song.
-        setCurrent(url);
-        startAudio(url, {
-          loop:false,
-          fade:true,
-          fadeOut:false,
-          skipFadeOut:true,
-          onEnd: () => runPracticeRepeatCues(url),
-        });
+        // Practice mode: bell -> selected song.
+        const steps = [];
+        if (bellUrl) steps.push(bellUrl);
+        steps.push(url);
+        playSequence(steps, () => runPracticeRepeatCues(url));
       } else {
         // bell -> song -> applause -> background (if any)
         const steps = [];
@@ -712,19 +708,22 @@
       if (label) label.textContent = name;
     }
 
-    function playSequence(steps) {
+    function playSequence(steps, onDone=null) {
       if (!steps || !steps.length) return;
       const [first, ...rest] = steps.filter(Boolean);
-      if (!first) return;
+      if (!first) {
+        if (onDone) onDone();
+        return;
+      }
       let url = first;
       let isRole = false;
       if (first === "applause_role") {
         url = getRoleUrl("applause");
-        if (!url) { playSequence(rest); return; }
+        if (!url) { playSequence(rest, onDone); return; }
         isRole = true;
       } else if (first === "background_role") {
         url = getRoleUrl("background");
-        if (!url) { playSequence(rest); return; }
+        if (!url) { playSequence(rest, onDone); return; }
         songsState.background = url;
         setCurrent(url);
         startAudio(url, {loop:true, fade:false, fadeOut:false, skipFadeOut:true, isRole:true});
@@ -732,7 +731,7 @@
       }
       // normal audio
       setCurrent(url);
-      startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, isRole, onEnd: () => playSequence(rest)});
+      startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, isRole, onEnd: () => playSequence(rest, onDone)});
     }
 
     function ensureBackground() {
