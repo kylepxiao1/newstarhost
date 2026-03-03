@@ -71,7 +71,7 @@ LISTENER_HEARTBEAT_ENABLED = _env_flag("LISTENER_HEARTBEAT_ENABLED", True)
 LISTENER_HEARTBEAT_INTERVAL_SECONDS = max(15.0, _env_float("LISTENER_HEARTBEAT_INTERVAL_SECONDS", 60.0))
 LISTENER_HEARTBEAT_ID = _env("LISTENER_HEARTBEAT_ID", "").strip()
 LISTENER_HEARTBEAT_LOG_LINES = max(1, _env_int("LISTENER_HEARTBEAT_LOG_LINES", 30))
-LISTENER_HEARTBEAT_LOG_BUFFER_LINES = max(100, _env_int("LISTENER_HEARTBEAT_LOG_BUFFER_LINES", 300))
+LISTENER_HEARTBEAT_LOG_BUFFER_LINES = max(50, _env_int("LISTENER_HEARTBEAT_LOG_BUFFER_LINES", 120))
 
 if WHITELIST_AUTHENTICATED_SESSION_ID_HOST:
     os.environ.setdefault(
@@ -303,6 +303,7 @@ class TikTokLiveListener:
         self._raw_lock = asyncio.Lock()
         self._raw_event_cache: dict[int, tuple[int, float]] = {}
         self._raw_event_ttl = timedelta(minutes=5)
+        self._raw_event_cache_max = max(1000, _env_int("TIKTOK_RAW_EVENT_CACHE_MAX", 20000))
         self._base_backoff = 5
         self._max_backoff = 300
         self._rate_limit_backoff = 300  # 5 minutes
@@ -317,17 +318,19 @@ class TikTokLiveListener:
         self._last_parse_error_log = datetime.min.replace(tzinfo=timezone.utc)
         # dedupe cache (type,id) -> timestamp
         self._seen = {}
+        self._seen_max = max(1000, _env_int("TIKTOK_SEEN_CACHE_MAX", 20000))
         # combo tracking: key -> (last_combo_count, last_seen_ts)
         self._combo_state: dict[tuple, tuple[int, float]] = {}
         self._combo_ttl = timedelta(minutes=10)
+        self._combo_state_max = max(500, _env_int("TIKTOK_COMBO_CACHE_MAX", 5000))
         self._live_check_interval_min = 60
         self._live_check_interval_max = 120
         self._next_live_check_at = 0.0
         self._last_live_status: Optional[bool] = None
         self._cookies = _gather_tiktok_cookies()
         self._device_id = _load_device_id()
-        self._store_queue_max = max(100, _env_int("TIKTOK_EVENT_STORE_QUEUE_MAX", 2000))
-        self._store_worker_count = max(1, _env_int("TIKTOK_EVENT_STORE_WORKERS", 2))
+        self._store_queue_max = max(100, _env_int("TIKTOK_EVENT_STORE_QUEUE_MAX", 500))
+        self._store_worker_count = max(1, _env_int("TIKTOK_EVENT_STORE_WORKERS", 1))
         self._store_flush_timeout_seconds = max(
             1.0, _env_float("TIKTOK_EVENT_STORE_FLUSH_TIMEOUT_SECONDS", 120.0)
         )
@@ -683,6 +686,10 @@ class TikTokLiveListener:
         if key in self._seen:
             return True
         self._seen[key] = now
+        if len(self._seen) > self._seen_max:
+            drop_count = max(1, len(self._seen) - self._seen_max)
+            for old_key, _ in sorted(self._seen.items(), key=lambda kv: kv[1])[:drop_count]:
+                self._seen.pop(old_key, None)
         return False
 
     def _schedule_next_live_check(self, delay: Optional[float] = None) -> float:
@@ -756,6 +763,10 @@ class TikTokLiveListener:
         else:
             delta = count - prev_count
         self._combo_state[key] = (count, now)
+        if len(self._combo_state) > self._combo_state_max:
+            drop_count = max(1, len(self._combo_state) - self._combo_state_max)
+            for old_key, _ in sorted(self._combo_state.items(), key=lambda kv: kv[1][1])[:drop_count]:
+                self._combo_state.pop(old_key, None)
         return max(0, delta)
 
     def _extract_message_id(self, payload: dict) -> Optional[int]:
@@ -809,6 +820,10 @@ class TikTokLiveListener:
         if message_id is None or raw_id is None:
             return
         self._raw_event_cache[message_id] = (raw_id, time.time())
+        if len(self._raw_event_cache) > self._raw_event_cache_max:
+            drop_count = max(1, len(self._raw_event_cache) - self._raw_event_cache_max)
+            for old_key, _ in sorted(self._raw_event_cache.items(), key=lambda kv: kv[1][1])[:drop_count]:
+                self._raw_event_cache.pop(old_key, None)
 
     async def _log_raw_event(self, event_type: str, payload: dict) -> Optional[int]:
         message_id = self._extract_message_id(payload)

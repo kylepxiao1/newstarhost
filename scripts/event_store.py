@@ -131,6 +131,20 @@ class SupabaseEventStore:
             "y",
             "on",
         }
+        self._batch_enabled = _env_bool("SUPABASE_BATCH_ENABLED", True)
+        self._batch_size = max(2, _env_int("SUPABASE_BATCH_SIZE", 10))
+        self._batch_max_wait_seconds = max(
+            0.05,
+            _env_float("SUPABASE_BATCH_MAX_WAIT_SECONDS", 0.25),
+        )
+        self._batch_queue_max = max(
+            self._batch_size,
+            _env_int("SUPABASE_BATCH_QUEUE_MAX", 1000),
+        )
+        # key -> {"items": list[(row_data, future)], "task": asyncio.Task | None}
+        self._batch_states = {}
+        self._batch_lock = asyncio.Lock()
+        self._batch_overflow_warnings = 0
         if not url or not key:
             logger.error(
                 "Supabase credentials missing. Set SUPABASE_URL and SUPABASE_SECRET_KEY (or SERVICE_ROLE_KEY)."
@@ -143,10 +157,21 @@ class SupabaseEventStore:
             "Content-Type": "application/json",
         }
         timeout = httpx.Timeout(connect=12.0, read=30.0, write=30.0, pool=12.0)
-        limits = httpx.Limits(max_keepalive_connections=40, max_connections=120)
+        keepalive_connections = max(1, _env_int("SUPABASE_HTTP_MAX_KEEPALIVE_CONNECTIONS", 10))
+        max_connections = max(keepalive_connections, _env_int("SUPABASE_HTTP_MAX_CONNECTIONS", 40))
+        limits = httpx.Limits(max_keepalive_connections=keepalive_connections, max_connections=max_connections)
         self._client = httpx.AsyncClient(base_url=self._rest_url, headers=headers, timeout=timeout, limits=limits)
         logger.info("Supabase REST client initialized for %s", self._rest_url)
         logger.info("Supabase write concurrency=%s", self._max_concurrent_writes)
+        if self._batch_enabled:
+            logger.info(
+                "Supabase batching enabled (size=%s wait=%.2fs queue_max=%s)",
+                self._batch_size,
+                self._batch_max_wait_seconds,
+                self._batch_queue_max,
+            )
+        else:
+            logger.info("Supabase batching disabled")
         if self._write_tiktok_events_raw:
             logger.info("Supabase raw event writes enabled for tiktok_events_raw")
         else:
@@ -376,6 +401,228 @@ class SupabaseEventStore:
             self._queue_failed_row(table, row_data, on_conflict, prefer)
         return None
 
+    async def _send_post_rows_with_retry(
+        self,
+        table: str,
+        rows: list[dict],
+        on_conflict: Optional[str],
+        prefer: Optional[str],
+        *,
+        queue_on_failure: bool,
+        max_attempts: Optional[int] = None,
+    ) -> Optional[httpx.Response]:
+        if not self._client:
+            return None
+        if not rows:
+            return None
+        params = {}
+        prefer_header = "return=minimal"
+        if on_conflict:
+            params["on_conflict"] = on_conflict
+            prefer_header = "resolution=merge-duplicates,return=minimal"
+        if prefer:
+            prefer_header = prefer
+
+        attempts = self._post_retry_attempts if max_attempts is None else max(0, int(max_attempts))
+        for attempt in range(attempts + 1):
+            try:
+                if self._debug:
+                    logger.debug(
+                        "Supabase POST batch %s on_conflict=%s size=%s attempt=%s/%s",
+                        table,
+                        on_conflict or "none",
+                        len(rows),
+                        attempt + 1,
+                        attempts + 1,
+                    )
+                resp = await self._client.post(
+                    f"/{table}",
+                    params=params,
+                    json=rows,
+                    headers={"Prefer": prefer_header},
+                )
+            except httpx.TransportError as exc:
+                if attempt < attempts:
+                    delay = self._retry_delay(attempt)
+                    logger.warning(
+                        "Supabase POST batch %s network error (%s); retrying in %.2fs (attempt %s/%s)",
+                        table,
+                        type(exc).__name__,
+                        delay,
+                        attempt + 1,
+                        attempts + 1,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                if isinstance(exc, httpx.ConnectTimeout):
+                    self._record_connect_timeout_failure(table)
+                if queue_on_failure:
+                    for row in rows:
+                        self._queue_failed_row(table, row, on_conflict, prefer)
+                logger.warning(
+                    "Supabase POST batch %s network error (%s) after %s attempts; rows buffered=%s size=%s",
+                    table,
+                    type(exc).__name__,
+                    attempts + 1,
+                    bool(queue_on_failure and self._buffer_failed_rows),
+                    len(rows),
+                )
+                return None
+
+            if resp.status_code in _RETRYABLE_STATUS_CODES and attempt < attempts:
+                delay = self._retry_delay(attempt)
+                logger.warning(
+                    "Supabase POST batch %s received status=%s; retrying in %.2fs (attempt %s/%s)",
+                    table,
+                    resp.status_code,
+                    delay,
+                    attempt + 1,
+                    attempts + 1,
+                )
+                await asyncio.sleep(delay)
+                continue
+
+            if not resp.is_success and resp.status_code in _RETRYABLE_STATUS_CODES and queue_on_failure:
+                for row in rows:
+                    self._queue_failed_row(table, row, on_conflict, prefer)
+            return resp
+
+        if queue_on_failure:
+            for row in rows:
+                self._queue_failed_row(table, row, on_conflict, prefer)
+        return None
+
+    def _batch_key(self, table: str, on_conflict: Optional[str], prefer: Optional[str]) -> tuple:
+        return (table, on_conflict or "", prefer or "")
+
+    def _batch_allowed(self, table: str) -> bool:
+        if not self._batch_enabled:
+            return False
+        # Keep these writes immediate/low-latency.
+        if table in {"listener_heartbeats", "tiktok_events_raw"}:
+            return False
+        return True
+
+    async def _flush_batch_for_key(self, key: tuple) -> None:
+        table, on_conflict_token, prefer_token = key
+        on_conflict = on_conflict_token or None
+        prefer = prefer_token or None
+        while True:
+            async with self._batch_lock:
+                state = self._batch_states.get(key)
+                if not state:
+                    return
+                queue = state.get("items") or []
+                if not queue:
+                    state["task"] = None
+                    return
+                chunk = queue[: self._batch_size]
+                del queue[: len(chunk)]
+                state["items"] = queue
+
+            rows = [item[0] for item in chunk]
+            futures = [item[1] for item in chunk]
+            resp = await self._send_post_rows_with_retry(
+                table=table,
+                rows=rows,
+                on_conflict=on_conflict,
+                prefer=prefer,
+                queue_on_failure=True,
+            )
+
+            # If a batch fails, salvage good rows by retrying per-row.
+            # Special-case missing unique constraints by dropping on_conflict.
+            row_on_conflict = on_conflict
+            fallback_reason = None
+            if on_conflict and self._response_missing_unique(resp):
+                row_on_conflict = None
+                fallback_reason = "missing unique constraint for on_conflict"
+            elif resp is not None and not resp.is_success:
+                fallback_reason = f"status={resp.status_code}"
+
+            if fallback_reason:
+                logger.warning(
+                    "Supabase batch %s failed (%s); falling back to per-row writes for %s rows",
+                    table,
+                    fallback_reason,
+                    len(rows),
+                )
+                for idx, row in enumerate(rows):
+                    row_resp = await self._send_post_with_retry(
+                        table=table,
+                        row_data=row,
+                        on_conflict=row_on_conflict,
+                        prefer=prefer,
+                        queue_on_failure=True,
+                    )
+                    fut = futures[idx]
+                    if not fut.done():
+                        fut.set_result(row_resp)
+                continue
+
+            for fut in futures:
+                if not fut.done():
+                    fut.set_result(resp)
+
+    async def _flush_batch_for_key_after_delay(self, key: tuple, delay: float) -> None:
+        await asyncio.sleep(max(0.01, delay))
+        await self._flush_batch_for_key(key)
+
+    async def _enqueue_batched_row(
+        self,
+        table: str,
+        row_data: dict,
+        on_conflict: Optional[str] = None,
+        prefer: Optional[str] = None,
+    ) -> Optional[httpx.Response]:
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        key = self._batch_key(table, on_conflict, prefer)
+
+        async with self._batch_lock:
+            state = self._batch_states.get(key)
+            if state is None:
+                state = {"items": [], "task": None}
+                self._batch_states[key] = state
+            queue = state["items"]
+
+            if len(queue) >= self._batch_queue_max:
+                # Drop oldest pending item under sustained overload to avoid OOM.
+                dropped_row, dropped_future = queue.pop(0)
+                self._queue_failed_row(table, dropped_row, on_conflict, prefer)
+                if not dropped_future.done():
+                    dropped_future.set_result(None)
+                self._batch_overflow_warnings += 1
+                if self._batch_overflow_warnings <= 3 or self._batch_overflow_warnings % 100 == 0:
+                    logger.warning(
+                        "Supabase batch queue overflow for %s key=%s (max=%s, warnings=%s); "
+                        "dropping oldest row to disk buffer",
+                        table,
+                        key,
+                        self._batch_queue_max,
+                        self._batch_overflow_warnings,
+                    )
+
+            queue.append((row_data.copy() if isinstance(row_data, dict) else {}, fut))
+            state["items"] = queue
+
+            current_task = state.get("task")
+            should_start_now = len(queue) >= self._batch_size
+            if current_task is None or current_task.done():
+                if should_start_now:
+                    state["task"] = asyncio.create_task(self._flush_batch_for_key(key))
+                else:
+                    state["task"] = asyncio.create_task(
+                        self._flush_batch_for_key_after_delay(key, self._batch_max_wait_seconds)
+                    )
+
+        resp = await fut
+        if resp is not None and getattr(resp, "is_success", False) and self._failed_rows:
+            async with self._replay_lock:
+                if self._failed_rows:
+                    await self._replay_failed_rows(limit=1)
+        return resp
+
     async def _replay_failed_rows(self, limit: int = 2) -> None:
         if not self._buffer_failed_rows or not self._failed_rows or not self._client:
             return
@@ -425,6 +672,13 @@ class SupabaseEventStore:
     ) -> Optional[httpx.Response]:
         if not self._client:
             return None
+        if self._batch_allowed(table):
+            return await self._enqueue_batched_row(
+                table=table,
+                row_data=row_data,
+                on_conflict=on_conflict,
+                prefer=prefer,
+            )
         resp = await self._send_post_with_retry(
             table,
             row_data,
@@ -2650,6 +2904,19 @@ class SupabaseEventStore:
                 logger.exception("Failed to write listener heartbeat")
 
     async def close(self) -> None:
+        # Best-effort drain any pending batched writes before closing client.
+        pending_tasks = []
+        async with self._batch_lock:
+            for state in self._batch_states.values():
+                task = state.get("task")
+                if task and not task.done():
+                    pending_tasks.append(task)
+        if pending_tasks:
+            try:
+                await asyncio.gather(*pending_tasks, return_exceptions=True)
+            except Exception:
+                pass
+
         if not self._client:
             return
         try:
