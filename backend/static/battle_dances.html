@@ -156,7 +156,7 @@
     let currentTab = "";
     let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false };
     let timerInterval = null;
-    const SPECIAL_ROLES = ["bell","applause","attention","background","win","closing"];
+    const SPECIAL_ROLES = ["bell","duo_sfx","applause","attention","background","win","closing"];
     const PRACTICE_SONG_ROLE = "practice_song";
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();
@@ -176,12 +176,14 @@
     let settingsFadeIn = true;
     let settingsFadeOut = true;
     let settingsLoopSameSongAfterFinish = false;
+    let settingsEnableDuoDance = false;
 
     async function loadSettings() {
       const data = await window.PageShared.fetchAppSettings(api);
       settingsFadeIn = data.fade_in !== false;
       settingsFadeOut = data.fade_out !== false;
       settingsLoopSameSongAfterFinish = data.loop_same_song_after_finish === true;
+      settingsEnableDuoDance = data.enable_duo_dance === true;
       hotkeyMap = data.hotkeys || {};
       window.PageShared.setPracticeModeHeader(settingsLoopSameSongAfterFinish);
     }
@@ -1343,14 +1345,14 @@
         startAudio(url, {loop:false, onEnd: () => runPracticeRepeatCues(url)});
       } else {
         // bell -> selected -> applause -> background
-        playSequence(["bell"], false, () => {
+        playPreSongCueForUrl(url, () => {
           startAudio(url, {loop:false, onEnd: () => {
             playSequence(["applause"], false, () => {
               const bg = state.songs?.background;
               if (bg) startAudio(bg, {loop:true});
             });
           }});
-        });
+        }, [state.slot_one || "", state.slot_two || ""]);
       }
       refreshState();
     }
@@ -1394,14 +1396,14 @@
         // Practice mode: no bell cue before the selected song.
         startAudio(url, {loop:false, onEnd: () => runPracticeRepeatCues(url)});
       } else {
-        playSequence(["bell"], false, () => {
+        playPreSongCueForUrl(url, () => {
           startAudio(url, {loop:false, onEnd: () => {
             playSequence(["applause"], false, () => {
               const bg = state.songs?.background;
               if (bg) startAudio(bg, {loop:true});
             });
           }});
-        });
+        }, [state.slot_one || "", state.slot_two || ""]);
       }
       refreshState();
     }
@@ -1691,6 +1693,63 @@
       });
     }
 
+    function isGroupEntityName(name) {
+      const low = String(name || "").toLowerCase();
+      return low.includes("boys") || low.includes("girls");
+    }
+
+    function getSongByUrl(url) {
+      if (!url) return null;
+      const lib = state.songs?.library || {};
+      return Object.values(lib).find((s) => s?.url === url) || null;
+    }
+
+    function getCurrentBattleDancerNames() {
+      if (Array.isArray(routine.dancers) && routine.dancers.length >= 2) {
+        return [routine.dancers[0], routine.dancers[1]].filter(Boolean);
+      }
+      return [state.slot_one || "", state.slot_two || ""].filter(Boolean);
+    }
+
+    function songHasAvailableDuoPartner(song, battleNames) {
+      if (!song || !song.duo_dance) return false;
+      const participants = new Set((battleNames || []).map((n) => String(n || "").toLowerCase()));
+      const present = getEnabledDancers()
+        .map((d) => d?.name || "")
+        .filter((name) => {
+          const low = String(name || "").toLowerCase();
+          if (!low) return false;
+          if (participants.has(low)) return false;
+          if (isGroupEntityName(low)) return false;
+          return true;
+        });
+      if (!present.length) return false;
+      const duoCandidates = new Set(
+        [
+          ...(song.dancers || []),
+          ...(song.front_dancers || []),
+          ...(song.knows_song || []),
+        ].map((name) => String(name || "").toLowerCase())
+      );
+      return present.some((name) => duoCandidates.has(String(name || "").toLowerCase()));
+    }
+
+    function getPreSongCueRoleForUrl(url, battleNames) {
+      const fallback = "bell";
+      if (!settingsEnableDuoDance) return fallback;
+      const song = getSongByUrl(url);
+      if (!song || !song.duo_dance) return fallback;
+      const duoSfxUrl = getRoleUrl("duo_sfx");
+      if (!duoSfxUrl) return fallback;
+      if (!songHasAvailableDuoPartner(song, battleNames || getCurrentBattleDancerNames())) return fallback;
+      return "duo_sfx";
+    }
+
+    function playPreSongCueForUrl(url, onDone, battleNames) {
+      const cueRole = getPreSongCueRoleForUrl(url, battleNames);
+      playSequence([cueRole], false, onDone);
+    }
+
     function intersectSongsFor(a, b) {
       const lib = state.songs?.library || {};
       const mapUrl = {};
@@ -1962,9 +2021,9 @@
       markRoutinePlayed(next);
       routine.currentSongUrl = next;
       api("/songs/play", {method:"POST", body:{target:"group", url: next, context: "battle"}}).catch(()=>{});
-      playSequence(["bell"], false, () => {
+      playPreSongCueForUrl(next, () => {
         startAudio(next, {skipFadeOut:true, loop:false, onEnd: () => {
-          playSequence(["bell"], false, () => playRoutineSong(next));
+          playPreSongCueForUrl(next, () => playRoutineSong(next));
         }});
       });
     }
@@ -2057,12 +2116,12 @@
         stopSwitchInterval();
         routine.switchInterval = setInterval(() => monitorSongSwitch(), 2000);
         startAudio(url, {loop:false, onEnd: () => {
-          playSequence(["bell"], false, () => playRoutineSong(url));
+          playPreSongCueForUrl(url, () => playRoutineSong(url));
         }});
       };
       if (!routine.firstSongPlayed) {
         routine.firstSongPlayed = true;
-        playSequence(["bell"], false, afterDoorbell);
+        playPreSongCueForUrl(url, afterDoorbell);
       } else {
         afterDoorbell();
       }
@@ -2167,9 +2226,9 @@
       routine.currentSongUrl = newUrl;
       markRoutinePlayed(newUrl);
       api("/songs/play", {method:"POST", body:{target:"group", url:newUrl, context: "battle"}}).catch(()=>{});
-      playSequence(["bell"], false, () => {
+      playPreSongCueForUrl(newUrl, () => {
         startAudio(newUrl, {skipFadeOut:true, loop:false, onEnd: () => {
-          playSequence(["bell"], false, () => playRoutineSong(newUrl));
+          playPreSongCueForUrl(newUrl, () => playRoutineSong(newUrl));
         }});
       });
     }
