@@ -1,6 +1,7 @@
 import atexit
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -10,14 +11,18 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse
 
+import numpy as np
 import requests
+import yt_dlp
 
 
 CREATIVE_CENTER_URL = (
@@ -558,9 +563,435 @@ def build_supabase_topic_song_rows(
                 "topic_score": float(row.get("topic_score") or 0.0),
                 "hashtags": hashtags,
                 "generated_at": generated_at_iso,
+                "shared": False,
             }
         )
     return prepared_rows
+
+
+def _fp_resolve_cookies_path(repo_root: Path, env_file: Path) -> Optional[Path]:
+    env_values = load_env_file_values(env_file)
+    cookie_name = first_non_empty(
+        [
+            os.environ.get("TIKTOK_COOKIES_FILE", ""),
+            env_values.get("TIKTOK_COOKIES_FILE", ""),
+        ]
+    )
+    if not cookie_name:
+        default = repo_root / "cookies.txt"
+        return default if default.exists() else None
+    cookie_path = Path(cookie_name)
+    if not cookie_path.is_absolute():
+        cookie_path = (repo_root / cookie_path).resolve()
+    return cookie_path if cookie_path.exists() else None
+
+
+def _fp_resolve_ffmpeg_binary(repo_root: Path) -> str:
+    env_value = os.environ.get("FFMPEG_BIN", "").strip()
+    if env_value:
+        return env_value
+    candidates = list(repo_root.glob("scripts/ffmpeg-bin/**/ffmpeg.exe"))
+    if candidates:
+        return str(candidates[0])
+    return "ffmpeg"
+
+
+def _fp_pick_sparse_top_bins(row: np.ndarray, max_peaks: int, min_gap_bins: int) -> List[int]:
+    if max_peaks <= 0 or row.size <= 0:
+        return []
+    candidate_count = min(row.size, max_peaks * 8)
+    if candidate_count <= 0:
+        return []
+    idx = np.argpartition(row, -candidate_count)[-candidate_count:]
+    idx = idx[np.argsort(row[idx])[::-1]]
+    selected: List[int] = []
+    for item in idx:
+        index = int(item)
+        if row[index] <= 0.0:
+            break
+        if any(abs(index - prev) < min_gap_bins for prev in selected):
+            continue
+        selected.append(index)
+        if len(selected) >= max_peaks:
+            break
+    return selected
+
+
+def _fp_frame_audio(signal: np.ndarray, frame_size: int, hop_size: int) -> np.ndarray:
+    if signal.size < frame_size:
+        return np.empty((0, frame_size), dtype=np.float32)
+    frame_count = 1 + (signal.size - frame_size) // hop_size
+    if frame_count <= 0:
+        return np.empty((0, frame_size), dtype=np.float32)
+    stride = signal.strides[0]
+    view = np.lib.stride_tricks.as_strided(
+        signal,
+        shape=(frame_count, frame_size),
+        strides=(hop_size * stride, stride),
+        writeable=False,
+    )
+    return np.array(view, dtype=np.float32, copy=True)
+
+
+def _fp_build_landmark_counter(
+    frame_peaks: List[List[int]],
+    *,
+    anchor_peaks: int,
+    target_peaks: int,
+    fanout_frames: int,
+) -> Counter:
+    hashes: Counter = Counter()
+    frame_count = len(frame_peaks)
+    for t in range(frame_count):
+        anchors = frame_peaks[t][: max(1, anchor_peaks)]
+        if not anchors:
+            continue
+        max_t2 = min(frame_count, t + max(1, fanout_frames) + 1)
+        for f1 in anchors:
+            for t2 in range(t + 1, max_t2):
+                dt = t2 - t
+                for f2 in frame_peaks[t2][: max(1, target_peaks)]:
+                    token = f"{f1}:{f2}:{dt}".encode("ascii")
+                    hashed = int.from_bytes(hashlib.blake2b(token, digest_size=8).digest(), "big")
+                    hashes[hashed] += 1
+    return hashes
+
+
+def _fp_compute_simhash64(weighted_hashes: Counter) -> int:
+    if not weighted_hashes:
+        return 0
+    bit_acc = [0] * 64
+    for hashed, count in weighted_hashes.items():
+        weight = int(max(1, count))
+        for bit in range(64):
+            if hashed & (1 << bit):
+                bit_acc[bit] += weight
+            else:
+                bit_acc[bit] -= weight
+    result = 0
+    for bit, value in enumerate(bit_acc):
+        if value >= 0:
+            result |= (1 << bit)
+    return result
+
+
+def _fp_decode_audio_with_ffmpeg(
+    ffmpeg_bin: str,
+    input_path: Path,
+    sample_rate: int,
+    clip_seconds: float,
+) -> np.ndarray:
+    cmd = [
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(int(sample_rate)),
+        "-t",
+        f"{float(clip_seconds):.3f}",
+        "-f",
+        "s16le",
+        "pipe:1",
+    ]
+    result = subprocess.run(cmd, capture_output=True, check=False)
+    if result.returncode != 0:
+        stderr = (result.stderr or b"").decode("utf-8", errors="ignore").strip()
+        if len(stderr) > 220:
+            stderr = stderr[:217] + "..."
+        raise RuntimeError(f"ffmpeg decode failed (code={result.returncode}): {safe_console_text(stderr)}")
+    pcm = np.frombuffer(result.stdout, dtype=np.int16)
+    if pcm.size <= 0:
+        raise RuntimeError("ffmpeg returned empty audio.")
+    audio = pcm.astype(np.float32) / 32768.0
+    audio = audio - float(np.mean(audio))
+    peak = float(np.max(np.abs(audio))) if audio.size else 0.0
+    if peak > 0:
+        audio = audio / peak
+    return audio
+
+
+def _fp_compute_audio_fingerprint(
+    media_path: Path,
+    *,
+    ffmpeg_bin: str,
+    sample_rate: int,
+    clip_seconds: float,
+    fft_size: int,
+    hop_size: int,
+    min_freq_hz: float,
+    max_freq_hz: float,
+    peaks_per_frame: int,
+    peak_min_gap_bins: int,
+    anchor_peaks: int,
+    target_peaks: int,
+    fanout_frames: int,
+    max_hashes: int,
+    min_unique_hashes: int,
+) -> Dict[str, Any]:
+    audio = _fp_decode_audio_with_ffmpeg(
+        ffmpeg_bin=ffmpeg_bin,
+        input_path=media_path,
+        sample_rate=sample_rate,
+        clip_seconds=clip_seconds,
+    )
+    frames = _fp_frame_audio(audio, frame_size=fft_size, hop_size=hop_size)
+    if frames.shape[0] <= 0:
+        raise RuntimeError("audio clip is too short after decode.")
+
+    window = np.hanning(fft_size).astype(np.float32)
+    spectrum = np.fft.rfft(frames * window, axis=1)
+    magnitudes = np.abs(spectrum)
+    if magnitudes.size <= 0:
+        raise RuntimeError("STFT output is empty.")
+
+    min_bin = max(1, int(min_freq_hz * fft_size / sample_rate))
+    max_bin = min(magnitudes.shape[1] - 1, int(max_freq_hz * fft_size / sample_rate))
+    if max_bin <= min_bin:
+        raise RuntimeError("invalid frequency bin range for fingerprinting.")
+
+    band = np.log1p(magnitudes[:, min_bin:max_bin])
+    band = band - np.mean(band, axis=1, keepdims=True)
+    band = np.maximum(band, 0.0)
+
+    frame_peaks: List[List[int]] = []
+    for row in band:
+        picks = _fp_pick_sparse_top_bins(
+            row=row,
+            max_peaks=peaks_per_frame,
+            min_gap_bins=max(1, peak_min_gap_bins),
+        )
+        frame_peaks.append([idx + min_bin for idx in picks])
+
+    landmark_counts = _fp_build_landmark_counter(
+        frame_peaks,
+        anchor_peaks=max(1, anchor_peaks),
+        target_peaks=max(1, target_peaks),
+        fanout_frames=max(1, fanout_frames),
+    )
+    if len(landmark_counts) < max(1, min_unique_hashes):
+        raise RuntimeError(
+            f"fingerprint too weak (unique_landmarks={len(landmark_counts)} < min={min_unique_hashes})"
+        )
+
+    top_hashes = landmark_counts.most_common(max(1, max_hashes))
+    simhash = _fp_compute_simhash64(landmark_counts)
+    total_landmarks = int(sum(landmark_counts.values()))
+
+    return {
+        "version": "landmark_v1",
+        "generated_at": now_iso(),
+        "sample_rate": int(sample_rate),
+        "clip_seconds": float(clip_seconds),
+        "fft_size": int(fft_size),
+        "hop_size": int(hop_size),
+        "min_freq_hz": float(min_freq_hz),
+        "max_freq_hz": float(max_freq_hz),
+        "frame_count": int(frames.shape[0]),
+        "landmarks_unique": int(len(landmark_counts)),
+        "landmarks_total": total_landmarks,
+        "simhash64": f"{simhash:016x}",
+        "hashes": [f"{hashed:016x}:{int(count)}" for hashed, count in top_hashes],
+    }
+
+
+def _fp_download_media_for_url(
+    *,
+    video_url: str,
+    output_dir: Path,
+    cookies_path: Optional[Path],
+    yt_timeout_seconds: float,
+    max_attempts: int,
+) -> Path:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    last_error: Optional[Exception] = None
+
+    for attempt in range(1, max(1, max_attempts) + 1):
+        try:
+            outtmpl = str(output_dir / "%(id)s.%(ext)s")
+            ydl_opts: Dict[str, Any] = {
+                "quiet": True,
+                "no_warnings": True,
+                "noprogress": True,
+                "noplaylist": True,
+                "format": "bestaudio/best",
+                "outtmpl": outtmpl,
+                "overwrites": True,
+                "retries": 2,
+                "extractor_retries": 1,
+                "fragment_retries": 1,
+                "socket_timeout": float(max(5.0, yt_timeout_seconds)),
+                "nocheckcertificate": True,
+                "concurrent_fragment_downloads": 1,
+            }
+            if cookies_path and cookies_path.exists():
+                ydl_opts["cookiefile"] = str(cookies_path)
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(video_url, download=True)
+                candidates: List[Path] = []
+
+                prepared = Path(ydl.prepare_filename(info))
+                candidates.append(prepared)
+
+                requested = info.get("requested_downloads")
+                if isinstance(requested, list):
+                    for entry in requested:
+                        if not isinstance(entry, dict):
+                            continue
+                        filepath = entry.get("filepath")
+                        if filepath:
+                            candidates.append(Path(str(filepath)))
+
+                media_id = str(info.get("id") or "").strip()
+                if media_id:
+                    candidates.extend(sorted(output_dir.glob(f"{media_id}.*")))
+
+                for candidate in candidates:
+                    if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+                        return candidate
+                raise RuntimeError("yt-dlp did not produce a media file.")
+        except Exception as exc:
+            last_error = exc
+            if attempt < max(1, max_attempts):
+                time.sleep(1.0 * attempt)
+
+    raise RuntimeError(f"yt-dlp failed after {max_attempts} attempt(s): {safe_console_text(last_error)}")
+
+
+def add_audio_fingerprints_to_supabase_rows(
+    rows: List[Dict[str, Any]],
+    repo_root: Path,
+    env_file: Path,
+) -> Tuple[int, List[str]]:
+    if not rows:
+        return 0, []
+
+    ffmpeg_bin = _fp_resolve_ffmpeg_binary(repo_root=repo_root)
+    cookies_path = _fp_resolve_cookies_path(repo_root=repo_root, env_file=env_file)
+    generated = 0
+    errors: List[str] = []
+
+    with tempfile.TemporaryDirectory(prefix="trendbot_fp_") as scratch_root:
+        scratch = Path(scratch_root)
+        for index, row in enumerate(rows, start=1):
+            video_url = str(row.get("song_link") or "").strip()
+            if not video_url:
+                continue
+            row_dir = scratch / f"row_{index}"
+            row_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                media_path = _fp_download_media_for_url(
+                    video_url=video_url,
+                    output_dir=row_dir,
+                    cookies_path=cookies_path,
+                    yt_timeout_seconds=40.0,
+                    max_attempts=3,
+                )
+                fingerprint = _fp_compute_audio_fingerprint(
+                    media_path=media_path,
+                    ffmpeg_bin=ffmpeg_bin,
+                    sample_rate=11025,
+                    clip_seconds=45.0,
+                    fft_size=2048,
+                    hop_size=512,
+                    min_freq_hz=80.0,
+                    max_freq_hz=5000.0,
+                    peaks_per_frame=4,
+                    peak_min_gap_bins=4,
+                    anchor_peaks=2,
+                    target_peaks=2,
+                    fanout_frames=15,
+                    max_hashes=512,
+                    min_unique_hashes=128,
+                )
+                row["audio_fingerprint"] = fingerprint
+                generated += 1
+            except Exception as exc:
+                errors.append(f"song_link={video_url} error={type(exc).__name__}: {exc}")
+            finally:
+                shutil.rmtree(row_dir, ignore_errors=True)
+    return generated, errors
+
+
+def fetch_max_cluster_id_before_cutoff(
+    session: requests.Session,
+    supabase_url: str,
+    supabase_key: str,
+    table_name: str,
+    cutoff_iso: str,
+    timeout_seconds: float,
+) -> Tuple[int, Optional[str]]:
+    endpoint = supabase_url.rstrip("/") + f"/rest/v1/{table_name}"
+    headers = {
+        "apikey": supabase_key,
+        "Authorization": f"Bearer {supabase_key}",
+        "Accept": "application/json",
+    }
+    params = {
+        "select": "cluster_id",
+        "cluster_id": "not.is.null",
+        "generated_at": f"lt.{cutoff_iso}",
+        "order": "cluster_id.desc",
+        "limit": "1",
+    }
+    try:
+        response = session.get(endpoint, params=params, headers=headers, timeout=max(1.0, timeout_seconds))
+    except Exception as exc:
+        return 0, f"Failed to fetch historical max cluster id: {type(exc).__name__}: {exc}"
+    if response.status_code >= 400:
+        missing_column = extract_missing_supabase_column(response)
+        if missing_column in {"cluster_id", "generated_at"}:
+            return 0, (
+                "Shared-audio clustering skipped: missing required topic_trends columns "
+                "(cluster_id/generated_at)."
+            )
+        return 0, f"Failed to fetch historical max cluster id: status={response.status_code}"
+    try:
+        payload = response.json()
+    except Exception:
+        return 0, "Failed to parse historical max cluster id response."
+    if not isinstance(payload, list) or not payload:
+        return 0, None
+    max_value = safe_int(payload[0].get("cluster_id"))
+    return max(0, int(max_value or 0)), None
+
+
+def run_recent_shared_audio_clustering(
+    repo_root: Path,
+    table_name: str,
+    cluster_id_start_at: int,
+    since_days: float = 30.0,
+) -> Tuple[bool, str]:
+    script_path = repo_root / "scripts" / "cluster_audio_fingerprints.py"
+    if not script_path.exists():
+        return False, f"Shared-audio clustering script not found: {script_path}"
+
+    cmd = [
+        sys.executable,
+        str(script_path),
+        "--table",
+        table_name,
+        "--since-days",
+        str(float(since_days)),
+        "--cluster-id-start-at",
+        str(max(1, int(cluster_id_start_at))),
+    ]
+    result = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    output_lines = []
+    if result.stdout:
+        output_lines.extend(line.strip() for line in result.stdout.splitlines() if line.strip())
+    if result.stderr:
+        output_lines.extend(line.strip() for line in result.stderr.splitlines() if line.strip())
+    summary = " | ".join(output_lines[-5:]) if output_lines else "no output"
+    if result.returncode != 0:
+        return False, f"Shared-audio clustering failed (exit={result.returncode}): {summary}"
+    return True, summary
 
 
 def upsert_topic_songs_to_supabase(
@@ -3771,7 +4202,7 @@ def parse_args(default_history: Path, default_output: Path) -> argparse.Namespac
     parser.add_argument(
         "--supabase-min-velocity",
         type=float,
-        default=500,
+        default=100,
         help="Only upload topic song rows with velocity_views_per_hour strictly greater than this value.",
     )
     parser.add_argument(
@@ -4262,10 +4693,24 @@ def main() -> None:
         "min_velocity": float(max(0.0, args.supabase_min_velocity)),
         "filtered_out_rows": 0,
         "prepared_rows": 0,
+        "fingerprint_generated_rows": 0,
+        "fingerprint_failed_rows": 0,
         "uploaded_rows": 0,
         "failed_rows": 0,
+        "clustering": {
+            "attempted": False,
+            "window_days": 30,
+            "cutoff_iso": None,
+            "max_cluster_before_window": 0,
+            "cluster_id_start_at": 1,
+            "ok": False,
+            "message": "",
+        },
         "errors": [],
     }
+    supabase_url_for_followups: Optional[str] = None
+    supabase_key_for_followups: Optional[str] = None
+    supabase_table_for_followups: Optional[str] = None
     if supabase_upload_summary["enabled"]:
         progress_log("Starting Supabase topic song upload stage...", force=True)
         table_name = clean_supabase_table_name(args.supabase_table)
@@ -4303,15 +4748,33 @@ def main() -> None:
                 f"Supabase upload prepared rows: {len(prepared_rows)}",
                 force=True,
             )
+            supabase_url, supabase_key = resolve_supabase_url_and_key(
+                repo_root=repo_root,
+                url_override=args.supabase_url,
+                project_id_override=args.supabase_project_id,
+                key_override=args.supabase_key,
+            )
+            if supabase_url and supabase_key:
+                supabase_upload_summary["supabase_url"] = supabase_url
+                supabase_url_for_followups = supabase_url
+                supabase_key_for_followups = supabase_key
+                supabase_table_for_followups = table_name
             if not prepared_rows:
                 source_notes.append("Supabase upload skipped: no topic song rows with link data to upload.")
             else:
-                supabase_url, supabase_key = resolve_supabase_url_and_key(
+                fingerprint_generated, fingerprint_errors = add_audio_fingerprints_to_supabase_rows(
+                    rows=prepared_rows,
                     repo_root=repo_root,
-                    url_override=args.supabase_url,
-                    project_id_override=args.supabase_project_id,
-                    key_override=args.supabase_key,
+                    env_file=repo_root / "app.env",
                 )
+                supabase_upload_summary["fingerprint_generated_rows"] = fingerprint_generated
+                supabase_upload_summary["fingerprint_failed_rows"] = max(0, len(prepared_rows) - fingerprint_generated)
+                if fingerprint_errors:
+                    source_notes.append(
+                        "Audio fingerprint generation issues: "
+                        + " | ".join(fingerprint_errors[:3])
+                        + (" | ..." if len(fingerprint_errors) > 3 else "")
+                    )
                 if not supabase_url or not supabase_key:
                     msg = (
                         "Supabase upload skipped: missing credentials. Set SUPABASE_URL (or SUPABASE_PROJECT_ID) "
@@ -4320,7 +4783,6 @@ def main() -> None:
                     source_notes.append(msg)
                     supabase_upload_summary["errors"].append(msg)
                 else:
-                    supabase_upload_summary["supabase_url"] = supabase_url
                     upload_started = time.monotonic()
                     uploaded_rows, upload_errors = upsert_topic_songs_to_supabase(
                         session=session,
@@ -4349,6 +4811,47 @@ def main() -> None:
                         f"in {time.monotonic() - upload_started:.1f}s",
                         force=True,
                     )
+            if (
+                supabase_url_for_followups
+                and supabase_key_for_followups
+                and supabase_table_for_followups
+            ):
+                clustering_summary = supabase_upload_summary.get("clustering", {})
+                clustering_summary["attempted"] = True
+                cutoff_iso = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+                clustering_summary["cutoff_iso"] = cutoff_iso
+                max_cluster_before_window, max_cluster_error = fetch_max_cluster_id_before_cutoff(
+                    session=session,
+                    supabase_url=supabase_url_for_followups,
+                    supabase_key=supabase_key_for_followups,
+                    table_name=supabase_table_for_followups,
+                    cutoff_iso=cutoff_iso,
+                    timeout_seconds=max(1.0, args.supabase_timeout),
+                )
+                if max_cluster_error:
+                    clustering_summary["ok"] = False
+                    clustering_summary["message"] = max_cluster_error
+                    source_notes.append(max_cluster_error)
+                else:
+                    cluster_id_start_at = max(1, int(max_cluster_before_window) + 1)
+                    clustering_summary["max_cluster_before_window"] = int(max_cluster_before_window)
+                    clustering_summary["cluster_id_start_at"] = cluster_id_start_at
+                    cluster_ok, cluster_message = run_recent_shared_audio_clustering(
+                        repo_root=repo_root,
+                        table_name=supabase_table_for_followups,
+                        cluster_id_start_at=cluster_id_start_at,
+                        since_days=30.0,
+                    )
+                    clustering_summary["ok"] = bool(cluster_ok)
+                    clustering_summary["message"] = cluster_message
+                    if cluster_ok:
+                        source_notes.append(
+                            "Shared-audio clustering completed for rows from last 30 days "
+                            f"(cluster ids started at {cluster_id_start_at})."
+                        )
+                    else:
+                        source_notes.append(cluster_message)
+                supabase_upload_summary["clustering"] = clustering_summary
 
     report_payload = {
         "generated_at": timestamp_iso,

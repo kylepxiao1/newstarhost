@@ -120,6 +120,44 @@ Notes:
 - Browser scraping is enforced headless for all runs.
 - Videos older than 365 days are excluded by default (`--max-video-age-days` to change, `0` to disable).
 - Topic song rows can be upserted to Supabase `topic_trends` (disable with `--no-supabase-upload`).
+- During Supabase upload, trendbot now generates `audio_fingerprint` per uploaded row and sets `shared=false` by default.
+- At the end of each trendbot run, shared-audio clustering is executed for `topic_trends` rows with `generated_at` in the last 30 days. New cluster IDs start strictly above the max non-null cluster ID from rows older than 30 days.
+
+### Find Likely Shared Audio
+Use `scripts/cluster_audio_fingerprints.py` to compare backfilled `audio_fingerprint` values and surface rows likely using the same source audio.
+
+Before first run, add cluster columns:
+```sql
+alter table public.topic_trends
+add column if not exists cluster_id integer;
+
+alter table public.topic_trends
+alter column cluster_id type integer
+using nullif(regexp_replace(coalesce(cluster_id::text, ''), '[^0-9-]', '', 'g'), '')::integer;
+
+alter table public.topic_trends
+add column if not exists shared boolean;
+
+alter table public.topic_trends
+alter column shared set default true;
+
+update public.topic_trends
+set shared = true
+where shared is null;
+```
+
+Example:
+```powershell
+.\.venv\Scripts\python.exe scripts\cluster_audio_fingerprints.py --top 50
+```
+
+Useful flags:
+- `--same-topic-only` only compare rows inside the same `topic`.
+- `--topic "dance challenges"` limit scan to one topic first.
+- `--min-confidence 0.45` tighten match precision.
+- Default behavior writes `cluster_id` and `shared=true` to matched rows in `topic_trends`.
+- In write mode, rows loaded by the run that are not assigned to a cluster have `cluster_id` set to `null`.
+- `--no-write-cluster-updates` keeps the run read-only.
 
 ### Fly.io Listener Machine
 The `listener` process runs `scripts/listener_multi.sh`, which auto-discovers shard env vars in this format:
@@ -169,7 +207,7 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
     and `scripts/top_gifters_bot.py` (top gifters report after livestreams).
 - The `/app/media` Fly volume is scoped to `app` machines only.
 - Trendbot defaults (inside `scripts/discord_worker.sh`):
-  - `TRENDBOT_INTERVAL=43200` (12 hours)
+  - `TRENDBOT_INTERVAL=21600` (6 hours)
   - `TRENDBOT_CMD='python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25 --api-max-attempts 5 --supabase-min-velocity 100'`
 - Optional env file for trendbot: `TRENDBOT_ENV_FILE` (default `/app/app.env`).
 - Discord reconnect log noise control:

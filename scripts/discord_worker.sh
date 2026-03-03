@@ -10,7 +10,7 @@ if [ -f "$ENV_FILE" ]; then
 fi
 
 # Per-run trendbot command override via `TRENDBOT_RUN_CMD`.
-TRENDBOT_MIN_VELOCITY="${TRENDBOT_MIN_VELOCITY:-500}"
+TRENDBOT_MIN_VELOCITY="${TRENDBOT_MIN_VELOCITY:-100}"
 TRENDBOT_BROWSER="${TRENDBOT_BROWSER:-chromium}"
 TRENDBOT_HEADLESS="${TRENDBOT_HEADLESS:-1}"
 TRENDBOT_API_MAX_ATTEMPTS="${TRENDBOT_API_MAX_ATTEMPTS:-2}"
@@ -48,12 +48,12 @@ trendbot_loop() {
     set +a
   fi
 
-  local interval="${TRENDBOT_INTERVAL:-43200}"
+  local interval="${TRENDBOT_INTERVAL:-21600}"
   local headless_flag=""
   if [ "${TRENDBOT_HEADLESS:-1}" = "1" ] || [ "${TRENDBOT_HEADLESS:-1}" = "true" ]; then
     headless_flag="--headless"
   fi
-  local default_cmd="python /app/scripts/find_viral_trends.py --topic \"dance challenges\" --videos ${TRENDBOT_VIDEOS:-60} --top ${TRENDBOT_TOP:-25} --browser ${TRENDBOT_BROWSER:-chromium} ${headless_flag} --api-max-attempts ${TRENDBOT_API_MAX_ATTEMPTS:-2} --api-navigation-timeout-ms ${TRENDBOT_API_NAV_TIMEOUT_MS:-8000} --discover-scroll-rounds ${TRENDBOT_DISCOVER_SCROLL_ROUNDS:-6} --discover-dances-videos ${TRENDBOT_DISCOVER_DANCES_VIDEOS:-72} --topic-hashtag-pages ${TRENDBOT_TOPIC_HASHTAG_PAGES:-10} --topic-hashtag-video-samples ${TRENDBOT_TOPIC_HASHTAG_VIDEO_SAMPLES:-8} --topic-max-related-videos ${TRENDBOT_TOPIC_MAX_RELATED_VIDEOS:-120} --supabase-min-velocity ${TRENDBOT_MIN_VELOCITY:-500}"
+  local default_cmd="python /app/scripts/find_viral_trends.py --topic \"dance challenges\" --videos ${TRENDBOT_VIDEOS:-60} --top ${TRENDBOT_TOP:-25} --browser ${TRENDBOT_BROWSER:-chromium} ${headless_flag} --api-max-attempts ${TRENDBOT_API_MAX_ATTEMPTS:-2} --api-navigation-timeout-ms ${TRENDBOT_API_NAV_TIMEOUT_MS:-8000} --discover-scroll-rounds ${TRENDBOT_DISCOVER_SCROLL_ROUNDS:-6} --discover-dances-videos ${TRENDBOT_DISCOVER_DANCES_VIDEOS:-72} --topic-hashtag-pages ${TRENDBOT_TOPIC_HASHTAG_PAGES:-10} --topic-hashtag-video-samples ${TRENDBOT_TOPIC_HASHTAG_VIDEO_SAMPLES:-8} --topic-max-related-videos ${TRENDBOT_TOPIC_MAX_RELATED_VIDEOS:-120} --supabase-min-velocity ${TRENDBOT_MIN_VELOCITY:-100}"
   local cmd="${TRENDBOT_RUN_CMD:-${default_cmd}}"
 
   trendbot_log "Starting trendbot loop (interval=${interval}s)"
