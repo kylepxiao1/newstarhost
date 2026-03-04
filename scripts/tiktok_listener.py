@@ -72,6 +72,7 @@ LISTENER_HEARTBEAT_INTERVAL_SECONDS = max(15.0, _env_float("LISTENER_HEARTBEAT_I
 LISTENER_HEARTBEAT_ID = _env("LISTENER_HEARTBEAT_ID", "").strip()
 LISTENER_HEARTBEAT_LOG_LINES = max(1, _env_int("LISTENER_HEARTBEAT_LOG_LINES", 30))
 LISTENER_HEARTBEAT_LOG_BUFFER_LINES = max(50, _env_int("LISTENER_HEARTBEAT_LOG_BUFFER_LINES", 120))
+LISTENER_HEALTH_LOG_ENABLED = _env_flag("LISTENER_HEALTH_LOG_ENABLED", True)
 
 if WHITELIST_AUTHENTICATED_SESSION_ID_HOST:
     os.environ.setdefault(
@@ -116,6 +117,10 @@ class _RecentLogBufferHandler(logging.Handler):
 _recent_log_handler = _RecentLogBufferHandler(max_lines=LISTENER_HEARTBEAT_LOG_BUFFER_LINES)
 _recent_log_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
 logging.getLogger().addHandler(_recent_log_handler)
+
+
+class ListenerRestartRequested(RuntimeError):
+    pass
 
 
 COOKIE_ENV_MAP = {
@@ -340,6 +345,9 @@ class TikTokLiveListener:
         self._store_backpressure_hits = 0
         self._last_store_backpressure_log = datetime.min.replace(tzinfo=timezone.utc)
         self._is_connected = False
+        self._restart_requested = False
+        self._restart_reason = ""
+        self._restart_signal = asyncio.Event()
 
         # Apply signer defaults if available
         if WebDefaults:
@@ -434,18 +442,27 @@ class TikTokLiveListener:
                 self._store_queue.task_done()
             if self._event_store.should_force_restart():
                 reason = self._event_store.force_restart_reason() or "Supabase ConnectTimeout watchdog triggered"
-                logger.critical(
-                    "Forcing listener process restart for @%s due to Supabase connectivity watchdog: %s",
-                    self.username,
-                    reason,
-                )
-                os._exit(75)
+                if not self._restart_requested:
+                    self._restart_requested = True
+                    self._restart_reason = reason
+                    self._restart_signal.set()
+                    logger.critical(
+                        "Graceful listener restart requested for @%s due to Supabase connectivity watchdog: %s",
+                        self.username,
+                        reason,
+                    )
+                    try:
+                        await self.client.disconnect()
+                    except Exception:
+                        pass
 
     async def _enqueue_store_call(
         self,
         label: str,
         coro_factory: Callable[[], Awaitable[None]],
     ) -> None:
+        if self._restart_requested:
+            return
         await self._start_store_workers()
         item = (label, coro_factory)
         try:
@@ -732,9 +749,14 @@ class TikTokLiveListener:
     async def _sleep_with_jitter(self, seconds: float) -> None:
         if seconds <= 0:
             return
+        if self._restart_requested:
+            return
         jitter = random.uniform(0.8, 1.2)
         delay = max(1.0, seconds * jitter)
-        await asyncio.sleep(delay)
+        try:
+            await asyncio.wait_for(self._restart_signal.wait(), timeout=delay)
+        except asyncio.TimeoutError:
+            pass
 
     def _combo_key(self, payload: dict) -> Optional[tuple]:
         gid = _get_any(payload, "group_id", "groupId")
@@ -1214,6 +1236,13 @@ class TikTokLiveListener:
         backoff = self._base_backoff
         await self._start_store_workers()
         while True:
+            if self._restart_requested:
+                logger.warning(
+                    "Stopping listener loop for @%s to perform graceful restart drain: %s",
+                    self.username,
+                    self._restart_reason or "restart requested",
+                )
+                break
             live_status = await self._check_live_status()
             if live_status is False:
                 now = datetime.now(timezone.utc)
@@ -1310,7 +1339,11 @@ class TikTokLiveListener:
             except (asyncio.CancelledError, KeyboardInterrupt):
                 logger.info("Sleep cancelled; shutting down.")
                 break
+            if self._restart_requested:
+                break
             backoff = min(self._max_backoff, max(self._base_backoff, backoff * 2))
+        if self._restart_requested:
+            raise ListenerRestartRequested(self._restart_reason or "restart requested")
 
     async def close(self) -> None:
         await self._flush_store_queue()
@@ -1347,6 +1380,39 @@ def _resolve_heartbeat_id(usernames: list[str]) -> str:
     # Keep default stable so each heartbeat overwrites the same row by default.
     return "listener"
 
+
+def _process_metrics_snapshot() -> dict:
+    rss_kb: Optional[int] = None
+    vm_size_kb: Optional[int] = None
+    status_path = Path("/proc/self/status")
+    if status_path.exists():
+        try:
+            for line in status_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("VmRSS:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        rss_kb = int(parts[1])
+                elif line.startswith("VmSize:"):
+                    parts = line.split()
+                    if len(parts) >= 2:
+                        vm_size_kb = int(parts[1])
+        except Exception:
+            pass
+
+    fd_count: Optional[int] = None
+    fd_dir = Path("/proc/self/fd")
+    if fd_dir.exists():
+        try:
+            fd_count = len(list(fd_dir.iterdir()))
+        except Exception:
+            pass
+
+    return {
+        "process_rss_mb": round((rss_kb or 0) / 1024.0, 2) if rss_kb is not None else None,
+        "process_vms_mb": round((vm_size_kb or 0) / 1024.0, 2) if vm_size_kb is not None else None,
+        "process_fd_count": fd_count,
+    }
+
 async def main() -> None:
     usernames = [u for u in parse_usernames() if u]
     if not usernames:
@@ -1365,40 +1431,66 @@ async def main() -> None:
     listeners = [TikTokLiveListener(u, event_store) for u in usernames]
     heartbeat_task: Optional[asyncio.Task] = None
     heartbeat_id = _resolve_heartbeat_id(usernames)
+    listener_tasks: list[asyncio.Task] = []
+    restart_exit_requested = False
 
     async def run_listener(listener: TikTokLiveListener) -> None:
         try:
             await listener.run()
+        except ListenerRestartRequested:
+            raise
         except (asyncio.CancelledError, KeyboardInterrupt):
             pass
         finally:
             await listener.close()
 
     async def heartbeat_loop() -> None:
+        next_expected_monotonic = time.monotonic()
         while True:
+            loop_lag_ms = max(0.0, (time.monotonic() - next_expected_monotonic) * 1000.0)
             snapshots = [listener.heartbeat_snapshot() for listener in listeners]
             connected_count = sum(1 for item in snapshots if item.get("connected"))
             queue_total = sum(int(item.get("store_queue_size") or 0) for item in snapshots)
             backpressure_total = sum(int(item.get("store_backpressure_hits") or 0) for item in snapshots)
             recent_logs = _recent_log_handler.tail(LISTENER_HEARTBEAT_LOG_LINES)
+            process_metrics = _process_metrics_snapshot()
+            store_metrics = event_store.health_snapshot()
+            payload = {
+                "status": "running",
+                "process_id": os.getpid(),
+                "hostname": socket.gethostname(),
+                "machine_id": os.environ.get("FLY_MACHINE_ID"),
+                "region": os.environ.get("FLY_REGION"),
+                "listener_usernames": [listener.username for listener in listeners],
+                "active_listener_count": len(listeners),
+                "connected_listener_count": connected_count,
+                "queue_total": queue_total,
+                "backpressure_hits_total": backpressure_total,
+                "listener_states": snapshots,
+                "recent_logs": recent_logs,
+                "last_log_line": recent_logs[-1] if recent_logs else None,
+                "event_loop_lag_ms": round(loop_lag_ms, 2),
+                "event_store": store_metrics,
+                **process_metrics,
+            }
             await event_store.log_listener_heartbeat(
                 listener_id=heartbeat_id,
-                payload={
-                    "status": "running",
-                    "process_id": os.getpid(),
-                    "hostname": socket.gethostname(),
-                    "machine_id": os.environ.get("FLY_MACHINE_ID"),
-                    "region": os.environ.get("FLY_REGION"),
-                    "listener_usernames": [listener.username for listener in listeners],
-                    "active_listener_count": len(listeners),
-                    "connected_listener_count": connected_count,
-                    "queue_total": queue_total,
-                    "backpressure_hits_total": backpressure_total,
-                    "listener_states": snapshots,
-                    "recent_logs": recent_logs,
-                    "last_log_line": recent_logs[-1] if recent_logs else None,
-                },
+                payload=payload,
             )
+            if LISTENER_HEALTH_LOG_ENABLED:
+                logger.info(
+                    "Listener health id=%s connected=%s/%s queue_total=%s backpressure=%s rss_mb=%s fd_count=%s failed_rows=%s loop_lag_ms=%.1f",
+                    heartbeat_id,
+                    connected_count,
+                    len(listeners),
+                    queue_total,
+                    backpressure_total,
+                    process_metrics.get("process_rss_mb"),
+                    process_metrics.get("process_fd_count"),
+                    store_metrics.get("failed_rows_buffered"),
+                    loop_lag_ms,
+                )
+            next_expected_monotonic = time.monotonic() + LISTENER_HEARTBEAT_INTERVAL_SECONDS
             await asyncio.sleep(LISTENER_HEARTBEAT_INTERVAL_SECONDS)
 
     try:
@@ -1411,6 +1503,12 @@ async def main() -> None:
                 int(LISTENER_HEARTBEAT_INTERVAL_SECONDS),
             )
         await asyncio.gather(*(listener_tasks + ([heartbeat_task] if heartbeat_task else [])))
+    except ListenerRestartRequested as exc:
+        restart_exit_requested = True
+        logger.critical("Graceful listener restart requested; draining and exiting with code 75: %s", exc)
+        for task in listener_tasks:
+            if not task.done():
+                task.cancel()
     except (asyncio.CancelledError, KeyboardInterrupt):
         logger.info("Shutting down TikTok listeners.")
     finally:
@@ -1420,7 +1518,12 @@ async def main() -> None:
         for l in listeners:
             await l.close()
         await event_store.close()
+    if restart_exit_requested:
+        raise SystemExit(75)
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except SystemExit:
+        raise

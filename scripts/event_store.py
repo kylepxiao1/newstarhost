@@ -1,5 +1,6 @@
 import asyncio
 import base64
+from collections import deque
 import json
 import logging
 import math
@@ -132,19 +133,21 @@ class SupabaseEventStore:
             "on",
         }
         self._batch_enabled = _env_bool("SUPABASE_BATCH_ENABLED", True)
-        self._batch_size = max(2, _env_int("SUPABASE_BATCH_SIZE", 10))
         self._batch_max_wait_seconds = max(
             0.05,
             _env_float("SUPABASE_BATCH_MAX_WAIT_SECONDS", 0.25),
         )
-        self._batch_queue_max = max(
-            self._batch_size,
-            _env_int("SUPABASE_BATCH_QUEUE_MAX", 1000),
-        )
-        # key -> {"items": list[(row_data, future)], "task": asyncio.Task | None}
+        self._batch_queue_max = max(2, _env_int("SUPABASE_BATCH_QUEUE_MAX", 1000))
+        # key -> {"items": list[{"row_data": dict, "future": Future, "enqueued_at": float}], "task": asyncio.Task | None}
         self._batch_states = {}
         self._batch_lock = asyncio.Lock()
         self._batch_overflow_warnings = 0
+        self._batch_split_timeslice_chunks = 32
+        self._batch_age_shed_seconds = 12.0
+        self._batch_noisy_tables = {"like_events", "room_update_events"}
+        self._batch_like_shed_counters = {}
+        self._batch_shed_warnings = 0
+        self._batch_coalesce_warnings = 0
         if not url or not key:
             logger.error(
                 "Supabase credentials missing. Set SUPABASE_URL and SUPABASE_SECRET_KEY (or SERVICE_ROLE_KEY)."
@@ -165,8 +168,7 @@ class SupabaseEventStore:
         logger.info("Supabase write concurrency=%s", self._max_concurrent_writes)
         if self._batch_enabled:
             logger.info(
-                "Supabase batching enabled (size=%s wait=%.2fs queue_max=%s)",
-                self._batch_size,
+                "Supabase batching enabled (mode=full-backlog recursive-split wait=%.2fs queue_max=%s)",
                 self._batch_max_wait_seconds,
                 self._batch_queue_max,
             )
@@ -315,6 +317,23 @@ class SupabaseEventStore:
     def force_restart_reason(self) -> str:
         return self._restart_reason
 
+    def health_snapshot(self) -> dict:
+        now = time.time()
+        window_start = now - self._connect_timeout_restart_window_seconds
+        self._connect_timeout_failures = [t for t in self._connect_timeout_failures if t >= window_start]
+        restart_enabled = bool(
+            self._connect_timeout_restart_enabled and self._connect_timeout_restart_threshold > 0
+        )
+        return {
+            "failed_rows_buffered": len(self._failed_rows),
+            "failed_rows_max": self._failed_rows_max,
+            "connect_timeout_failures_in_window": len(self._connect_timeout_failures),
+            "connect_timeout_window_seconds": int(self._connect_timeout_restart_window_seconds),
+            "connect_timeout_restart_enabled": restart_enabled,
+            "connect_timeout_restart_threshold": self._connect_timeout_restart_threshold,
+            "restart_requested": self._restart_requested,
+        }
+
     async def _send_post_with_retry(
         self,
         table: str,
@@ -419,7 +438,8 @@ class SupabaseEventStore:
         prefer_header = "return=minimal"
         if on_conflict:
             params["on_conflict"] = on_conflict
-            prefer_header = "resolution=merge-duplicates,return=minimal"
+            # For batch inserts, ignore collisions instead of merging existing rows.
+            prefer_header = "resolution=ignore-duplicates,return=minimal"
         if prefer:
             prefer_header = prefer
 
@@ -503,6 +523,201 @@ class SupabaseEventStore:
             return False
         return True
 
+    def _make_batch_item(
+        self,
+        row_data: dict,
+        future: asyncio.Future,
+        *,
+        enqueued_at: Optional[float] = None,
+    ) -> dict:
+        return {
+            "row_data": row_data.copy() if isinstance(row_data, dict) else {},
+            "future": future,
+            "enqueued_at": float(enqueued_at if enqueued_at is not None else time.time()),
+        }
+
+    def _batch_item_parts(self, item) -> tuple[dict, Optional[asyncio.Future], float]:
+        row_data = {}
+        future: Optional[asyncio.Future] = None
+        enqueued_at = time.time()
+        if isinstance(item, dict):
+            row_data = item.get("row_data") if isinstance(item.get("row_data"), dict) else {}
+            maybe_future = item.get("future")
+            if isinstance(maybe_future, asyncio.Future):
+                future = maybe_future
+            try:
+                enqueued_at = float(item.get("enqueued_at") or enqueued_at)
+            except Exception:
+                enqueued_at = time.time()
+            return row_data, future, enqueued_at
+        if isinstance(item, (tuple, list)):
+            if len(item) >= 1 and isinstance(item[0], dict):
+                row_data = item[0]
+            if len(item) >= 2 and isinstance(item[1], asyncio.Future):
+                future = item[1]
+            if len(item) >= 3:
+                try:
+                    enqueued_at = float(item[2])
+                except Exception:
+                    enqueued_at = time.time()
+        return row_data, future, enqueued_at
+
+    def _queue_oldest_age_seconds(self, queue: list) -> float:
+        if not queue:
+            return 0.0
+        now = time.time()
+        oldest_ts = now
+        for item in queue:
+            _, _, enqueued_at = self._batch_item_parts(item)
+            oldest_ts = min(oldest_ts, enqueued_at)
+        return max(0.0, now - oldest_ts)
+
+    def _like_shed_keep_every(self, oldest_age_seconds: float) -> int:
+        if oldest_age_seconds >= 45:
+            return 8
+        if oldest_age_seconds >= 25:
+            return 4
+        return 2
+
+    async def _send_rows_with_recursive_split(
+        self,
+        key: tuple,
+        table: str,
+        chunk_items: list,
+        on_conflict: Optional[str],
+        prefer: Optional[str],
+    ) -> None:
+        if not chunk_items:
+            return
+        # Each work item: (chunk_items, depth, on_conflict_override)
+        work: deque[tuple[list, int, Optional[str]]] = deque([(chunk_items, 0, on_conflict)])
+        processed_chunks = 0
+
+        while work:
+            if processed_chunks >= self._batch_split_timeslice_chunks:
+                pending_items = []
+                for pending_chunk, _depth, _conflict in work:
+                    pending_items.extend(pending_chunk)
+                if pending_items:
+                    async with self._batch_lock:
+                        state = self._batch_states.get(key)
+                        if state is not None:
+                            existing_queue = state.get("items") or []
+                            state["items"] = pending_items + existing_queue
+                # Yield control so newly arrived queue head work can be observed.
+                await asyncio.sleep(0)
+                return
+
+            chunk, depth, chunk_on_conflict = work.popleft()
+            if not chunk:
+                continue
+            rows = []
+            futures: list[Optional[asyncio.Future]] = []
+            for item in chunk:
+                row_data, future, _ts = self._batch_item_parts(item)
+                rows.append(row_data)
+                futures.append(future)
+
+            active_on_conflict = chunk_on_conflict
+            resp = await self._send_post_rows_with_retry(
+                table=table,
+                rows=rows,
+                on_conflict=active_on_conflict,
+                prefer=prefer,
+                queue_on_failure=False,
+            )
+
+            if active_on_conflict and self._response_missing_unique(resp):
+                logger.warning(
+                    "Supabase batch %s failed (missing unique constraint for on_conflict); retrying chunk size=%s without on_conflict",
+                    table,
+                    len(rows),
+                )
+                active_on_conflict = None
+                resp = await self._send_post_rows_with_retry(
+                    table=table,
+                    rows=rows,
+                    on_conflict=active_on_conflict,
+                    prefer=prefer,
+                    queue_on_failure=False,
+                )
+
+            if resp is not None and resp.is_success:
+                for fut in futures:
+                    if fut is not None and not fut.done():
+                        fut.set_result(resp)
+                processed_chunks += 1
+                continue
+
+            if len(rows) <= 1:
+                row_resp = await self._send_post_with_retry(
+                    table=table,
+                    row_data=rows[0],
+                    on_conflict=active_on_conflict,
+                    prefer=prefer,
+                    queue_on_failure=True,
+                )
+                if active_on_conflict and self._response_missing_unique(row_resp):
+                    row_resp = await self._send_post_with_retry(
+                        table=table,
+                        row_data=rows[0],
+                        on_conflict=None,
+                        prefer=prefer,
+                        queue_on_failure=True,
+                    )
+                fut = futures[0]
+                if fut is not None and not fut.done():
+                    fut.set_result(row_resp)
+                processed_chunks += 1
+                continue
+
+            can_evict_row = (
+                resp is not None
+                and not resp.is_success
+                and resp.status_code not in _RETRYABLE_STATUS_CODES
+                and self._buffer_failed_rows
+                and self._failed_rows_max > 0
+                and len(rows) > 1
+            )
+            if can_evict_row:
+                candidate_idx = len(rows) // 2
+                candidate_row, candidate_future, _ts = self._batch_item_parts(chunk[candidate_idx])
+                self._queue_failed_row(table, candidate_row, active_on_conflict, prefer)
+                if candidate_future is not None and not candidate_future.done():
+                    candidate_future.set_result(None)
+                remaining_chunk = chunk[:candidate_idx] + chunk[candidate_idx + 1 :]
+                logger.warning(
+                    "Supabase batch %s failed (status=%s); moved candidate row to failed buffer before recursion "
+                    "(chunk_size=%s depth=%s remaining=%s)",
+                    table,
+                    resp.status_code,
+                    len(rows),
+                    depth,
+                    len(remaining_chunk),
+                )
+                if remaining_chunk:
+                    work.appendleft((remaining_chunk, depth + 1, active_on_conflict))
+                processed_chunks += 1
+                continue
+
+            reason = "network/timeout" if resp is None else f"status={resp.status_code}"
+            mid = len(chunk) // 2
+            left_chunk = chunk[:mid]
+            right_chunk = chunk[mid:]
+            logger.warning(
+                "Supabase batch %s failed (%s); splitting backlog chunk size=%s depth=%s into %s + %s",
+                table,
+                reason,
+                len(chunk),
+                depth,
+                len(left_chunk),
+                len(right_chunk),
+            )
+            # Depth-first order: process left half before right half.
+            work.appendleft((right_chunk, depth + 1, active_on_conflict))
+            work.appendleft((left_chunk, depth + 1, active_on_conflict))
+            processed_chunks += 1
+
     async def _flush_batch_for_key(self, key: tuple) -> None:
         table, on_conflict_token, prefer_token = key
         on_conflict = on_conflict_token or None
@@ -516,53 +731,17 @@ class SupabaseEventStore:
                 if not queue:
                     state["task"] = None
                     return
-                chunk = queue[: self._batch_size]
-                del queue[: len(chunk)]
+                chunk = queue[:]
+                queue.clear()
                 state["items"] = queue
 
-            rows = [item[0] for item in chunk]
-            futures = [item[1] for item in chunk]
-            resp = await self._send_post_rows_with_retry(
+            await self._send_rows_with_recursive_split(
+                key=key,
                 table=table,
-                rows=rows,
+                chunk_items=chunk,
                 on_conflict=on_conflict,
                 prefer=prefer,
-                queue_on_failure=True,
             )
-
-            # If a batch fails, salvage good rows by retrying per-row.
-            # Special-case missing unique constraints by dropping on_conflict.
-            row_on_conflict = on_conflict
-            fallback_reason = None
-            if on_conflict and self._response_missing_unique(resp):
-                row_on_conflict = None
-                fallback_reason = "missing unique constraint for on_conflict"
-            elif resp is not None and not resp.is_success:
-                fallback_reason = f"status={resp.status_code}"
-
-            if fallback_reason:
-                logger.warning(
-                    "Supabase batch %s failed (%s); falling back to per-row writes for %s rows",
-                    table,
-                    fallback_reason,
-                    len(rows),
-                )
-                for idx, row in enumerate(rows):
-                    row_resp = await self._send_post_with_retry(
-                        table=table,
-                        row_data=row,
-                        on_conflict=row_on_conflict,
-                        prefer=prefer,
-                        queue_on_failure=True,
-                    )
-                    fut = futures[idx]
-                    if not fut.done():
-                        fut.set_result(row_resp)
-                continue
-
-            for fut in futures:
-                if not fut.done():
-                    fut.set_result(resp)
 
     async def _flush_batch_for_key_after_delay(self, key: tuple, delay: float) -> None:
         await asyncio.sleep(max(0.01, delay))
@@ -578,6 +757,8 @@ class SupabaseEventStore:
         loop = asyncio.get_running_loop()
         fut = loop.create_future()
         key = self._batch_key(table, on_conflict, prefer)
+        safe_row = row_data.copy() if isinstance(row_data, dict) else {}
+        drop_new_row = False
 
         async with self._batch_lock:
             state = self._batch_states.get(key)
@@ -586,29 +767,80 @@ class SupabaseEventStore:
                 self._batch_states[key] = state
             queue = state["items"]
 
-            if len(queue) >= self._batch_queue_max:
-                # Drop oldest pending item under sustained overload to avoid OOM.
-                dropped_row, dropped_future = queue.pop(0)
-                self._queue_failed_row(table, dropped_row, on_conflict, prefer)
-                if not dropped_future.done():
-                    dropped_future.set_result(None)
-                self._batch_overflow_warnings += 1
-                if self._batch_overflow_warnings <= 3 or self._batch_overflow_warnings % 100 == 0:
-                    logger.warning(
-                        "Supabase batch queue overflow for %s key=%s (max=%s, warnings=%s); "
-                        "dropping oldest row to disk buffer",
-                        table,
-                        key,
-                        self._batch_queue_max,
-                        self._batch_overflow_warnings,
-                    )
+            oldest_age_seconds = self._queue_oldest_age_seconds(queue)
+            coalesced_row = False
+            if (
+                queue
+                and oldest_age_seconds >= self._batch_age_shed_seconds
+                and table in self._batch_noisy_tables
+            ):
+                if table == "room_update_events":
+                    incoming_partition = self._room_update_partition_key(safe_row)
+                    for idx in range(len(queue) - 1, -1, -1):
+                        queued_row, queued_future, queued_ts = self._batch_item_parts(queue[idx])
+                        if self._room_update_partition_key(queued_row) != incoming_partition:
+                            continue
+                        if queued_future is not None and not queued_future.done():
+                            queued_future.set_result(None)
+                        queue[idx] = self._make_batch_item(safe_row, fut, enqueued_at=queued_ts)
+                        coalesced_row = True
+                        self._batch_coalesce_warnings += 1
+                        if (
+                            self._batch_coalesce_warnings <= 3
+                            or self._batch_coalesce_warnings % 100 == 0
+                        ):
+                            logger.warning(
+                                "Supabase queue age coalescing for %s key=%s age=%.1fs warnings=%s",
+                                table,
+                                key,
+                                oldest_age_seconds,
+                                self._batch_coalesce_warnings,
+                            )
+                        break
+                elif table == "like_events":
+                    keep_every = self._like_shed_keep_every(oldest_age_seconds)
+                    next_count = int(self._batch_like_shed_counters.get(table, 0)) + 1
+                    self._batch_like_shed_counters[table] = next_count
+                    if (next_count % keep_every) != 0:
+                        drop_new_row = True
+                        if not fut.done():
+                            fut.set_result(None)
+                        self._batch_shed_warnings += 1
+                        if self._batch_shed_warnings <= 3 or self._batch_shed_warnings % 100 == 0:
+                            logger.warning(
+                                "Supabase queue age shedding for %s key=%s age=%.1fs keep_every=%s warnings=%s",
+                                table,
+                                key,
+                                oldest_age_seconds,
+                                keep_every,
+                                self._batch_shed_warnings,
+                            )
 
-            queue.append((row_data.copy() if isinstance(row_data, dict) else {}, fut))
+            if not drop_new_row and not coalesced_row:
+                if len(queue) >= self._batch_queue_max:
+                    # Drop oldest pending item under sustained overload to avoid OOM.
+                    dropped_item = queue.pop(0)
+                    dropped_row, dropped_future, _dropped_ts = self._batch_item_parts(dropped_item)
+                    self._queue_failed_row(table, dropped_row, on_conflict, prefer)
+                    if dropped_future is not None and not dropped_future.done():
+                        dropped_future.set_result(None)
+                    self._batch_overflow_warnings += 1
+                    if self._batch_overflow_warnings <= 3 or self._batch_overflow_warnings % 100 == 0:
+                        logger.warning(
+                            "Supabase batch queue overflow for %s key=%s (max=%s, warnings=%s); "
+                            "dropping oldest row to disk buffer",
+                            table,
+                            key,
+                            self._batch_queue_max,
+                            self._batch_overflow_warnings,
+                        )
+                queue.append(self._make_batch_item(safe_row, fut))
+
             state["items"] = queue
 
             current_task = state.get("task")
-            should_start_now = len(queue) >= self._batch_size
-            if current_task is None or current_task.done():
+            if (current_task is None or current_task.done()) and queue:
+                should_start_now = len(queue) >= 2
                 if should_start_now:
                     state["task"] = asyncio.create_task(self._flush_batch_for_key(key))
                 else:
