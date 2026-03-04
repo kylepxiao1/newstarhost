@@ -170,26 +170,6 @@ def explain_http_error(response: requests.Response) -> str:
     return f"status={response.status_code} body={safe_console_text(text)}"
 
 
-def build_cluster_columns_sql(table_name: str, cluster_id_column: str, shared_column: str) -> str:
-    table = str(table_name or "topic_trends").strip()
-    cluster_col = str(cluster_id_column or "cluster_id").strip()
-    shared_col = str(shared_column or "shared").strip()
-    return (
-        f"alter table public.{table}\n"
-        f"add column if not exists {cluster_col} integer;\n\n"
-        f"alter table public.{table}\n"
-        f"alter column {cluster_col} type integer\n"
-        f"using nullif(regexp_replace(coalesce({cluster_col}::text, ''), '[^0-9-]', '', 'g'), '')::integer;\n\n"
-        f"alter table public.{table}\n"
-        f"add column if not exists {shared_col} boolean;\n\n"
-        f"alter table public.{table}\n"
-        f"alter column {shared_col} set default true;\n\n"
-        f"update public.{table}\n"
-        f"set {shared_col} = true\n"
-        f"where {shared_col} is null;"
-    )
-
-
 @dataclass
 class TrendAudioRow:
     row_id: Any
@@ -671,13 +651,11 @@ def patch_row_cluster_fields(
     id_column: str,
     row_id: Any,
     cluster_id_column: str,
-    shared_column: str,
     cluster_id: int,
     timeout_seconds: float,
 ) -> None:
     payload = {
         cluster_id_column: cluster_id,
-        shared_column: True,
     }
     params = {id_column: f"eq.{row_id}"}
     resp = session.patch(endpoint, params=params, json=payload, timeout=timeout_seconds)
@@ -743,7 +721,6 @@ def apply_cluster_assignments(
     *,
     id_column: str,
     cluster_id_column: str,
-    shared_column: str,
     assignments: Dict[Any, int],
     timeout_seconds: float,
 ) -> int:
@@ -755,7 +732,6 @@ def apply_cluster_assignments(
             id_column=id_column,
             row_id=row_id,
             cluster_id_column=cluster_id_column,
-            shared_column=shared_column,
             cluster_id=cluster_id,
             timeout_seconds=timeout_seconds,
         )
@@ -915,7 +891,7 @@ def main() -> None:
         required_columns.append(args.generated_at_column)
     write_cluster_updates = not bool(args.no_write_cluster_updates)
     if write_cluster_updates:
-        required_columns.extend([args.cluster_id_column, args.shared_column])
+        required_columns.append(args.cluster_id_column)
     try:
         ensure_columns_exist(
             session=session,
@@ -927,19 +903,11 @@ def main() -> None:
         message = str(exc)
         if "Supabase column missing" in message and args.fingerprint_column in message:
             print(message)
-            print(
-                "Create/fill the fingerprint column first, then rerun:\n"
-                f"alter table public.{args.table}\n"
-                f"add column if not exists {args.fingerprint_column} jsonb;"
-            )
+            print(f"Create/fill column '{args.fingerprint_column}' in table '{args.table}', then rerun.")
             raise SystemExit(2)
-        if write_cluster_updates and (
-            f"Supabase column missing: {args.cluster_id_column}" in message
-            or f"Supabase column missing: {args.shared_column}" in message
-        ):
+        if write_cluster_updates and f"Supabase column missing: {args.cluster_id_column}" in message:
             print(message)
-            print("Create the cluster/shared columns, then rerun:")
-            print(build_cluster_columns_sql(args.table, args.cluster_id_column, args.shared_column))
+            print(f"Create required write column '{args.cluster_id_column}' in table '{args.table}', then rerun.")
             raise SystemExit(2)
         raise
 
@@ -1034,7 +1002,6 @@ def main() -> None:
             endpoint=endpoint,
             id_column=args.id_column,
             cluster_id_column=args.cluster_id_column,
-            shared_column=args.shared_column,
             assignments=cluster_assignments,
             timeout_seconds=max(1.0, args.http_timeout),
         )
