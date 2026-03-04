@@ -553,8 +553,8 @@ class FanVerifyBot(commands.Bot):
         self.verify_channel_id = _env_int("DISCORD_VERIFY_CHANNEL_ID")
         self.admin_channel_name = _env("DISCORD_ADMIN_CHANNEL", "admin").strip() or "admin"
         self.admin_channel_id = _env_int("DISCORD_ADMIN_CHANNEL_ID")
-        self.general_channel_name = _env("DISCORD_GENERAL_CHANNEL", "general").strip() or "general"
-        self.general_channel_id = _env_int("DISCORD_GENERAL_CHANNEL_ID")
+        self.livestream_channel_name = _env("DISCORD_LIVESTREAMS_CHANNEL", "livestreams").strip() or "livestreams"
+        self.livestream_channel_id = _env_int("DISCORD_LIVESTREAMS_CHANNEL_ID")
         self.verified_role_name = _env("DISCORD_VERIFIED_ROLE", "verified").strip() or "verified"
         self.verified_role_id = _env_int("DISCORD_VERIFIED_ROLE_ID")
         self.mod_role_name = _env("DISCORD_MOD_ROLE", "").strip()
@@ -576,7 +576,7 @@ class FanVerifyBot(commands.Bot):
         self._live_states: dict[str, bool] = {h: False for h in self.live_announce_handles}
         self._last_live_announce_ts: dict[str, float] = {}
         self._live_announce_task: Optional[asyncio.Task] = None
-        self._missing_general_channel_warned: set[int] = set()
+        self._missing_livestream_channel_warned: set[int] = set()
         self._last_live_poll_error_log = datetime.min.replace(tzinfo=timezone.utc)
         self._configure_live_web_defaults()
 
@@ -671,12 +671,12 @@ class FanVerifyBot(commands.Bot):
                 return channel
         return None
 
-    def resolve_general_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
-        if self.general_channel_id > 0:
-            channel = guild.get_channel(self.general_channel_id)
+    def resolve_livestream_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        if self.livestream_channel_id > 0:
+            channel = guild.get_channel(self.livestream_channel_id)
             if isinstance(channel, discord.TextChannel):
                 return channel
-        wanted = self.general_channel_name.lower()
+        wanted = self.livestream_channel_name.lower()
         for channel in guild.text_channels:
             if channel.name.lower() == wanted:
                 return channel
@@ -713,13 +713,13 @@ class FanVerifyBot(commands.Bot):
             target_guilds.extend(self.guilds)
 
         for guild in target_guilds:
-            channel = self.resolve_general_channel(guild)
+            channel = self.resolve_livestream_channel(guild)
             if channel is None:
-                if guild.id not in self._missing_general_channel_warned:
-                    self._missing_general_channel_warned.add(guild.id)
+                if guild.id not in self._missing_livestream_channel_warned:
+                    self._missing_livestream_channel_warned.add(guild.id)
                     logger.warning(
-                        "Could not find general channel '%s' in guild=%s for live announcement.",
-                        self.general_channel_name,
+                        "Could not find livestreams channel '%s' in guild=%s for live announcement.",
+                        self.livestream_channel_name,
                         guild.id,
                     )
                 continue
