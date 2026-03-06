@@ -14,6 +14,7 @@ import unicodedata
 import uuid
 import shutil
 from typing import Optional, List, Tuple
+from zoneinfo import ZoneInfo
 
 import uvicorn
 import httpx
@@ -584,6 +585,135 @@ def _parse_like_goal_value(raw: str) -> Optional[int]:
     except Exception:
         return None
     return value if value > 0 else None
+
+
+def _tg_to_int(value) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    if not text:
+        return None
+    try:
+        return int(text)
+    except Exception:
+        try:
+            return int(float(text))
+        except Exception:
+            return None
+
+
+def _gift_row_diamond_amount(row: dict) -> int:
+    amount_value = _tg_to_int(row.get("amount_value"))
+    if amount_value is not None:
+        return max(0, amount_value)
+    diamond_count = _tg_to_int(row.get("diamond_count"))
+    if diamond_count is None:
+        return 0
+    repeat_count = _tg_to_int(row.get("repeat_count"))
+    combo_count = _tg_to_int(row.get("combo_count"))
+    multiplier = repeat_count if repeat_count is not None else combo_count
+    if multiplier is None:
+        multiplier = 1
+    return max(0, diamond_count * max(1, multiplier))
+
+
+def _rank_top_gifters(rows: list[dict]) -> dict[str, list[dict]]:
+    totals: dict[str, dict[str, dict[str, object]]] = {}
+    for row in rows:
+        member = str(row.get("to_member_nickname") or "").strip()
+        gifter = str(row.get("from_username") or "").strip()
+        nickname = str(row.get("from_nickname") or "").strip()
+        if not member:
+            continue
+        if "the host" in member.lower():
+            continue
+        if not gifter:
+            gifter = "(unknown)"
+        diamonds = _gift_row_diamond_amount(row)
+        if diamonds <= 0:
+            continue
+        member_bucket = totals.setdefault(member, {})
+        gifter_entry = member_bucket.setdefault(gifter, {"diamonds": 0, "from_nickname": ""})
+        gifter_entry["diamonds"] = int(gifter_entry.get("diamonds") or 0) + diamonds
+        if nickname:
+            gifter_entry["from_nickname"] = nickname
+
+    ranked: dict[str, list[dict]] = {}
+    for member, donor_map in totals.items():
+        top_items = sorted(
+            donor_map.items(),
+            key=lambda item: (-int(item[1].get("diamonds") or 0), item[0].lower()),
+        )[:5]
+        ranked[member] = [
+            {
+                "from_username": username,
+                "from_nickname": str(payload.get("from_nickname") or "").strip(),
+                "diamonds": int(payload.get("diamonds") or 0),
+            }
+            for username, payload in top_items
+        ]
+    return ranked
+
+
+async def _fetch_gift_rows_for_window(
+    *,
+    tiktok_username: str,
+    start_utc: datetime,
+    end_utc: datetime,
+) -> tuple[list[dict], Optional[str]]:
+    headers = _supabase_headers()
+    if not headers:
+        return [], "Supabase credentials missing. Set SUPABASE_URL/SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY."
+    headers = dict(headers)
+    headers.pop("Prefer", None)
+    page_size = 1000
+    max_pages = 250
+    offset = 0
+    pages = 0
+    out: list[dict] = []
+    handle = str(tiktok_username or "").strip().lstrip("@")
+    if not handle:
+        return out, None
+    try:
+        async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
+            while True:
+                query = [
+                    ("select", "id,iso_ts,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,tiktok_username"),
+                    ("tiktok_username", f"eq.{handle}"),
+                    ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
+                    ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),
+                    ("order", "id.asc"),
+                ]
+                range_headers = dict(headers)
+                range_headers["Range-Unit"] = "items"
+                range_headers["Range"] = f"{offset}-{offset + page_size - 1}"
+                resp = await client.get("/gift_events", params=query, headers=range_headers)
+                if not resp.is_success:
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = resp.text or ""
+                    return [], f"Supabase gift_events query failed (status={resp.status_code}): {payload}"
+                rows = resp.json()
+                if not isinstance(rows, list):
+                    return [], "Unexpected gift_events response format."
+                out.extend([row for row in rows if isinstance(row, dict)])
+                if len(rows) < page_size:
+                    break
+                offset += page_size
+                pages += 1
+                if pages >= max_pages:
+                    return [], "Exceeded gift_events pagination limit."
+    except Exception as exc:
+        return [], f"Supabase request failed: {exc}"
+    return out, None
 
 
 async def _fetch_latest_total_likes_today(tiktok_username: str) -> tuple[int, Optional[str]]:
@@ -1329,6 +1459,66 @@ async def camera_likes_summary() -> JSONResponse:
     return JSONResponse(payload)
 
 
+@app.get("/top-gifters/summary")
+async def top_gifters_summary(group_handle: str = "", date_mt: Optional[str] = None) -> JSONResponse:
+    handle = str(group_handle or "").strip().lstrip("@")
+    if not handle:
+        return JSONResponse({"ok": False, "error": "group_handle is required."}, status_code=400)
+    try:
+        mt_tz = ZoneInfo("America/Denver")
+    except Exception:
+        mt_tz = timezone.utc
+
+    if date_mt:
+        try:
+            day = datetime.strptime(str(date_mt).strip(), "%Y-%m-%d").date()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "date_mt must be YYYY-MM-DD."}, status_code=400)
+    else:
+        day = datetime.now(mt_tz).date()
+
+    start_local = datetime.combine(day, datetime.min.time(), tzinfo=mt_tz)
+    end_local = start_local + timedelta(days=1)
+    rows, err = await _fetch_gift_rows_for_window(
+        tiktok_username=handle,
+        start_utc=start_local.astimezone(timezone.utc),
+        end_utc=end_local.astimezone(timezone.utc),
+    )
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+    ranked = _rank_top_gifters(rows)
+    members = []
+    for member in sorted(ranked.keys(), key=lambda x: x.lower()):
+        rankings = ranked[member]
+        members.append(
+            {
+                "member": member,
+                "gifters": [
+                    {
+                        "rank": idx,
+                        "username": str(g.get("from_username") or ""),
+                        "from_nickname": str(g.get("from_nickname") or ""),
+                        "diamonds": int(g.get("diamonds") or 0),
+                        "usd": round(int(g.get("diamonds") or 0) * 0.005, 2),
+                    }
+                    for idx, g in enumerate(rankings, start=1)
+                ],
+            }
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "group_handle": handle,
+            "date_mt": day.isoformat(),
+            "start_utc": start_local.astimezone(timezone.utc).isoformat(),
+            "end_utc": end_local.astimezone(timezone.utc).isoformat(),
+            "rows_count": len(rows),
+            "members_count": len(members),
+            "members": members,
+        }
+    )
+
+
 @app.post("/notes/stream")
 async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
     now_dt = datetime.now(timezone.utc)
@@ -1386,6 +1576,11 @@ async def settings_page() -> FileResponse:
 @app.get("/notes")
 async def notes_page() -> FileResponse:
     return _static_file("notes.html")
+
+
+@app.get("/top/gifters")
+async def top_gifters_page() -> FileResponse:
+    return _static_file("top_gifters.html")
 
 
 @app.get("/analytics/plays")

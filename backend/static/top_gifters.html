@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Top Gifters</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px 16px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
+    h2 { margin: 0 0 10px 0; font-size: 16px; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
+    select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    .meta { color: #94a3b8; font-size: 13px; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+    .card { border: 1px solid #1f2937; border-radius: 10px; background: #0b1222; padding: 12px; }
+    .card h3 { margin: 0 0 10px 0; font-size: 15px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 6px 4px; border-bottom: 1px solid #1f2937; text-align: left; font-size: 13px; }
+    th { color: #94a3b8; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .empty { color: #94a3b8; font-weight: 600; }
+    @media (max-width: 900px) {
+      header { padding: 12px 12px 8px; }
+      header .status { display: none !important; }
+      h1 { font-size: 18px; }
+      main { padding: 12px; }
+      section { padding: 12px; }
+      .cards { grid-template-columns: 1fr; }
+      .row > * { flex: 1 1 220px; min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
+      <h1>Top Gifters</h1>
+    </div>
+    <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;">
+      <span id="statusText">Connecting</span>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Filters</h2>
+      <div class="row">
+        <label for="groupSelect">Group</label>
+        <select id="groupSelect"></select>
+        <label for="dateInput">Date (MT)</label>
+        <input id="dateInput" type="date">
+        <button id="refreshBtn" type="button">Refresh</button>
+      </div>
+      <div class="row meta">
+        <span id="summaryMeta">Loading...</span>
+      </div>
+      <div class="row meta">
+        <span id="realtimeMeta">Realtime: connecting...</span>
+      </div>
+    </section>
+
+    <section>
+      <h2>Leaderboard</h2>
+      <div id="cards" class="cards"></div>
+      <div id="emptyState" class="empty" style="display:none;">No gifter data found for this group/date.</div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
+  <script>
+    const api = window.PageShared.api;
+    const MT_TZ = "America/Denver";
+    const MT_DATE_FMT = new Intl.DateTimeFormat("en-US", {
+      timeZone: MT_TZ,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    });
+    function formatMountainYmd(dateObj) {
+      const parts = MT_DATE_FMT.formatToParts(dateObj);
+      const year = parts.find((p) => p.type === "year")?.value || "";
+      const month = parts.find((p) => p.type === "month")?.value || "";
+      const day = parts.find((p) => p.type === "day")?.value || "";
+      if (!year || !month || !day) return "";
+      return `${year}-${month}-${day}`;
+    }
+    let groups = [];
+    let supabaseClient = null;
+    let realtimeChannel = null;
+    let refreshTimer = null;
+    let fallbackPollHandle = null;
+    let realtimeSubscribed = false;
+    let lastSummaryRefreshMs = 0;
+    const FALLBACK_POLL_MS = 30000;
+
+    function todayMountain() {
+      return formatMountainYmd(new Date());
+    }
+
+    function isoToMountainDate(isoValue) {
+      if (!isoValue) return "";
+      try {
+        return formatMountainYmd(new Date(String(isoValue)));
+      } catch (e) {
+        return "";
+      }
+    }
+
+    function currentGroupHandle() {
+      return String(document.getElementById("groupSelect")?.value || "").trim().replace(/^@+/, "");
+    }
+
+    function currentDate() {
+      return String(document.getElementById("dateInput")?.value || "").trim();
+    }
+
+    function setSummaryMeta(text) {
+      const el = document.getElementById("summaryMeta");
+      if (el) el.textContent = text;
+    }
+
+    function setRealtimeMeta(text) {
+      const el = document.getElementById("realtimeMeta");
+      if (el) el.textContent = text;
+    }
+
+    function renderGroupOptions() {
+      const select = document.getElementById("groupSelect");
+      if (!select) return;
+      const current = currentGroupHandle();
+      select.innerHTML = "";
+      groups.forEach((g) => {
+        const opt = document.createElement("option");
+        opt.value = g.handle;
+        opt.textContent = `${g.name} (@${g.handle})`;
+        select.appendChild(opt);
+      });
+      if (current && groups.some((g) => g.handle === current)) {
+        select.value = current;
+      } else if (groups.length) {
+        select.value = groups[0].handle;
+      }
+    }
+
+    async function loadGroups() {
+      const dancers = await api("/dancers").then((r) => r.json()).catch(() => []);
+      const out = [];
+      (Array.isArray(dancers) ? dancers : []).forEach((d) => {
+        const name = String(d?.name || "").trim();
+        const handle = String(d?.handle || "").trim().replace(/^@+/, "");
+        if (!name || !handle) return;
+        const low = name.toLowerCase();
+        if (!low.includes("boys") && !low.includes("girls")) return;
+        out.push({ name, handle: handle.toLowerCase() });
+      });
+      const dedup = new Map();
+      out.forEach((g) => {
+        if (!dedup.has(g.handle)) dedup.set(g.handle, g);
+      });
+      groups = Array.from(dedup.values()).sort((a, b) => a.name.localeCompare(b.name));
+      renderGroupOptions();
+    }
+
+    function renderCards(payload) {
+      const cardsEl = document.getElementById("cards");
+      const emptyEl = document.getElementById("emptyState");
+      if (!cardsEl || !emptyEl) return;
+      cardsEl.innerHTML = "";
+      const members = Array.isArray(payload?.members) ? payload.members : [];
+      if (!members.length) {
+        emptyEl.style.display = "block";
+        return;
+      }
+      emptyEl.style.display = "none";
+      members.forEach((member) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        const title = document.createElement("h3");
+        title.textContent = `Member: ${member.member || "(unknown)"}`;
+        card.appendChild(title);
+        const table = document.createElement("table");
+        table.innerHTML = `
+          <thead>
+            <tr><th>#</th><th>Gifter</th><th>Nickname</th><th class="num">Diamonds</th><th class="num">USD</th></tr>
+          </thead>
+        `;
+        const tbody = document.createElement("tbody");
+        (member.gifters || []).forEach((g) => {
+          const tr = document.createElement("tr");
+          const diamonds = Number(g.diamonds || 0);
+          const usd = Number(g.usd || 0);
+          tr.innerHTML = `
+            <td>${g.rank || ""}</td>
+            <td>${g.username || "(unknown)"}</td>
+            <td>${g.from_nickname || ""}</td>
+            <td class="num">${diamonds.toLocaleString()}</td>
+            <td class="num">$${usd.toFixed(2)}</td>
+          `;
+          tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        card.appendChild(table);
+        cardsEl.appendChild(card);
+      });
+    }
+
+    async function refreshSummary() {
+      const handle = currentGroupHandle();
+      const date = currentDate();
+      if (!handle || !date) {
+        setSummaryMeta("Select a group and date.");
+        renderCards({ members: [] });
+        return;
+      }
+      setSummaryMeta("Loading...");
+      try {
+        const qs = new URLSearchParams({ group_handle: handle, date_mt: date });
+        const payload = await api(`/top-gifters/summary?${qs.toString()}`).then((r) => r.json());
+        if (!payload?.ok) {
+          setSummaryMeta(payload?.error || "Failed to load data.");
+          renderCards({ members: [] });
+          return;
+        }
+        renderCards(payload);
+        setSummaryMeta(
+          `Group @${payload.group_handle} - ${payload.date_mt} MT - ${payload.rows_count || 0} gifts - ${payload.members_count || 0} members`
+        );
+        lastSummaryRefreshMs = Date.now();
+      } catch (e) {
+        setSummaryMeta("Failed to load data.");
+        renderCards({ members: [] });
+      }
+    }
+
+    function scheduleRefresh(delayMs = 250) {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        refreshTimer = null;
+        refreshSummary();
+      }, Math.max(0, Number(delayMs) || 0));
+    }
+
+    async function ensureSupabaseClient() {
+      if (supabaseClient) return supabaseClient;
+      if (!window.supabase?.createClient) return null;
+      const cfg = await api("/config").then((r) => r.json()).catch(() => ({}));
+      if (!cfg?.supabase_url || !cfg?.supabase_key) return null;
+      supabaseClient = window.supabase.createClient(cfg.supabase_url, cfg.supabase_key);
+      return supabaseClient;
+    }
+
+    function isInsertRelevant(row) {
+      if (!row || typeof row !== "object") return false;
+      const handle = currentGroupHandle();
+      const selectedDate = currentDate();
+      if (!handle || !selectedDate) return false;
+      const rowHandle = String(row.tiktok_username || "").trim().replace(/^@+/, "").toLowerCase();
+      if (!rowHandle || rowHandle !== handle.toLowerCase()) return false;
+      const rowDate = isoToMountainDate(row.iso_ts);
+      if (!rowDate || rowDate !== selectedDate) return false;
+      return true;
+    }
+
+    async function connectGiftRealtime() {
+      const client = await ensureSupabaseClient();
+      if (!client) {
+        realtimeSubscribed = false;
+        setRealtimeMeta("Realtime: unavailable (missing Supabase config). Fallback polling active.");
+        return;
+      }
+      if (realtimeChannel) {
+        try { await client.removeChannel(realtimeChannel); } catch (e) {}
+        realtimeChannel = null;
+      }
+      realtimeChannel = client
+        .channel("top-gifters-live")
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "gift_events" },
+          (payload) => {
+            const row = payload?.new || {};
+            if (!isInsertRelevant(row)) return;
+            setRealtimeMeta("Realtime: new gift detected, refreshing...");
+            scheduleRefresh(120);
+          }
+        )
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            realtimeSubscribed = true;
+            setRealtimeMeta("Realtime: subscribed to gift_events inserts");
+          } else {
+            realtimeSubscribed = false;
+            setRealtimeMeta(`Realtime: ${status}. Fallback polling active.`);
+          }
+        });
+    }
+
+    function startFallbackPolling() {
+      if (fallbackPollHandle) return;
+      fallbackPollHandle = setInterval(() => {
+        if (document.hidden) return;
+        if (!realtimeSubscribed) {
+          scheduleRefresh(0);
+          return;
+        }
+        if (!lastSummaryRefreshMs) return;
+        if ((Date.now() - lastSummaryRefreshMs) > (FALLBACK_POLL_MS * 2)) {
+          scheduleRefresh(0);
+        }
+      }, FALLBACK_POLL_MS);
+    }
+
+    function bindEvents() {
+      const group = document.getElementById("groupSelect");
+      const date = document.getElementById("dateInput");
+      const refresh = document.getElementById("refreshBtn");
+      if (group) group.addEventListener("change", () => scheduleRefresh(0));
+      if (date) date.addEventListener("change", () => scheduleRefresh(0));
+      if (refresh) refresh.addEventListener("click", () => scheduleRefresh(0));
+    }
+
+    async function init() {
+      const dateInput = document.getElementById("dateInput");
+      if (dateInput && !dateInput.value) {
+        dateInput.value = todayMountain();
+      }
+      bindEvents();
+      await loadGroups();
+      await refreshSummary();
+      await connectGiftRealtime();
+      startFallbackPolling();
+    }
+
+    window.PageShared?.connectWsStatus?.({
+      connectedText: "Live",
+      disconnectedText: "Disconnected",
+    });
+    window.PageShared.initPracticeModeHeader({ apiFn: api });
+    init();
+  </script>
+</body>
+</html>
