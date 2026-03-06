@@ -15,26 +15,45 @@ from utils import _env
 
 
 DEFAULT_WEBHOOK_URL = ""
+DISCORD_HOSTS_ROLE_ID = "1471258157459443785"
+DISCORD_USER_ID_MAP = {
+    "yeonnie": "324352448640712714",
+    "angel": "260206573849280512",
+    "kyle": "763167828689289226",
+    "morgan": "386020846835073024",
+    "gabe": "976319207312621578",
+    "cardin": "506958059462197251",
+    "ky": "759636349661347910",
+    "mina": "179870678567092224",
+}
+
+
+def _discord_user_mention(user_id: str) -> str:
+    return f"<@{str(user_id).strip()}>"
+
+
+def _discord_role_mention(role_id: str) -> str:
+    return f"<@&{str(role_id).strip()}>"
+
+
 NOTES_REMINDER_MESSAGE = (
-    "@hosts don't forget to add a message note for today's livestream\n"
+    f"{_discord_role_mention(DISCORD_HOSTS_ROLE_ID)} don't forget to add a message note for today's livestream\n"
     "https://newstarhost.fly.dev/app#notes"
 )
 NOTES_FOLLOWUP_DELAY = timedelta(hours=1)
 NOTES_FOLLOWUP_PRUNE_DAYS = 30
 
 NAME_MENTION_MAP = {
-    "kyle": "@sztakin",
-    "cardin": "@teru_shima_",
-    "morgan": "@mysticgod",
-    "gabe": "@kinginthemaking.",
-    "ky": "@codename.ky",
-    "kai": "@codename.ky",
-    "mina": "@darkminathegone",
-    "mk": "@darkminathegone",
-    "ben": "@iambenxx",
-    "jesus": "@iambenxx",
-    "yeonnie": "@yeonniebaby",
-    "angel": "@star_berry",
+    "yeonnie": _discord_user_mention(DISCORD_USER_ID_MAP["yeonnie"]),
+    "angel": _discord_user_mention(DISCORD_USER_ID_MAP["angel"]),
+    "kyle": _discord_user_mention(DISCORD_USER_ID_MAP["kyle"]),
+    "morgan": _discord_user_mention(DISCORD_USER_ID_MAP["morgan"]),
+    "gabe": _discord_user_mention(DISCORD_USER_ID_MAP["gabe"]),
+    "cardin": _discord_user_mention(DISCORD_USER_ID_MAP["cardin"]),
+    "ky": _discord_user_mention(DISCORD_USER_ID_MAP["ky"]),
+    "kai": _discord_user_mention(DISCORD_USER_ID_MAP["ky"]),
+    "mina": _discord_user_mention(DISCORD_USER_ID_MAP["mina"]),
+    "mk": _discord_user_mention(DISCORD_USER_ID_MAP["mina"]),
 }
 
 
