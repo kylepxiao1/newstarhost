@@ -564,7 +564,10 @@ class FanVerifyBot(commands.Bot):
             _env("DISCORD_VERIFY_DONATION_TARGET", "wildcard_boys").strip() or "wildcard_boys"
         )
         self.live_announce_handles = _parse_handles_csv(
-            _env("DISCORD_LIVE_ANNOUNCE_HANDLES", "wildcard_boys,cardin_v_,zerokomodo")
+            _env(
+                "DISCORD_LIVE_ANNOUNCE_HANDLES",
+                "wildcard_boys,cardin_v_,zerokomodo,morgue707,laidbackn0mad,darkminathegone,k5872771,iambenxx",
+            )
         )
         self.live_poll_seconds = max(15, _env_int("DISCORD_LIVE_POLL_SECONDS", 60))
         self.live_announce_cooldown_seconds = 4 * 60 * 60
