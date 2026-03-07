@@ -19,6 +19,7 @@ DISCORD_HOSTS_ROLE_ID = "1471258157459443785"
 DISCORD_USER_ID_MAP = {
     "yeonnie": "324352448640712714",
     "angel": "260206573849280512",
+    "ben": "1098834639285661840",
     "kyle": "763167828689289226",
     "morgan": "386020846835073024",
     "gabe": "976319207312621578",
@@ -46,6 +47,8 @@ NOTES_FOLLOWUP_PRUNE_DAYS = 30
 NAME_MENTION_MAP = {
     "yeonnie": _discord_user_mention(DISCORD_USER_ID_MAP["yeonnie"]),
     "angel": _discord_user_mention(DISCORD_USER_ID_MAP["angel"]),
+    "ben": _discord_user_mention(DISCORD_USER_ID_MAP["ben"]),
+    "jesus": _discord_user_mention(DISCORD_USER_ID_MAP["ben"]),
     "kyle": _discord_user_mention(DISCORD_USER_ID_MAP["kyle"]),
     "morgan": _discord_user_mention(DISCORD_USER_ID_MAP["morgan"]),
     "gabe": _discord_user_mention(DISCORD_USER_ID_MAP["gabe"]),
