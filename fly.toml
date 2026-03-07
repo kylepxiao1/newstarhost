@@ -44,9 +44,9 @@ primary_region = 'lax'
 
 [[vm]]
   processes = ['listener']
-  memory = '3gb'
-  cpus = 2
-  memory_mb = 3072
+  memory = '4gb'
+  cpus = 4
+  memory_mb = 4096
 
 [[restart]]
   policy = 'always'
