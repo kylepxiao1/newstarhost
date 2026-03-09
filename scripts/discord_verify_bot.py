@@ -569,6 +569,10 @@ class FanVerifyBot(commands.Bot):
                 "wildcard_boys,cardin_v_,zerokomodo,morgue707,laidbackn0mad,darkminathegone,k5872771,iambenxx",
             )
         )
+        self.live_announce_webhook_url = _env(
+            "DISCORD_LIVE_ANNOUNCE_WEBHOOK",
+            "https://discord.com/api/webhooks/1480475280660238499/N0AXM5p1YVeHhpq3NuQpKBK5xGVvos1KPZJBTzmi8kkEdgO9GaRTJeoOwaNtQK68Sn9n",
+        ).strip()
         self.live_poll_seconds = max(15, _env_int("DISCORD_LIVE_POLL_SECONDS", 60))
         self.live_announce_cooldown_seconds = 4 * 60 * 60
 
@@ -735,6 +739,25 @@ class FanVerifyBot(commands.Bot):
                     guild.id,
                     channel.id,
                 )
+        if self.live_announce_webhook_url:
+            try:
+                async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                    response = await client.post(
+                        self.live_announce_webhook_url,
+                        json={
+                            "content": message,
+                            "allowed_mentions": {"parse": []},
+                        },
+                    )
+                if not response.is_success:
+                    logger.warning(
+                        "Failed to send live announcement webhook for @%s status=%s body=%s",
+                        normalized,
+                        response.status_code,
+                        (response.text or "").strip()[:300],
+                    )
+            except Exception:
+                logger.exception("Failed to send live announcement webhook for @%s", normalized)
         self._last_live_announce_ts[normalized] = now_ts
 
     async def _live_announce_loop(self) -> None:
