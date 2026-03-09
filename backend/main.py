@@ -1378,6 +1378,7 @@ class StreamNoteRequest(BaseModel):
     stream_date: str = ""
     group: str = ""
     outfit_theme: str = ""
+    mvp: str = ""
     members_present: List[str] = []
     stream_format: str = ""
     additional_notes: str = ""
@@ -1552,6 +1553,7 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
         "host": (body.host or "").strip(),
         "group_name": (body.group or "").strip(),
         "outfit_theme": (body.outfit_theme or "").strip(),
+        "mvp": (body.mvp or "").strip(),
         "members_present": members,
         "stream_format": stream_format_rows,
         "additional_notes": (body.additional_notes or "").strip(),
@@ -1561,6 +1563,66 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
         logger.warning("Stream note insert failed: %s", err)
         return JSONResponse({"ok": False, "error": err}, status_code=500)
     return JSONResponse({"ok": True, "row": row})
+
+
+@app.get("/notes/stream/history")
+async def stream_notes_history(limit: int = 10, offset: int = 0) -> JSONResponse:
+    page_size = max(1, min(100, int(limit)))
+    page_offset = max(0, int(offset))
+    headers = _supabase_headers()
+    if not headers:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error": "Supabase credentials missing. Set SUPABASE_URL/SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY.",
+            },
+            status_code=500,
+        )
+    headers = dict(headers)
+    headers.pop("Prefer", None)
+    params = [
+        (
+            "select",
+            "iso_ts,unix_ts,stream_date,host,group_name,outfit_theme,mvp,members_present,stream_format,additional_notes",
+        ),
+        ("order", "unix_ts.desc,iso_ts.desc"),
+        ("limit", str(page_size + 1)),
+        ("offset", str(page_offset)),
+    ]
+    try:
+        async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
+            resp = await client.get("/stream_notes", params=params, headers=headers)
+    except Exception as exc:
+        return JSONResponse({"ok": False, "error": f"Supabase request failed: {exc}"}, status_code=500)
+    if not resp.is_success:
+        try:
+            payload = resp.json()
+        except Exception:
+            payload = resp.text or ""
+        return JSONResponse(
+            {"ok": False, "error": f"Supabase stream_notes query failed (status={resp.status_code}): {payload}"},
+            status_code=500,
+        )
+    try:
+        rows = resp.json()
+    except Exception:
+        rows = []
+    if not isinstance(rows, list):
+        return JSONResponse({"ok": False, "error": "Unexpected stream_notes response format."}, status_code=500)
+    notes = [row for row in rows if isinstance(row, dict)]
+    has_more = len(notes) > page_size
+    if has_more:
+        notes = notes[:page_size]
+    return JSONResponse(
+        {
+            "ok": True,
+            "notes": notes,
+            "limit": page_size,
+            "offset": page_offset,
+            "next_offset": page_offset + len(notes),
+            "has_more": has_more,
+        }
+    )
 
 
 @app.get("/analytics")

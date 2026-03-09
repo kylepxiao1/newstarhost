@@ -134,10 +134,58 @@
       padding: 8px 12px;
       font-weight: 600;
     }
+    button.secondary { background: #334155; }
     .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; text-transform: uppercase; }
     .status-text { margin-top: 10px; min-height: 22px; color: #93c5fd; }
     .status-text.error { color: #fca5a5; }
     .status-text.success { color: #86efac; }
+    .past-notes-wrap {
+      margin-top: 16px;
+      padding-top: 12px;
+      border-top: 1px solid #1f2937;
+    }
+    .past-notes-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 8px;
+    }
+    .past-note-card {
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      padding: 10px;
+      background: #0b1222;
+    }
+    .past-note-title {
+      font-weight: 700;
+      margin-bottom: 8px;
+      color: #bfdbfe;
+    }
+    .past-note-field {
+      margin: 4px 0;
+      color: #cbd5e1;
+    }
+    .past-note-label {
+      color: #93c5fd;
+      font-weight: 600;
+      margin-right: 6px;
+    }
+    .past-note-pre {
+      white-space: pre-wrap;
+      margin: 0;
+      font: inherit;
+      color: #e2e8f0;
+    }
+    .past-note-format-list {
+      margin: 4px 0 0 0;
+      padding-left: 18px;
+      color: #e2e8f0;
+    }
+    .past-notes-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: 10px;
+    }
     @media (max-width: 900px) {
       header { padding: 12px 12px 8px; }
       header .status { display: none !important; }
@@ -194,6 +242,11 @@
         </div>
 
         <div class="field">
+          <label for="mvpSelect">MVP</label>
+          <select id="mvpSelect"></select>
+        </div>
+
+        <div class="field">
           <label>Stream Format</label>
           <div class="stream-format-grid stream-header">
             <div></div>
@@ -215,6 +268,17 @@
 
         <button id="submitBtn" type="submit">Submit</button>
         <div id="formStatus" class="status-text"></div>
+
+        <div class="past-notes-wrap">
+          <button id="togglePastNotesBtn" class="secondary" type="button">View Past Notes</button>
+          <div id="pastNotesPanel" hidden>
+            <div id="pastNotesStatus" class="status-text"></div>
+            <div id="pastNotesList" class="past-notes-list"></div>
+            <div class="past-notes-actions">
+              <button id="loadMoreNotesBtn" class="secondary" type="button" style="display:none;">Load More</button>
+            </div>
+          </div>
+        </div>
       </form>
     </section>
   </main>
@@ -229,6 +293,12 @@
     let draggedSegmentId = null;
     let dragOverSegmentId = null;
     let nextSegmentId = 1;
+    const NOTES_PAGE_SIZE = 10;
+    let pastNotesVisible = false;
+    let pastNotesLoading = false;
+    let pastNotesOffset = 0;
+    let pastNotesHasMore = true;
+    let pastNotesItems = [];
     const HOST_COOKIE_KEY = "notes_host";
     const STREAM_FORMAT_COOKIE_KEY = "notes_stream_format";
     const DEFAULT_STREAM_SEGMENTS = [
@@ -577,12 +647,33 @@
       });
     }
 
+    function renderMvpOptions(names) {
+      const select = document.getElementById("mvpSelect");
+      if (!select) return;
+      const previous = select.value || "";
+      select.innerHTML = "";
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent = "(none)";
+      select.appendChild(empty);
+      (names || []).forEach(name => {
+        const opt = document.createElement("option");
+        opt.value = name;
+        opt.textContent = name;
+        select.appendChild(opt);
+      });
+      if (previous && (names || []).includes(previous)) {
+        select.value = previous;
+      }
+    }
+
     function renderDancers() {
       const names = sortedNames(dancers);
       const groupNames = names.filter(isGroupName);
       const memberNames = names.filter(name => !isGroupName(name));
       renderGroupOptions(groupNames, names);
       renderMembers(memberNames);
+      renderMvpOptions(memberNames);
     }
 
     async function refreshDancers() {
@@ -604,6 +695,230 @@
       if (kind) el.classList.add(kind);
     }
 
+    function setPastNotesStatus(message, kind = "") {
+      const el = document.getElementById("pastNotesStatus");
+      if (!el) return;
+      el.textContent = message || "";
+      el.className = "status-text";
+      if (kind) el.classList.add(kind);
+    }
+
+    function formatPastNoteDate(note) {
+      const iso = String(note?.iso_ts || "").trim();
+      if (iso) {
+        const dt = new Date(iso);
+        if (Number.isFinite(dt.getTime())) return dt.toLocaleString();
+      }
+      const day = String(note?.stream_date || "").trim();
+      return day || "(no date)";
+    }
+
+    function normalizeStreamFormatRows(raw) {
+      let rows = [];
+      if (Array.isArray(raw)) {
+        rows = raw;
+      } else if (raw && typeof raw === "object") {
+        rows = [raw];
+      } else if (typeof raw === "string") {
+        const text = raw.trim();
+        if (!text) return [];
+        try {
+          const parsed = JSON.parse(text);
+          return normalizeStreamFormatRows(parsed);
+        } catch (e) {}
+        const jsonl = [];
+        text.split(/\r?\n/).forEach(line => {
+          const trimmed = String(line || "").trim();
+          if (!trimmed) return;
+          try {
+            const obj = JSON.parse(trimmed);
+            if (obj && typeof obj === "object") jsonl.push(obj);
+          } catch (e) {}
+        });
+        rows = jsonl;
+      }
+      return rows
+        .map((row) => {
+          const segment = String(row?.segment ?? row?.name ?? "").trim();
+          const durationRaw = row?.duration_min ?? row?.duration;
+          const durationNum = Number.parseInt(String(durationRaw ?? "").trim(), 10);
+          const durationMin = Number.isInteger(durationNum) && durationNum > 0 ? durationNum : null;
+          return { segment, duration_min: durationMin };
+        })
+        .filter((row) => row.segment || row.duration_min != null);
+    }
+
+    function appendPastNoteField(container, label, value) {
+      const text = String(value || "").trim();
+      if (!text) return;
+      const row = document.createElement("div");
+      row.className = "past-note-field";
+      const labelEl = document.createElement("span");
+      labelEl.className = "past-note-label";
+      labelEl.textContent = `${label}:`;
+      const valueEl = document.createElement("span");
+      valueEl.textContent = text;
+      row.appendChild(labelEl);
+      row.appendChild(valueEl);
+      container.appendChild(row);
+    }
+
+    function buildPastNoteCard(note) {
+      const card = document.createElement("div");
+      card.className = "past-note-card";
+
+      const group = String(note?.group_name || "").trim();
+      const title = document.createElement("div");
+      title.className = "past-note-title";
+      title.textContent = group ? `${formatPastNoteDate(note)} - ${group}` : formatPastNoteDate(note);
+      card.appendChild(title);
+
+      appendPastNoteField(card, "Host", note?.host);
+      appendPastNoteField(card, "Group", note?.group_name);
+      appendPastNoteField(card, "Outfit Theme", note?.outfit_theme);
+      appendPastNoteField(card, "MVP", note?.mvp);
+
+      const members = Array.isArray(note?.members_present)
+        ? note.members_present.map((v) => String(v || "").trim()).filter(Boolean)
+        : [];
+      if (members.length) {
+        appendPastNoteField(card, "Members Present", members.join(", "));
+      }
+
+      const formatRows = normalizeStreamFormatRows(note?.stream_format);
+      if (formatRows.length) {
+        const row = document.createElement("div");
+        row.className = "past-note-field";
+        const labelEl = document.createElement("span");
+        labelEl.className = "past-note-label";
+        labelEl.textContent = "Stream Format:";
+        row.appendChild(labelEl);
+        const list = document.createElement("ul");
+        list.className = "past-note-format-list";
+        formatRows.forEach((item) => {
+          const li = document.createElement("li");
+          const dur = item.duration_min != null ? `${item.duration_min} min` : "";
+          li.textContent = item.segment && dur ? `${item.segment} (${dur})` : (item.segment || dur);
+          list.appendChild(li);
+        });
+        row.appendChild(list);
+        card.appendChild(row);
+      }
+
+      const notesText = String(note?.additional_notes || "").trim();
+      if (notesText) {
+        const row = document.createElement("div");
+        row.className = "past-note-field";
+        const labelEl = document.createElement("span");
+        labelEl.className = "past-note-label";
+        labelEl.textContent = "Additional Notes:";
+        const pre = document.createElement("pre");
+        pre.className = "past-note-pre";
+        pre.textContent = notesText;
+        row.appendChild(labelEl);
+        row.appendChild(pre);
+        card.appendChild(row);
+      }
+
+      return card;
+    }
+
+    function renderPastNotes() {
+      const panel = document.getElementById("pastNotesPanel");
+      const list = document.getElementById("pastNotesList");
+      const loadMoreBtn = document.getElementById("loadMoreNotesBtn");
+      if (!panel || !list || !loadMoreBtn) return;
+
+      panel.hidden = !pastNotesVisible;
+      if (!pastNotesVisible) return;
+
+      list.innerHTML = "";
+      if (!pastNotesItems.length && !pastNotesLoading) {
+        const empty = document.createElement("div");
+        empty.className = "past-note-card";
+        empty.textContent = "No past notes yet.";
+        list.appendChild(empty);
+      } else {
+        pastNotesItems.forEach((note) => {
+          list.appendChild(buildPastNoteCard(note));
+        });
+      }
+
+      loadMoreBtn.style.display = pastNotesHasMore ? "" : "none";
+      loadMoreBtn.disabled = pastNotesLoading;
+      loadMoreBtn.textContent = pastNotesLoading ? "Loading..." : "Load More";
+    }
+
+    async function loadPastNotes(reset = false) {
+      if (pastNotesLoading) return;
+      if (reset) {
+        pastNotesOffset = 0;
+        pastNotesHasMore = true;
+        pastNotesItems = [];
+      } else if (!pastNotesHasMore) {
+        return;
+      }
+
+      pastNotesLoading = true;
+      setPastNotesStatus("Loading...");
+      renderPastNotes();
+
+      try {
+        const qs = new URLSearchParams({
+          limit: String(NOTES_PAGE_SIZE),
+          offset: String(pastNotesOffset),
+        });
+        const res = await api(`/notes/stream/history?${qs.toString()}`);
+        let payload = {};
+        try { payload = await res.json(); } catch (e) {}
+        if (!res.ok || payload?.ok === false) {
+          throw new Error(payload?.error || `Request failed (${res.status})`);
+        }
+        const rows = Array.isArray(payload?.notes) ? payload.notes : [];
+        if (reset) pastNotesItems = rows;
+        else pastNotesItems = pastNotesItems.concat(rows);
+        const nextOffset = Number(payload?.next_offset);
+        if (Number.isFinite(nextOffset) && nextOffset >= 0) {
+          pastNotesOffset = Math.floor(nextOffset);
+        } else {
+          pastNotesOffset += rows.length;
+        }
+        pastNotesHasMore = Boolean(payload?.has_more);
+        if (!pastNotesItems.length) {
+          setPastNotesStatus("No past notes yet.");
+        } else {
+          setPastNotesStatus("");
+        }
+      } catch (e) {
+        setPastNotesStatus(`Failed to load past notes: ${e}`, "error");
+      } finally {
+        pastNotesLoading = false;
+        renderPastNotes();
+      }
+    }
+
+    function wirePastNotes() {
+      const toggleBtn = document.getElementById("togglePastNotesBtn");
+      const loadMoreBtn = document.getElementById("loadMoreNotesBtn");
+      if (!toggleBtn || !loadMoreBtn) return;
+
+      toggleBtn.addEventListener("click", async () => {
+        pastNotesVisible = !pastNotesVisible;
+        toggleBtn.textContent = pastNotesVisible ? "Hide Past Notes" : "View Past Notes";
+        if (pastNotesVisible && !pastNotesItems.length) {
+          await loadPastNotes(true);
+        } else {
+          renderPastNotes();
+        }
+      });
+
+      loadMoreBtn.addEventListener("click", async () => {
+        await loadPastNotes(false);
+      });
+
+      renderPastNotes();
+    }
+
     async function submitForm(evt) {
       evt.preventDefault();
       const submitBtn = document.getElementById("submitBtn");
@@ -620,6 +935,7 @@
         stream_date: document.getElementById("streamDateInput").value.trim(),
         group: document.getElementById("groupSelect").value.trim(),
         outfit_theme: document.getElementById("outfitThemeInput").value.trim(),
+        mvp: document.getElementById("mvpSelect").value.trim(),
         members_present: selectedMembers(),
         stream_format: streamFormat.text,
         additional_notes: document.getElementById("additionalNotesInput").value.trim(),
@@ -636,6 +952,9 @@
           return;
         }
         setFormStatus("Saved stream note.", "success");
+        if (pastNotesVisible) {
+          await loadPastNotes(true);
+        }
       } catch (err) {
         setFormStatus(`Request failed: ${err}`, "error");
       } finally {
@@ -662,6 +981,7 @@
     document.getElementById("notesForm").addEventListener("submit", submitForm);
     restorePersistedDefaults();
     wirePersistedDefaults();
+    wirePastNotes();
     window.PageShared.initPracticeModeHeader({apiFn: api});
     refreshDancers();
     connectWs();
