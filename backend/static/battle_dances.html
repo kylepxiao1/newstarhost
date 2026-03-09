@@ -170,6 +170,7 @@
     const spoofCompetitionIds = new Set();
     const handledCompetitionStartIds = new Set();
     let latestBattleStartKey = 0;
+    let lastAppliedCompetitionScoreKey = "";
     let hotkeyMap = {};
     let settingsFadeIn = true;
     let settingsFadeOut = true;
@@ -473,9 +474,17 @@
       return Math.max(0, Math.floor(n));
     }
 
+    function competitionMessageType(row) {
+      return String(row?.competition_message_type ?? row?.competitionMessageType ?? row?.type ?? "").trim();
+    }
+
+    function competitionScoreKey(competitionId, teamOneScore, teamTwoScore) {
+      return `${normalizeId(competitionId)}:${Math.max(0, Number(teamOneScore) || 0)}:${Math.max(0, Number(teamTwoScore) || 0)}`;
+    }
+
     async function handleCompetitionScoreChange(row) {
       if (!row) return;
-      const msgType = row.competition_message_type || row.competitionMessageType || row.type;
+      const msgType = competitionMessageType(row);
       if (msgType !== "COMPETITION_MESSAGE_TYPE_SCORE_CHANGE") return;
       if (!routine.active) {
         battleListenerLog("ignored score update: routine not active", {message_id: row.message_id || row.messageId || row.id});
@@ -511,8 +520,45 @@
         });
         return;
       }
-      await api("/battle/scores/import", {method:"POST", body:{slot_one: teamOneScore, slot_two: teamTwoScore}});
-      refreshState();
+      const nextScoreKey = competitionScoreKey(activeCompetitionId, teamOneScore, teamTwoScore);
+      if (nextScoreKey && lastAppliedCompetitionScoreKey === nextScoreKey) {
+        battleListenerLog("ignored score update: duplicate score payload", {
+          competition_id: activeCompetitionId,
+          team_1_score: teamOneScore,
+          team_2_score: teamTwoScore,
+          message_id: row.message_id || row.messageId || row.id,
+        });
+        return;
+      }
+      const currentScores = state.scores || {};
+      const currentSlotOneScore = parseNonNegativeInt(currentScores.slot_one);
+      const currentSlotTwoScore = parseNonNegativeInt(currentScores.slot_two);
+      if (currentSlotOneScore === teamOneScore && currentSlotTwoScore === teamTwoScore) {
+        lastAppliedCompetitionScoreKey = nextScoreKey;
+        battleListenerLog("ignored score update: scores already current", {
+          competition_id: activeCompetitionId,
+          team_1_score: teamOneScore,
+          team_2_score: teamTwoScore,
+          message_id: row.message_id || row.messageId || row.id,
+        });
+        return;
+      }
+      const resp = await api("/battle/scores/import", {method:"POST", body:{slot_one: teamOneScore, slot_two: teamTwoScore}});
+      if (!resp || !resp.ok) {
+        battleListenerLog("score import failed", {
+          competition_id: activeCompetitionId,
+          team_1_score: teamOneScore,
+          team_2_score: teamTwoScore,
+          message_id: row.message_id || row.messageId || row.id,
+          status: resp?.status || 0,
+        });
+        return;
+      }
+      lastAppliedCompetitionScoreKey = nextScoreKey;
+      if (!state.scores || typeof state.scores !== "object") state.scores = {};
+      state.scores.slot_one = teamOneScore;
+      state.scores.slot_two = teamTwoScore;
+      renderState();
       battleListenerLog("applied score update", {
         competition_id: rowCompetitionId,
         team_1_score: teamOneScore,
@@ -534,7 +580,7 @@
         battleListenerLog("ignored insert: missing row");
         return;
       }
-      const msgType = row.competition_message_type || row.competitionMessageType || row.type;
+      const msgType = competitionMessageType(row);
       if (msgType !== "COMPETITION_MESSAGE_TYPE_START") {
         battleListenerLog("ignored insert: not START type", {msgType, message_id: row.message_id || row.messageId || row.id});
         return;
@@ -601,8 +647,33 @@
         });
       } catch (e) {}
       if (startSortKey > 0) latestBattleStartKey = startSortKey;
+      lastAppliedCompetitionScoreKey = "";
       rememberCompetitionStart(key);
       await startLiveRoutine(durationMs, endMs, competitionId);
+    }
+
+    async function handleCompetitionRealtimeRow(row, sourceEvent) {
+      if (!row || typeof row !== "object") return;
+      const msgType = competitionMessageType(row);
+      battleListenerLog(`${sourceEvent} event received`, {
+        message_id: row.message_id || row.messageId || row.id,
+        competition_message_type: msgType,
+        tiktok_username: row.tiktok_username || row.tiktokUsername || "",
+        competition_id: competitionIdFromRow(row),
+      });
+      if (msgType === "COMPETITION_MESSAGE_TYPE_START") {
+        await handleCompetitionStart(row);
+        return;
+      }
+      if (msgType === "COMPETITION_MESSAGE_TYPE_SCORE_CHANGE") {
+        await handleCompetitionScoreChange(row);
+        return;
+      }
+      battleListenerLog("ignored event: unsupported competition_message_type", {
+        event: sourceEvent,
+        competition_message_type: msgType,
+        message_id: row.message_id || row.messageId || row.id,
+      });
     }
 
     function stopBattleListener() {
@@ -611,6 +682,7 @@
       const channel = competitionChannel;
       competitionChannel = null;
       battleListenerActive = false;
+      lastAppliedCompetitionScoreKey = "";
       setBattleListenerButton();
       if (channel && supabaseClient) {
         try {
@@ -642,30 +714,20 @@
       stopBattleListener();
       handledCompetitionStartIds.clear();
       latestBattleStartKey = 0;
+      lastAppliedCompetitionScoreKey = "";
+      const competitionFilter = `tiktok_username=eq.${groupHandle}`;
       const channel = client
-        .channel("competition-events-battle")
-        .on("postgres_changes", {event:"INSERT", schema:"public", table:"competition_events"}, payload => {
+        .channel(`competition-events-battle-${groupHandle}`)
+        .on("postgres_changes", {event:"INSERT", schema:"public", table:"competition_events", filter: competitionFilter}, payload => {
           const row = payload?.new || payload?.record || payload || {};
-          battleListenerLog("insert event received", {
-            message_id: row.message_id || row.messageId || row.id,
-            competition_message_type: row.competition_message_type || row.competitionMessageType || row.type,
-            tiktok_username: row.tiktok_username || row.tiktokUsername || "",
-            competition_id: competitionIdFromRow(row),
-          });
           (async () => {
-            await handleCompetitionStart(row);
-            await handleCompetitionScoreChange(row);
+            await handleCompetitionRealtimeRow(row, "insert");
           })().catch((err) => battleListenerLog("insert handler error", String(err)));
         })
-        .on("postgres_changes", {event:"UPDATE", schema:"public", table:"competition_events"}, payload => {
+        .on("postgres_changes", {event:"UPDATE", schema:"public", table:"competition_events", filter: competitionFilter}, payload => {
           const row = payload?.new || payload?.record || payload || {};
-          battleListenerLog("update event received", {
-            message_id: row.message_id || row.messageId || row.id,
-            competition_message_type: row.competition_message_type || row.competitionMessageType || row.type,
-            competition_id: competitionIdFromRow(row),
-          });
           (async () => {
-            await handleCompetitionScoreChange(row);
+            await handleCompetitionRealtimeRow(row, "update");
           })().catch((err) => battleListenerLog("update handler error", String(err)));
         })
         .subscribe((status) => {
@@ -682,7 +744,23 @@
         const nowSec = Math.floor(Date.now() / 1000);
         const { data, error } = await client
           .from("competition_events")
-          .select("*")
+          .select(
+            [
+              "id",
+              "message_id",
+              "competition_id",
+              "competition_message_type",
+              "tiktok_username",
+              "create_time_ms",
+              "unix_ts",
+              "iso_ts",
+              "team_1_member_ids",
+              "team_2_member_ids",
+              "team_infos_json",
+              "end_timestamp",
+              "end_timestamp_actual",
+            ].join(",")
+          )
           .eq("competition_message_type", "COMPETITION_MESSAGE_TYPE_START")
           .ilike("tiktok_username", groupHandle)
           .gt("end_timestamp", nowSec)
@@ -2039,6 +2117,7 @@
       routine.startedLive = false;
       routine.logged = false;
       routine.competitionId = "";
+      lastAppliedCompetitionScoreKey = "";
       routine.isSpoofBattle = false;
       routine.warned = false;
       routine.playedSongs = new Set();
@@ -2088,6 +2167,7 @@
         routine.live = false;
         routine.startedLive = false;
         routine.competitionId = "";
+        lastAppliedCompetitionScoreKey = "";
         routine.isSpoofBattle = false;
         stopPointsInterval();
         stopSwitchInterval();
@@ -2267,6 +2347,7 @@
          routine.live = false;
          routine.startedLive = false;
          routine.competitionId = "";
+         lastAppliedCompetitionScoreKey = "";
          routine.isSpoofBattle = false;
          routine.warned = false;
          stopTimerInterval();
