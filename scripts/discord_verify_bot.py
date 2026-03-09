@@ -569,10 +569,7 @@ class FanVerifyBot(commands.Bot):
                 "wildcard_boys,cardin_v_,zerokomodo,morgue707,laidbackn0mad,darkminathegone,k5872771,iambenxx",
             )
         )
-        self.live_announce_webhook_url = _env(
-            "DISCORD_LIVE_ANNOUNCE_WEBHOOK",
-            "https://discord.com/api/webhooks/1480475280660238499/N0AXM5p1YVeHhpq3NuQpKBK5xGVvos1KPZJBTzmi8kkEdgO9GaRTJeoOwaNtQK68Sn9n",
-        ).strip()
+        self.live_announce_webhook_url = _env("DISCORD_LIVE_ANNOUNCE_WEBHOOK", "").strip()
         self.live_poll_seconds = max(15, _env_int("DISCORD_LIVE_POLL_SECONDS", 60))
         self.live_announce_cooldown_seconds = 4 * 60 * 60
 
