@@ -171,6 +171,8 @@
     const handledCompetitionStartIds = new Set();
     let latestBattleStartKey = 0;
     let lastAppliedCompetitionScoreKey = "";
+    let competitionRealtimeMode = "none";
+    const COMPETITION_BROADCAST_SUBSCRIBE_TIMEOUT_MS = 3500;
     let hotkeyMap = {};
     let settingsFadeIn = true;
     let settingsFadeOut = true;
@@ -676,6 +678,104 @@
       });
     }
 
+    function extractCompetitionRowFromRealtimePayload(payload) {
+      if (!payload || typeof payload !== "object") return {};
+      const direct = payload?.new || payload?.record || payload;
+      if (direct && typeof direct === "object") {
+        if (competitionMessageType(direct) || direct.competition_id || direct.competitionId) {
+          return direct;
+        }
+      }
+      const wrapped = payload?.payload;
+      if (wrapped && typeof wrapped === "object") {
+        const nested = wrapped?.new || wrapped?.record || wrapped;
+        if (nested && typeof nested === "object") return nested;
+      }
+      return {};
+    }
+
+    function subscribeCompetitionPostgresChanges(client, groupHandle) {
+      const competitionFilter = `tiktok_username=eq.${groupHandle}`;
+      const channel = client
+        .channel(`competition-events-battle-${groupHandle}`)
+        .on("postgres_changes", {event:"INSERT", schema:"public", table:"competition_events", filter: competitionFilter}, payload => {
+          const row = extractCompetitionRowFromRealtimePayload(payload);
+          (async () => {
+            await handleCompetitionRealtimeRow(row, "insert");
+          })().catch((err) => battleListenerLog("insert handler error", String(err)));
+        })
+        .on("postgres_changes", {event:"UPDATE", schema:"public", table:"competition_events", filter: competitionFilter}, payload => {
+          const row = extractCompetitionRowFromRealtimePayload(payload);
+          (async () => {
+            await handleCompetitionRealtimeRow(row, "update");
+          })().catch((err) => battleListenerLog("update handler error", String(err)));
+        })
+        .subscribe((status) => {
+          battleListenerLog("postgres_changes channel status", status);
+          if (channel !== competitionChannel) return;
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            stopBattleListener();
+          }
+        });
+      return channel;
+    }
+
+    async function subscribeCompetitionBroadcast(client, groupHandle) {
+      const normalizedHandle = normalizeHandle(groupHandle);
+      if (!normalizedHandle) return null;
+
+      const channelName = `competition-events-battle:${normalizedHandle}`;
+      const onBroadcast = (payload) => {
+        const row = extractCompetitionRowFromRealtimePayload(payload);
+        const eventName = String(payload?.event || payload?.type || "competition_event");
+        (async () => {
+          await handleCompetitionRealtimeRow(row, `broadcast:${eventName}`);
+        })().catch((err) => battleListenerLog("broadcast handler error", String(err)));
+      };
+
+      let settleReady = null;
+      const ready = new Promise((resolve) => {
+        settleReady = resolve;
+      });
+      let settled = false;
+      const settle = (result) => {
+        if (settled) return;
+        settled = true;
+        settleReady(result);
+      };
+
+      const channel = client
+        .channel(channelName)
+        .on("broadcast", { event: "competition_event" }, onBroadcast)
+        .on("broadcast", { event: "INSERT" }, onBroadcast)
+        .on("broadcast", { event: "UPDATE" }, onBroadcast)
+        .subscribe((status) => {
+          battleListenerLog("broadcast channel status", {status, channel: channelName});
+          if (status === "SUBSCRIBED") {
+            settle("subscribed");
+            return;
+          }
+          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
+            settle(status.toLowerCase());
+            if (channel === competitionChannel) {
+              stopBattleListener();
+            }
+          }
+        });
+
+      const result = await Promise.race([
+        ready,
+        new Promise((resolve) => setTimeout(() => resolve("timeout"), COMPETITION_BROADCAST_SUBSCRIBE_TIMEOUT_MS)),
+      ]);
+      if (result === "subscribed") return channel;
+
+      try {
+        await client.removeChannel(channel);
+      } catch (e) {}
+      battleListenerLog("broadcast unavailable; will use postgres_changes fallback", {reason: result, channel: channelName});
+      return null;
+    }
+
     function stopBattleListener() {
       if (battleListenerStopping) return;
       battleListenerStopping = true;
@@ -683,6 +783,7 @@
       competitionChannel = null;
       battleListenerActive = false;
       lastAppliedCompetitionScoreKey = "";
+      competitionRealtimeMode = "none";
       setBattleListenerButton();
       if (channel && supabaseClient) {
         try {
@@ -715,30 +816,16 @@
       handledCompetitionStartIds.clear();
       latestBattleStartKey = 0;
       lastAppliedCompetitionScoreKey = "";
-      const competitionFilter = `tiktok_username=eq.${groupHandle}`;
-      const channel = client
-        .channel(`competition-events-battle-${groupHandle}`)
-        .on("postgres_changes", {event:"INSERT", schema:"public", table:"competition_events", filter: competitionFilter}, payload => {
-          const row = payload?.new || payload?.record || payload || {};
-          (async () => {
-            await handleCompetitionRealtimeRow(row, "insert");
-          })().catch((err) => battleListenerLog("insert handler error", String(err)));
-        })
-        .on("postgres_changes", {event:"UPDATE", schema:"public", table:"competition_events", filter: competitionFilter}, payload => {
-          const row = payload?.new || payload?.record || payload || {};
-          (async () => {
-            await handleCompetitionRealtimeRow(row, "update");
-          })().catch((err) => battleListenerLog("update handler error", String(err)));
-        })
-        .subscribe((status) => {
-          battleListenerLog("channel status", status);
-          if (channel !== competitionChannel) return;
-          if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") {
-            stopBattleListener();
-          }
-        });
+      let channel = await subscribeCompetitionBroadcast(client, groupHandle);
+      if (channel) {
+        competitionRealtimeMode = "broadcast";
+      } else {
+        channel = subscribeCompetitionPostgresChanges(client, groupHandle);
+        competitionRealtimeMode = "postgres_changes";
+      }
       competitionChannel = channel;
       battleListenerActive = true;
+      battleListenerLog("listener subscribed", {mode: competitionRealtimeMode, group_handle: groupHandle});
       setBattleListenerButton();
       try {
         const nowSec = Math.floor(Date.now() / 1000);
