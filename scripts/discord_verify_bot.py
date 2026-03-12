@@ -108,7 +108,7 @@ class PendingSubmission:
     date_of_birth: str
     favorite_wildcardz_member: str
     submitted_at: str
-    donation_target_handle: str = "wildcard_boys"
+    donation_target_handle: str = "wildcard_ns"
     total_donated_diamonds: Optional[int] = None
     donation_lookup_error: str = ""
 
@@ -146,7 +146,7 @@ class PendingSubmission:
             value=self.favorite_wildcardz_member,
             inline=False,
         )
-        donation_target = self.donation_target_handle.strip().lstrip("@") or "wildcard_boys"
+        donation_target = self.donation_target_handle.strip().lstrip("@") or "wildcard_ns"
         if self.total_donated_diamonds is None:
             donation_value = "Unavailable"
             if self.donation_lookup_error:
@@ -561,12 +561,12 @@ class FanVerifyBot(commands.Bot):
         self.mod_role_id = _env_int("DISCORD_MOD_ROLE_ID")
         self.guild_id = _env_int("DISCORD_GUILD_ID")
         self.donation_target_handle = _normalize_handle(
-            _env("DISCORD_VERIFY_DONATION_TARGET", "wildcard_boys").strip() or "wildcard_boys"
+            _env("DISCORD_VERIFY_DONATION_TARGET", "wildcard_ns").strip() or "wildcard_ns"
         )
         self.live_announce_handles = _parse_handles_csv(
             _env(
                 "DISCORD_LIVE_ANNOUNCE_HANDLES",
-                "wildcard_boys,cardin_v_,zerokomodo,morgue707,laidbackn0mad,darkminathegone,k5872771,iambenxx",
+                "wildcard_ns,cardin_v_,zerokomodo,morgue707,laidbackn0mad,darkminathegone,k5872771,iambenxx",
             )
         )
         self.live_announce_webhook_url = _env("DISCORD_LIVE_ANNOUNCE_WEBHOOK", "").strip()

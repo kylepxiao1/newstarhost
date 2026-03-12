@@ -235,7 +235,7 @@ def _load_config() -> Config:
         webhook_url=_env("WILDCARDZ_TOPGIFTER_WEBHOOK", "").strip(),
         supabase_url=supabase_url.rstrip("/"),
         supabase_key=_env("SUPABASE_SECRET_KEY", "").strip() or _env("SUPABASE_PUBLISHABLE_KEY", "").strip(),
-        tiktok_username=_normalize_space(_env("WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME", "wildcard_boys")).lstrip("@"),
+        tiktok_username=_normalize_space(_env("WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME", "wildcard_ns")).lstrip("@"),
         lookback_days=max(1, _env_int("WILDCARDZ_TOPGIFTER_LOOKBACK_DAYS", 2)),
         send_empty=_env_bool("WILDCARDZ_TOPGIFTER_SEND_EMPTY", True),
         debug_enabled=_env_bool("WILDCARDZ_TOPGIFTER_DEBUG", False),

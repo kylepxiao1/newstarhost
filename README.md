@@ -33,7 +33,7 @@ Then select the created virtual camera in TikTok LIVE Studio and open `http://lo
 
 Run TikTok listener (automation):
 ```powershell
-$env:TIKTOK_USERNAMES="wildcard_boys afterdark_ns"
+$env:TIKTOK_USERNAMES="wildcard_ns afterdark_ns"
 python scripts/tiktok_listener.py
 ```
 
@@ -223,7 +223,7 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
   - Uses same calendar keys: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
   - Defaults: `WILDCARDZ_TOPGIFTER_TIMEZONE=America/Denver`, `WILDCARDZ_TOPGIFTER_POLL_SECONDS=60`
   - Event name match (case/whitespace-insensitive): `WILDCARDZ_TOPGIFTER_EVENT_NAME=Wildcardz Live`
-  - TikTok account filter: `WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME=wildcard_boys`
+  - TikTok account filter: `WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME=wildcard_ns`
   - Webhook: `WILDCARDZ_TOPGIFTER_WEBHOOK`
   - Report behavior: at 7:15 PM local timezone each day, checks for the latest completed matching livestream on that calendar day, excludes members whose nickname contains `the host`, and sends per-member ranked blocks (`#`, `gifter`, `diamonds`, `usd`).
   - Optional toggles: `WILDCARDZ_TOPGIFTER_ENABLED=1`, `WILDCARDZ_TOPGIFTER_SEND_EMPTY=1`
