@@ -13,7 +13,9 @@
     h2 { margin: 0 0 10px 0; font-size: 16px; letter-spacing: 0.02em; }
     .row { display: flex; gap: 8px; margin-bottom: 10px; }
     button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
-    select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; }
+    select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; width: 100%; box-sizing: border-box; }
+    .filter-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; width: 100%; }
+    .filter-pair .field { min-width: 0; }
     .songs { display: flex; gap: 8px; flex-wrap: wrap; }
     .card { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
     .corner-flags { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; align-items: center; }
@@ -54,6 +56,7 @@
       section { padding: 12px; }
       .row { flex-wrap: wrap; }
       .row > * { flex: 1 1 220px; }
+      .filter-pair { grid-template-columns: 1fr; }
       .card { width: 100%; }
       .formation-wrap { grid-template-columns: 1fr; }
       #formationCanvas { width: 100%; max-width: 360px; height: auto; }
@@ -78,8 +81,15 @@
   <main>
   <section>
     <h2>Select Front Dancer</h2>
-    <div class="row">
-      <select id="frontSelect" onchange="renderSongs()"></select>
+    <div class="filter-pair">
+      <div class="field">
+        <label for="frontSelect" style="display:block;margin-bottom:6px;">Front Dancer</label>
+        <select id="frontSelect" onchange="renderSongs()"></select>
+      </div>
+      <div class="field">
+        <label for="groupSelect" style="display:block;margin-bottom:6px;">Group</label>
+        <select id="groupSelect" onchange="renderSongs()"></select>
+      </div>
     </div>
   </section>
 
@@ -169,6 +179,7 @@
       songsState = songs || {};
       library = songs.library || {};
       renderFronts();
+      renderGroups();
       renderSongs();
       ensureBackground();
     }
@@ -191,11 +202,54 @@
       });
     }
 
+    function renderGroups() {
+      const sel = document.getElementById("groupSelect");
+      if (!sel) return;
+      const current = (sel.value || "").toLowerCase();
+      const stateGroup = (state.group_name || "").trim();
+      const groups = new Set();
+      Object.values(library).forEach(s => {
+        const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
+        all.forEach(name => {
+          const text = String(name || "").trim();
+          const low = text.toLowerCase();
+          if (text && (low.includes("boys") || low.includes("girls"))) groups.add(text);
+        });
+      });
+      if (stateGroup) {
+        const low = stateGroup.toLowerCase();
+        if (low.includes("boys") || low.includes("girls")) groups.add(stateGroup);
+      }
+      sel.innerHTML = "";
+      Array.from(groups).sort((a,b)=>a.localeCompare(b)).forEach(groupName => {
+        const opt = document.createElement("option");
+        opt.value = groupName;
+        opt.textContent = groupName;
+        sel.appendChild(opt);
+      });
+      if (current && Array.from(sel.options).some(o => o.value.toLowerCase() === current)) {
+        const match = Array.from(sel.options).find(o => o.value.toLowerCase() === current);
+        if (match) sel.value = match.value;
+        return;
+      }
+      if (stateGroup && Array.from(sel.options).some(o => o.value.toLowerCase() === stateGroup.toLowerCase())) {
+        const match = Array.from(sel.options).find(o => o.value.toLowerCase() === stateGroup.toLowerCase());
+        if (match) sel.value = match.value;
+        return;
+      }
+      if (sel.options.length) {
+        sel.selectedIndex = 0;
+      } else {
+        sel.value = "";
+      }
+    }
+
     function renderSongs() {
       const container = document.getElementById("songsContainer");
       if (container) {
         container.innerHTML = "";
         const selectedFront = (document.getElementById("frontSelect")?.value || "").toLowerCase();
+        const selectedGroup = (document.getElementById("groupSelect")?.value || "").toLowerCase().trim();
         const songSearch = (document.getElementById("songSearch")?.value || "").toLowerCase().trim();
         const durationLabel = (song) => {
           const d = parseInt(song.duration_sec, 10);
@@ -215,21 +269,24 @@
           })
           .filter(s => {
             const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
-            return all.some(n => {
-              const low = (n||"").toLowerCase();
-              return low.includes("boys") || low.includes("girls");
-            });
+            const songGroups = all
+              .map(n => String(n || "").trim())
+              .filter(n => {
+                const low = n.toLowerCase();
+                return low.includes("boys") || low.includes("girls");
+              });
+            if (!songGroups.length) return false;
+            if (!selectedGroup) return true;
+            return songGroups.some(n => n.toLowerCase() === selectedGroup);
           })
           .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
           .forEach(song => {
             const card = document.createElement("div");
             card.className = "card";
             const frontList = (song.front_dancers || []).filter(Boolean);
-            const dancerList = (song.dancers || []).filter(Boolean);
             const artistLine = song.artist ? `Artist: ${song.artist}` : "";
             const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
-            const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
-            const details = [artistLine, frontLine, dancerLine].filter(Boolean).join("<br>");
+            const details = [artistLine, frontLine].filter(Boolean).join("<br>");
             card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${details ? `<div>${details}</div>` : ""}`;
             const hasClosingRole = (song.roles || []).some(r => String(r || "").toLowerCase() === "closing");
             const hasPracticeRole = isPracticeSong(song);
@@ -351,6 +408,7 @@
     }
 
     function renderState() {
+      renderGroups();
       renderSongs();
     }
 

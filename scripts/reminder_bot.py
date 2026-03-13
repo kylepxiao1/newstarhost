@@ -603,6 +603,7 @@ async def _run_for_day(
 ) -> bool:
     day_start_local = datetime.combine(target_day, time(hour=0, minute=0), tzinfo=tz)
     day_end_local = day_start_local + timedelta(days=1)
+    now_local = datetime.now(timezone.utc).astimezone(tz)
     events = await _fetch_google_events(
         client=client,
         calendar_id=cfg.calendar_id,
@@ -611,10 +612,25 @@ async def _run_for_day(
         day_end_local=day_end_local,
     )
     matching: list[dict[str, Any]] = []
+    past_or_started_count = 0
     for event in events:
         summary = _normalize_space(str(event.get("summary") or ""))
         if _event_matches(summary, cfg.event_name):
+            start_dt = _parse_event_datetime(event.get("start") if isinstance(event.get("start"), dict) else {})
+            if start_dt is not None and now_local >= start_dt.astimezone(tz):
+                past_or_started_count += 1
+                continue
             matching.append(event)
+
+    if past_or_started_count and not matching:
+        logger.info(
+            "Skipping Wildcardz reminder for %s because matching event(s) have already started or ended (now=%s MT, skipped=%s)",
+            target_day.isoformat(),
+            now_local.strftime("%Y-%m-%d %H:%M"),
+            past_or_started_count,
+        )
+        return True
+
     if not matching:
         logger.info("No '%s' events found for %s", cfg.event_name, target_day.isoformat())
         if cfg.send_no_event_message:
