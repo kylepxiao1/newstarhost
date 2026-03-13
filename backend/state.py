@@ -273,7 +273,23 @@ class BattleStateManager:
             self._state.songs["position"] = str(pos)
             return self._state.copy()
 
-    def register_song(self, song_id: str, name: str, url: str, dancers: Optional[list] = None, front_dancers: Optional[list] = None, mvp_dancers: Optional[list] = None, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None, duo_dance: Optional[bool] = None) -> Dict:
+    def register_song(
+        self,
+        song_id: str,
+        name: str,
+        url: str,
+        dancers: Optional[list] = None,
+        front_dancers: Optional[list] = None,
+        mvp_dancers: Optional[list] = None,
+        roles: Optional[list] = None,
+        knows_song: Optional[list] = None,
+        exclusive_mvp_for: Optional[str] = None,
+        volume: Optional[float] = None,
+        difficulty: Optional[str] = None,
+        camera_dance: Optional[bool] = None,
+        duo_dance: Optional[bool] = None,
+        artist: Optional[str] = None,
+    ) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             roles_list = roles or []
@@ -295,6 +311,7 @@ class BattleStateManager:
                 vol_value = 200
             lib[song_id] = {
                 "name": name,
+                "artist": str(artist or "").strip(),
                 "url": url,
                 "dancers": dancers or [],
                 "front_dancers": front_dancers or [],
@@ -335,6 +352,7 @@ class BattleStateManager:
             if song_id in lib:
                 if roles is not None:
                     lib = self._clear_roles(roles, song_id, lib)
+                lib[song_id].setdefault("artist", "")
                 lib[song_id]["dancers"] = dancers
                 lib[song_id]["front_dancers"] = front_dancers
                 lib[song_id]["mvp_dancers"] = mvp_dancers
@@ -382,11 +400,17 @@ class BattleStateManager:
                 self._persist_library(lib)
             return self._state.copy()
 
-    def rename_song(self, song_id: str, name: str) -> Dict:
+    def rename_song(self, song_id: str, name: str, artist: Optional[str] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             if song_id in lib:
-                lib[song_id]["name"] = name
+                clean_name = str(name or "").strip()
+                if clean_name:
+                    lib[song_id]["name"] = clean_name
+                if artist is not None:
+                    lib[song_id]["artist"] = str(artist or "").strip()
+                else:
+                    lib[song_id].setdefault("artist", "")
                 self._state.songs["library"] = lib
                 self._persist_library(lib)
             return self._state.copy()
@@ -543,10 +567,15 @@ class BattleStateManager:
             return {}
         try:
             data = json.loads(self._library_path.read_text(encoding="utf-8"))
+            changed = False
             # Normalize front_dancer -> front_dancers list
             for k, v in data.items():
                 if "front_dancer" in v and "front_dancers" not in v:
                     v["front_dancers"] = [v.pop("front_dancer")] if v.get("front_dancer") else []
+                    changed = True
+                if "artist" not in v:
+                    v["artist"] = ""
+                    changed = True
                 v.setdefault("front_dancers", [])
                 v.setdefault("dancers", [])
                 v.setdefault("mvp_dancers", [])
@@ -556,6 +585,8 @@ class BattleStateManager:
                 v.setdefault("difficulty", "medium")
                 v.setdefault("camera_dance", False)
                 v.setdefault("duo_dance", False)
+            if changed:
+                self._persist_library(data)
             return data
         except Exception:
             return {}

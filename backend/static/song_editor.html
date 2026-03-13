@@ -50,14 +50,15 @@
     <section>
       <h2>Select Song</h2>
       <div class="row">
-        <input id="songSearch" placeholder="Search song name or dancer" style="flex:1;" oninput="renderSongsList()">
+        <input id="songSearch" placeholder="Search song, artist, or dancer" style="flex:1;" oninput="renderSongsList()">
         <select id="songList" style="flex:2;" onchange="loadSong()"></select>
         <button class="secondary" onclick="loadSongs()">Refresh</button>
         <button onclick="playSelected()">Play</button>
       </div>
       <div class="row">
         <input id="renameInput" placeholder="Rename song" style="flex:2;">
-        <button onclick="renameSong()">Rename</button>
+        <input id="artistInput" placeholder="Artist" style="flex:2;">
+        <button onclick="renameSong()">Update</button>
       </div>
       <div class="row">
         <label style="min-width:140px;">Volume</label>
@@ -161,11 +162,12 @@
       Object.keys(songs).forEach(id => {
         const song = songs[id] || {};
         const name = song.name || id;
+        const artist = song.artist || "";
         const dancersStr = (song.dancers || []).join(" ").toLowerCase() + " " + (song.front_dancers || []).join(" ").toLowerCase();
-        if (search && !name.toLowerCase().includes(search) && !dancersStr.includes(search)) return;
+        if (search && !name.toLowerCase().includes(search) && !artist.toLowerCase().includes(search) && !dancersStr.includes(search)) return;
         const opt = document.createElement("option");
         opt.value = id;
-        opt.textContent = name;
+        opt.textContent = artist ? `${name} - ${artist}` : name;
         list.appendChild(opt);
       });
       if (currentSongId) {
@@ -207,6 +209,7 @@
       volumeValue = 100;
       difficultyValue = "medium";
       document.getElementById("renameInput").value = "";
+      document.getElementById("artistInput").value = "";
       const cameraToggle = document.getElementById("cameraDanceToggle");
       if (cameraToggle) cameraToggle.checked = false;
       const duoToggle = document.getElementById("duoDanceToggle");
@@ -234,6 +237,7 @@
       if (volumeValue <= 1) volumeValue = Math.round(volumeValue * 200);
       difficultyValue = song.difficulty || "medium";
       document.getElementById("renameInput").value = song.name || id || "";
+      document.getElementById("artistInput").value = song.artist || "";
       setVolumeUi(volumeValue);
       const exSel = document.getElementById("exclusiveMvpSelect");
       if (exSel) exSel.value = exclusiveMvpFor || "";
@@ -253,15 +257,27 @@
       btns.forEach(b=>b.disabled=true);
       if (!currentSongId) { btns.forEach(b=>b.disabled=false); return; }
       const newName = document.getElementById("renameInput").value.trim();
+      const newArtist = document.getElementById("artistInput").value.trim();
       const volume = getVolumeValue();
       const difficulty = document.getElementById("difficultySelect")?.value || "medium";
       const cameraToggle = document.getElementById("cameraDanceToggle");
       cameraDance = !!cameraToggle?.checked;
       const duoToggle = document.getElementById("duoDanceToggle");
       duoDance = !!duoToggle?.checked;
-      const doRename = newName && (!songs[currentSongId] || songs[currentSongId].name !== newName);
+      const currentSong = songs[currentSongId] || {};
+      const doRename = (
+        (newName && currentSong.name !== newName) ||
+        ((currentSong.artist || "") !== newArtist)
+      );
       const renamePromise = doRename
-        ? api("/songs/rename", {method:"POST", body:{song_id: currentSongId, name: newName}}).then(r=>r.json())
+        ? api("/songs/rename", {
+            method:"POST",
+            body:{
+              song_id: currentSongId,
+              name: newName || currentSong.name || currentSongId,
+              artist: newArtist,
+            }
+          }).then(r=>r.json())
         : Promise.resolve(null);
       renamePromise
         .then(state => {
@@ -277,12 +293,32 @@
     function renameSong() {
       if (!currentSongId) return;
       const newName = document.getElementById("renameInput").value.trim();
-      if (!newName) return;
-      api("/songs/rename", {method:"POST", body:{song_id: currentSongId, name: newName}})
+      const newArtist = document.getElementById("artistInput").value.trim();
+      const currentSong = songs[currentSongId] || {};
+      const hasNameChange = !!newName && newName !== (currentSong.name || "");
+      const hasArtistChange = newArtist !== (currentSong.artist || "");
+      if (!hasNameChange && !hasArtistChange) {
+        window.location.reload();
+        return;
+      }
+      api("/songs/rename", {
+        method:"POST",
+        body:{
+          song_id: currentSongId,
+          name: newName || currentSong.name || currentSongId,
+          artist: newArtist,
+        }
+      })
         .then(r=>r.json())
         .then(state => {
           if (state && state.library) songs = state.library;
           renderSongsList();
+          const latest = songs[currentSongId] || {};
+          document.getElementById("renameInput").value = latest.name || currentSongId || "";
+          document.getElementById("artistInput").value = latest.artist || "";
+        })
+        .finally(() => {
+          window.location.reload();
         });
     }
 

@@ -83,6 +83,9 @@
       <select id="dancerFilter" onchange="renderSongs()"></select>
       <button onclick="playSuggested()">Play Suggested</button>
     </div>
+    <div class="row">
+      <input id="songSearch" placeholder="Search song or artist" oninput="renderSongs()">
+    </div>
     <div class="row filter-checkboxes">
       <label class="filter-opt">
         <input type="checkbox" id="filterAssigned" checked onchange="renderSongs()"> Assigned dancers
@@ -260,6 +263,7 @@
 
     function getFilteredSongsForCards() {
       const dancerFilter = (document.getElementById("dancerFilter")?.value || "").toLowerCase();
+      const songSearch = (document.getElementById("songSearch")?.value || "").toLowerCase().trim();
       const includeAssigned = document.getElementById("filterAssigned")?.checked !== false;
       const includeFronts = document.getElementById("filterFronts")?.checked !== false;
       const includeKnows = document.getElementById("filterKnows")?.checked === true;
@@ -290,6 +294,12 @@
             ...(s.knows_song || []),
           ];
           return pool.some(n => (n||"").toLowerCase().includes(target));
+        })
+        .filter(s => {
+          if (!songSearch) return true;
+          const name = (s.name || "").toLowerCase();
+          const artist = (s.artist || "").toLowerCase();
+          return name.includes(songSearch) || artist.includes(songSearch);
         })
         .sort((a,b)=> (a.name||"").localeCompare(b.name||""));
     }
@@ -377,9 +387,10 @@
             : "";
           const frontList = (song.front_dancers || []).filter(Boolean);
           const dancerList = (song.dancers || []).filter(Boolean);
+          const artistLine = song.artist ? `Artist: ${song.artist}` : "";
           const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
           const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
-          const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
+          const details = [artistLine, frontLine, dancerLine].filter(Boolean).join("<br>");
           card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${mvpRow}${details ? `<div>${details}</div>` : ""}`;
           const flags = document.createElement("div");
           flags.className = "corner-flags";

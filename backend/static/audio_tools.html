@@ -52,6 +52,12 @@
       </div>
     </div>
     <div class="row">
+      <div style="flex:1;">
+        <label>Artist</label>
+        <input id="songArtist" placeholder="Artist name">
+      </div>
+    </div>
+    <div class="row">
       <button class="secondary" onclick="selectMode('youtube')">YouTube URL</button>
       <button class="secondary" onclick="selectMode('upload')">Local Upload</button>
     </div>
@@ -202,6 +208,7 @@
     async function saveSong() {
       if (!lastPreview) return alert("Run Preview first.");
       const currentName = document.getElementById("songName").value.trim();
+      const artist = document.getElementById("songArtist").value.trim();
       const {
         url,
         title,
@@ -210,9 +217,13 @@
       } = lastPreview;
       const derivedName = currentName || nameInput || title || fileName || "";
       const song_id = crypto.randomUUID();
-      await fetch("/songs/register", {method:"POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify({song_id, name: derivedName, url})});
+      await fetch("/songs/register", {
+        method:"POST",
+        headers: {"Content-Type":"application/json"},
+        body: JSON.stringify({song_id, name: derivedName, artist, url}),
+      });
       const div = document.getElementById("result");
-      div.innerHTML += `<br>Registered as: ${derivedName || url}`;
+      div.innerHTML += `<br>Registered as: ${derivedName || url}${artist ? ` - ${artist}` : ""}`;
     }
 
     async function processCsv() {

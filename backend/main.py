@@ -289,6 +289,7 @@ class RegisterSongRequest(BaseModel):
     song_id: str
     name: str
     url: str
+    artist: Optional[str] = None
     dancers: Optional[List[str]] = None
     front_dancers: Optional[List[str]] = None
     mvp_dancers: Optional[List[str]] = None
@@ -323,6 +324,7 @@ class UpdateSongDancersRequest(BaseModel):
 class RenameSongRequest(BaseModel):
     song_id: str
     name: str
+    artist: Optional[str] = None
 
 
 class DeleteSongRequest(BaseModel):
@@ -1255,19 +1257,20 @@ async def get_songs() -> JSONResponse:
 @app.post("/songs/register")
 async def register_song(body: RegisterSongRequest) -> JSONResponse:
     state = state_manager.register_song(
-        body.song_id,
-        body.name,
-        body.url,
-        body.dancers,
-        body.front_dancers,
-        body.mvp_dancers,
-        body.roles,
-        body.knows_song,
-        body.exclusive_mvp_for,
-        body.volume,
-        body.difficulty,
-        body.camera_dance,
-        body.duo_dance,
+        song_id=body.song_id,
+        name=body.name,
+        url=body.url,
+        dancers=body.dancers,
+        front_dancers=body.front_dancers,
+        mvp_dancers=body.mvp_dancers,
+        roles=body.roles,
+        knows_song=body.knows_song,
+        exclusive_mvp_for=body.exclusive_mvp_for,
+        volume=body.volume,
+        difficulty=body.difficulty,
+        camera_dance=body.camera_dance,
+        duo_dance=body.duo_dance,
+        artist=body.artist,
     )
     _broadcast_state(state)
     return JSONResponse(state)
@@ -1275,7 +1278,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
 
 @app.post("/songs/rename")
 async def rename_song(body: RenameSongRequest) -> JSONResponse:
-    state = state_manager.rename_song(body.song_id, body.name)
+    state = state_manager.rename_song(body.song_id, body.name, body.artist)
     _broadcast_state(state)
     return JSONResponse(state)
 
@@ -1989,7 +1992,15 @@ async def audio_batch_csv(body: CSVBatchRequest) -> JSONResponse:
             final_path = dl_tmp
         public = f"/media/{final_path.name}"
         song_id = uuid.uuid4().hex
-        latest_state = state_manager.register_song(song_id, title or final_path.stem, public, [], [], [], None, None)
+        latest_state = state_manager.register_song(
+            song_id=song_id,
+            name=title or final_path.stem,
+            url=public,
+            dancers=[],
+            front_dancers=[],
+            mvp_dancers=[],
+            artist=artist,
+        )
         results.append({"title": title, "artist": artist, "status": "ok", "output": public, "note": "Downloaded via API", "song_id": song_id})
     if latest_state:
         _broadcast_state(latest_state)
