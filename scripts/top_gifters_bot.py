@@ -13,10 +13,6 @@ import httpx
 
 from utils import _env
 
-WEBHOOK_CUTOFF_TZ_NAME = "America/Denver"
-WEBHOOK_CUTOFF_HOUR = 18
-WEBHOOK_CUTOFF_MINUTE = 20
-
 
 def _env_int(key: str, default: int) -> int:
     value = _env(key, "").strip()
@@ -382,24 +378,6 @@ def _rank_top_gifters(rows: list[dict[str, Any]]) -> dict[str, list[tuple[str, i
 
 
 async def _send_webhook_message(*, client: httpx.AsyncClient, webhook_url: str, content: str) -> None:
-    now_utc = datetime.now(timezone.utc)
-    try:
-        mt_tz = ZoneInfo(WEBHOOK_CUTOFF_TZ_NAME)
-    except Exception:
-        mt_tz = None
-    if mt_tz is not None:
-        now_mt = now_utc.astimezone(mt_tz)
-        cutoff_tuple = (WEBHOOK_CUTOFF_HOUR, WEBHOOK_CUTOFF_MINUTE, 0, 0)
-        now_tuple = (now_mt.hour, now_mt.minute, now_mt.second, now_mt.microsecond)
-        if now_tuple > cutoff_tuple:
-            logging.info(
-                "Skipping top-gifters webhook send at %s %s because cutoff is %02d:%02d MT",
-                now_mt.strftime("%Y-%m-%d %H:%M:%S"),
-                WEBHOOK_CUTOFF_TZ_NAME,
-                WEBHOOK_CUTOFF_HOUR,
-                WEBHOOK_CUTOFF_MINUTE,
-            )
-            return
     payload = {"content": str(content or "")[:1900]}
     response = await client.post(webhook_url, json=payload)
     if not response.is_success:

@@ -255,6 +255,7 @@ def _parse_event_description(description: str) -> dict[str, list[str]]:
         "host": "hosts",
         "hosts": "hosts",
         "outfit": "outfit",
+        "outfits": "outfit",
     }
     sections: dict[str, list[str]] = {"dancers": [], "hosts": [], "outfit": []}
     active_section = ""
