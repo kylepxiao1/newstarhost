@@ -250,7 +250,8 @@
       const roles = (song.roles || []).map(normalizeRoleToken);
       const hasNonPracticeRole = roles.some((r) => r !== PRACTICE_ROLE);
       const hasDancers = (song.dancers || []).length > 0;
-      return !hasNonPracticeRole && hasDancers;
+      const isMvpExclusive = !!(song.exclusive_mvp_for || "");
+      return !hasNonPracticeRole && hasDancers && !isMvpExclusive;
     }
 
     function hasFilterToggle() {
@@ -281,7 +282,7 @@
           if (includeFronts) assigned.push(...(s.front_dancers||[]).slice(0, 1));
           if (includeKnows) assigned.push(...(s.knows_song||[]));
           const exclusive = (s.exclusive_mvp_for || "").toLowerCase();
-          if (exclusive && exclusive.includes(dancerFilter)) return true;
+          if (includeMvp && exclusive && exclusive.includes(dancerFilter)) return true;
           return assigned.some(n => (n||"").toLowerCase().includes(dancerFilter));
         })
         .filter(s => {
