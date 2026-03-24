@@ -22,6 +22,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass  # if activation is b
 pip install -r requirements.txt
 ```
 
+## Quick Start (Unix/macOS)
+```bash
+cd ~/newstarhost
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
 One command to start backend + virtual cam compositor (quiet logs):
 ```powershell
 $env:UVICORN_LOG_LEVEL="warning"
@@ -29,12 +37,19 @@ $env:UVICORN_ACCESS_LOG="false"
 $env:INPUT_CAM_INDEX="-1"     # auto-pick first working camera (or set a specific index)
 & .\.venv\Scripts\python.exe scripts\run_all.py
 ```
+```bash
+UVICORN_LOG_LEVEL=warning UVICORN_ACCESS_LOG=false INPUT_CAM_INDEX=-1 \
+  .venv/bin/python scripts/run_all.py
+```
 Then select the created virtual camera in TikTok LIVE Studio and open `http://localhost:8000/battle/dances` to operate.
 
 Run TikTok listener (automation):
 ```powershell
 $env:TIKTOK_USERNAMES="wildcard_ns afterdark_ns"
 python scripts/tiktok_listener.py
+```
+```bash
+TIKTOK_USERNAMES="wildcard_ns afterdark_ns" python scripts/tiktok_listener.py
 ```
 
 ## Backend (FastAPI)
@@ -68,10 +83,23 @@ $env:OVERLAY_RENDERER_BACKEND="auto"
 $env:VCAM_BACKENDS="unitycapture,obs,auto"
 $env:VCAM_FORMATS="BGR,RGB,I420"
 ```
+```bash
+export CAM_BACKENDS="DSHOW,ANY,MSMF"
+export CV2_USE_OPENCL="auto"
+export OVERLAY_GPU_MODE="auto"
+export OVERLAY_GPU_MIN_PIXELS="180000"
+export OVERLAY_RENDERER_BACKEND="auto"
+export VCAM_BACKENDS="unitycapture,obs,auto"
+export VCAM_FORMATS="BGR,RGB,I420"
+```
 - Optional GPU-native text/primitives path (Skia/OpenGL):
 ```powershell
 pip install skia-python glfw
 $env:OVERLAY_RENDERER_BACKEND="skia"
+```
+```bash
+pip install skia-python glfw
+export OVERLAY_RENDERER_BACKEND="skia"
 ```
 Notes: this Skia path currently falls back to CPU renderer when overlay rotation/flip is enabled. Do not use `--collect-all OpenGL` unless your own code directly uses PyOpenGL.
 - Performance knobs: `AUTO_QUALITY_ENABLED` (default `1`), `AUTO_QUALITY_LEVELS` (default `1.0,0.9,0.8,0.7`), `AUTO_QUALITY_DOWNGRADE_FRAMES` (default `45`), `AUTO_QUALITY_UPGRADE_FRAMES` (default `240`), `PERF_LOG_INTERVAL_SECS` (default `5`), `CAM_READER_RESTART_STALE_SECS` (default `1.0`).
@@ -80,6 +108,9 @@ Notes: this Skia path currently falls back to CPU renderer when overlay rotation
 - Build a Windows executable (PyInstaller):
 ```powershell
 .\.venv\Scripts\python.exe -m PyInstaller --noconfirm --onefile --name virtual_cam_compositor --console --paths scripts --hidden-import overlay_renderer --hidden-import gpu_overlay_renderer --hidden-import skia --hidden-import glfw --collect-all glfw scripts\virtual_cam_compositor.py
+```
+```bash
+.venv/bin/python -m PyInstaller --noconfirm --onefile --name virtual_cam_compositor --console --paths scripts --hidden-import overlay_renderer --hidden-import gpu_overlay_renderer --hidden-import skia --hidden-import glfw --collect-all glfw scripts/virtual_cam_compositor.py
 ```
 
 ### B) OBS-based overlay
@@ -115,6 +146,9 @@ Example:
 ```powershell
 .\.venv\Scripts\python.exe scripts\find_viral_trends.py --topic "dance challenges" --videos 120 --top 25
 ```
+```bash
+.venv/bin/python scripts/find_viral_trends.py --topic "dance challenges" --videos 120 --top 25
+```
 
 Notes:
 - Browser scraping is enforced headless for all runs.
@@ -149,6 +183,9 @@ where shared is null;
 Example:
 ```powershell
 .\.venv\Scripts\python.exe scripts\cluster_audio_fingerprints.py --top 50
+```
+```bash
+.venv/bin/python scripts/cluster_audio_fingerprints.py --top 50
 ```
 
 Useful flags:
@@ -196,6 +233,29 @@ flyctl ssh sftp get -a newstarhost -g app /path/on/machine/filename.ext C:\path\
 # Upload a file to the machine (one-shot)
 flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/machine/file.ext
 ```
+```bash
+# Authenticate Fly CLI
+flyctl auth login
+
+# List machines
+flyctl machines list -a newstarhost
+
+# SSH into the machine
+flyctl ssh console -a newstarhost -g app
+flyctl ssh console -a newstarhost -g listener
+
+# Start the listener machine
+fly machines start <APP_MACHINE_ID>
+
+# Check the listener logs
+flyctl logs -a newstarhost --machine <APP_MACHINE_ID>
+
+# Download a file from the machine (one-shot)
+flyctl ssh sftp get -a newstarhost -g app /path/on/machine/filename.ext ~/local/filename.ext
+
+# Upload a file to the machine (one-shot)
+flyctl ssh sftp put -a newstarhost -g app ~/local/file.ext /path/on/machine/file.ext
+```
 
 ### Fly.io Discord Worker
 - `fly.toml` runs:
@@ -232,6 +292,9 @@ flyctl ssh sftp put -a newstarhost -g app C:\path\to\local\file.ext /path/on/mac
 ```powershell
 fly scale count app=1 listener=1 discord=1 -a newstarhost
 ```
+```bash
+fly scale count app=1 listener=1 discord=1 -a newstarhost
+```
 
 ## Audio Routing (Windows)
 - With virtual cam: route mic/system audio via VB-Cable or VoiceMeeter; select the same input in TikTok LIVE Studio.
@@ -252,6 +315,14 @@ powershell -ExecutionPolicy Bypass -File .\scripts\install_ffmpeg.ps1
 # Set ffmpeg for this session (path printed by the script):
 $env:FFMPEG_BIN="C:\Users\kylep\OneDrive\Desktop\newstarhost\scripts\ffmpeg-bin\...\ffmpeg.exe"
 ```
+```bash
+# On macOS:
+brew install ffmpeg
+# On Ubuntu/Debian:
+sudo apt install ffmpeg
+# Or manually set the path:
+export FFMPEG_BIN="/usr/local/bin/ffmpeg"
+```
 If the default URLs fail, set `FFMPEG_URL` to a working archive (zip or 7z). 7z archives require 7-Zip on PATH.
 
 ## Analytics Notebooks
@@ -260,4 +331,8 @@ Jupyter notebooks are in `analytics/notebooks`
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r analytics/requirements.txt
 .\.venv\Scripts\python.exe -m jupyter lab analytics/notebooks
+```
+```bash
+.venv/bin/python -m pip install -r analytics/requirements.txt
+.venv/bin/python -m jupyter lab analytics/notebooks
 ```
