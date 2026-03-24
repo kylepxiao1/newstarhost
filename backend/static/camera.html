@@ -382,7 +382,7 @@
           handle: String(d?.handle || "").trim().replace(/^@/, ""),
         }))
         .filter((d) => d.name && isGroupName(d.name))
-        .sort((a, b) => a.name.localeCompare(b.name));
+        .sort((a, b) => b.name.localeCompare(a.name));
     }
 
     function normalizeHandle(value) {

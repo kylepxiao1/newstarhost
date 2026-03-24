@@ -312,7 +312,7 @@
       return (list || [])
         .map(d => (d && d.name ? String(d.name).trim() : ""))
         .filter(Boolean)
-        .sort((a, b) => a.localeCompare(b));
+        .sort((a, b) => b.localeCompare(a));
     }
 
     function setCookie(name, value, days = 365) {

@@ -135,6 +135,9 @@
         <button class="secondary" onclick="pickSuggestedSong()">Pick Suggested</button>
       </div>
       <div class="row">
+        <button class="secondary" onclick="playRole('attention')">Attention</button>
+        <button class="secondary" onclick="playRole('win')">Win</button>
+        <button class="secondary" onclick="playRole('background')">Background</button>
       </div>
       <div class="row">
         <span>Current song: <span id="currentSongLabel">-</span></span>
@@ -152,7 +155,7 @@
     const api = window.PageShared.api;
     let state = {};
     let currentTab = "";
-    let routine = { active:false, live:false, timers:[], endTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false };
+    let routine = { active:false, live:false, timers:[], endTime:0, warnTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","duo_sfx","applause","attention","background","win","closing"];
     const PRACTICE_SONG_ROLE = "practice_song";
@@ -632,7 +635,9 @@
         battleListenerLog("ignored start: missing end_timestamp", {message_id: key});
         return;
       }
+      const scheduledEndTs = parseUnixSeconds(row.end_timestamp ?? row.endTimestamp);
       const endMs = endTs * 1000;
+      const scheduledEndMs = scheduledEndTs ? scheduledEndTs * 1000 : null;
       const durationMs = Math.max(0, endMs - Date.now());
       const competitionId = competitionIdFromRow(row);
       try {
@@ -642,6 +647,7 @@
           group_handle: groupHandle,
           competition_id: competitionId,
           end_timestamp: endTs,
+          scheduled_end_timestamp: scheduledEndTs,
           end_ms: endMs,
           duration_ms: durationMs
         });
@@ -649,7 +655,7 @@
       if (startSortKey > 0) latestBattleStartKey = startSortKey;
       lastAppliedCompetitionScoreKey = "";
       rememberCompetitionStart(key);
-      await startLiveRoutine(durationMs, endMs, competitionId);
+      await startLiveRoutine(durationMs, endMs, competitionId, scheduledEndMs);
     }
 
     async function handleCompetitionRealtimeRow(row, sourceEvent) {
@@ -1169,6 +1175,7 @@
       empty.value = "";
       empty.textContent = "(none)";
       sel.appendChild(empty);
+      opts.sort((a, b) => b.textContent.localeCompare(a.textContent));
       opts.forEach(o => sel.appendChild(o));
       if (current && !sel.value) sel.value = current;
     }
@@ -2019,13 +2026,15 @@
       }
     }
 
-    function resolveRoutineTiming(durationMs, absoluteEndMs=null) {
+    function resolveRoutineTiming(durationMs, absoluteEndMs=null, scheduledEndMs=null) {
       const startTime = Date.now();
       const hasAbsoluteEnd = Number.isFinite(absoluteEndMs) && absoluteEndMs > 0;
       const endTime = hasAbsoluteEnd
         ? Math.floor(absoluteEndMs)
         : (startTime + Math.max(0, Number(durationMs) || 0));
-      return { startTime, endTime };
+      const hasScheduledEnd = Number.isFinite(scheduledEndMs) && scheduledEndMs > 0;
+      const warnTime = hasScheduledEnd ? Math.floor(scheduledEndMs) : endTime;
+      return { startTime, endTime, warnTime };
     }
 
     function startRoutine(durationMs=120000, absoluteEndMs=null, competitionId=null) {
@@ -2047,6 +2056,7 @@
       const timing = resolveRoutineTiming(durationMs, absoluteEndMs);
       routine.startTime = timing.startTime;
       routine.endTime = timing.endTime;
+      routine.warnTime = timing.warnTime;
       routine.dancers = chooseTwoDancers();
       routine.firstSongPlayed = false;
       routine.warned = false;
@@ -2062,10 +2072,10 @@
       renderTimer(true);
     }
 
-    async function startLiveRoutine(durationMs=120000, absoluteEndMs=null, competitionId=null) {
+    async function startLiveRoutine(durationMs=120000, absoluteEndMs=null, competitionId=null, scheduledEndMs=null) {
       if (!audioUnlocked) {
         unlockAudio().then(ok => {
-          if (ok) startLiveRoutine(durationMs, absoluteEndMs, competitionId);
+          if (ok) startLiveRoutine(durationMs, absoluteEndMs, competitionId, scheduledEndMs);
           else alert("Click anywhere on the page once to enable audio.");
         });
         return;
@@ -2078,9 +2088,10 @@
       routine.logged = false;
       routine.competitionId = normalizeId(competitionId);
       routine.isSpoofBattle = spoofCompetitionIds.has(routine.competitionId);
-      const timing = resolveRoutineTiming(durationMs, absoluteEndMs);
+      const timing = resolveRoutineTiming(durationMs, absoluteEndMs, scheduledEndMs);
       routine.startTime = timing.startTime;
       routine.endTime = timing.endTime;
+      routine.warnTime = timing.warnTime;
       routine.dancers = chooseTwoDancers();
       routine.firstSongPlayed = false;
       routine.warned = false;
@@ -2332,8 +2343,9 @@
         const secs = String(remaining % 60).padStart(2,"0");
         el.textContent = `${mins}:${secs}`;
        el.style.color = remaining <= 30 ? "#ef4444" : "#e2e8f0";
-       if (remaining <= 30 && remaining > 0 && !routine.warned) {
-         // once under 30s, stop current and force applause->attention
+       const warnRemaining = Math.max(0, Math.ceil((routine.warnTime - Date.now()) / 1000));
+       if (warnRemaining <= 30 && warnRemaining > 0 && !routine.warned) {
+         // once under 30s from scheduled end, stop current and force applause->attention
          const player = document.getElementById("player");
          try { player.pause(); } catch(e){}
          playSequence(["applause","attention"], false);

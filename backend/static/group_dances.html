@@ -221,7 +221,7 @@
         if (low.includes("boys") || low.includes("girls")) groups.add(stateGroup);
       }
       sel.innerHTML = "";
-      Array.from(groups).sort((a,b)=>a.localeCompare(b)).forEach(groupName => {
+      Array.from(groups).sort((a,b)=>b.localeCompare(a)).forEach(groupName => {
         const opt = document.createElement("option");
         opt.value = groupName;
         opt.textContent = groupName;

@@ -162,7 +162,7 @@
       out.forEach((g) => {
         if (!dedup.has(g.handle)) dedup.set(g.handle, g);
       });
-      groups = Array.from(dedup.values()).sort((a, b) => a.name.localeCompare(b.name));
+      groups = Array.from(dedup.values()).sort((a, b) => b.name.localeCompare(a.name));
       renderGroupOptions();
     }
 
