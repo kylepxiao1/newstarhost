@@ -270,7 +270,10 @@
         <div id="formStatus" class="status-text"></div>
 
         <div class="past-notes-wrap">
-          <button id="togglePastNotesBtn" class="secondary" type="button">View Past Notes</button>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="togglePastNotesBtn" class="secondary" type="button">View Past Notes</button>
+            <a href="/notes/attendance" target="_blank"><button type="button" class="secondary">Attendance Spreadsheet</button></a>
+          </div>
           <div id="pastNotesPanel" hidden>
             <div id="pastNotesStatus" class="status-text"></div>
             <div id="pastNotesList" class="past-notes-list"></div>
@@ -288,7 +291,7 @@
   <script>
     const api = window.PageShared.api;
     let dancers = [];
-    let selectedMemberSet = null;
+    let selectedMemberSet = new Set();
     let streamSegments = [];
     let draggedSegmentId = null;
     let dragOverSegmentId = null;
@@ -612,20 +615,11 @@
         selectedMemberSet = new Set();
         return;
       }
-      if (selectedMemberSet === null) {
-        // Default behavior: all members present are checked when page loads.
-        selectedMemberSet = new Set(names);
-      } else {
-        const next = new Set();
-        names.forEach(name => {
-          if (selectedMemberSet.has(name)) next.add(name);
-        });
-        // New members default to checked.
-        names.forEach(name => {
-          if (!next.has(name)) next.add(name);
-        });
-        selectedMemberSet = next;
-      }
+      const next = new Set();
+      names.forEach(name => {
+        if (selectedMemberSet.has(name)) next.add(name);
+      });
+      selectedMemberSet = next;
       names.forEach(name => {
         const label = document.createElement("label");
         label.className = "member-item";

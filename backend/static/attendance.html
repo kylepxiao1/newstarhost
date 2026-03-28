@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Attendance Spreadsheet</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px 24px; }
+    .status-text { margin-bottom: 12px; min-height: 22px; color: #93c5fd; }
+    .status-text.error { color: #fca5a5; }
+    .actions { margin-bottom: 16px; display: flex; gap: 10px; }
+    button {
+      cursor: pointer;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-weight: 600;
+    }
+    button.secondary { background: #334155; }
+    .table-wrap { overflow-x: auto; }
+    table { border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+    th, td { border: 1px solid #334155; padding: 6px 10px; text-align: center; }
+    th { background: #1e293b; position: sticky; top: 0; z-index: 1; }
+    th:first-child { position: sticky; left: 0; z-index: 2; background: #1e293b; }
+    td:first-child { position: sticky; left: 0; background: #111827; font-weight: 600; text-align: left; z-index: 1; }
+    td.present { background: #14532d; color: #86efac; }
+    td.absent { background: #450a0a; color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Attendance Spreadsheet</h1>
+  </header>
+  <main>
+    <div id="status" class="status-text">Loading...</div>
+    <div class="actions">
+      <button id="downloadBtn" disabled>Download CSV</button>
+      <a href="/notes"><button type="button" class="secondary">Back to Notes</button></a>
+    </div>
+    <div class="table-wrap">
+      <table id="attendanceTable"></table>
+    </div>
+  </main>
+
+  <script src="/static/page_shared.js"></script>
+  <script>
+    const api = window.PageShared.api;
+
+    async function fetchAllNotes() {
+      const allNotes = [];
+      let offset = 0;
+      const limit = 100;
+      while (true) {
+        const qs = new URLSearchParams({ limit: String(limit), offset: String(offset) });
+        const res = await api(`/notes/stream/history?${qs.toString()}`);
+        const payload = await res.json();
+        if (!res.ok || payload?.ok === false) throw new Error(payload?.error || `Request failed (${res.status})`);
+        const rows = Array.isArray(payload?.notes) ? payload.notes : [];
+        allNotes.push(...rows);
+        if (!payload?.has_more) break;
+        offset = Number(payload?.next_offset) || (offset + rows.length);
+      }
+      return allNotes;
+    }
+
+    function buildAttendanceData(notes) {
+      const memberSet = new Set();
+      const dateEntries = [];
+
+      notes.forEach(note => {
+        const members = Array.isArray(note?.members_present) ? note.members_present : [];
+        members.forEach(m => memberSet.add(m));
+      });
+
+      const allMembers = Array.from(memberSet).sort((a, b) => a.localeCompare(b));
+
+      notes.forEach(note => {
+        const date = String(note?.stream_date || "").trim() || "Unknown";
+        const group = String(note?.group_name || "").trim();
+        const presentSet = new Set(
+          (Array.isArray(note?.members_present) ? note.members_present : []).map(m => String(m).trim()).filter(Boolean)
+        );
+        const attendance = {};
+        allMembers.forEach(m => {
+          attendance[m] = presentSet.has(m) ? "Present" : "Absent";
+        });
+        dateEntries.push({ date, group, attendance });
+      });
+
+      // Sort by date ascending
+      dateEntries.sort((a, b) => a.date.localeCompare(b.date));
+
+      return { members: allMembers, entries: dateEntries };
+    }
+
+    function renderTable(data) {
+      const table = document.getElementById("attendanceTable");
+      table.innerHTML = "";
+
+      if (!data.entries.length) {
+        table.innerHTML = "<tr><td>No attendance data found.</td></tr>";
+        return;
+      }
+
+      // Header row
+      const thead = document.createElement("thead");
+      const headerRow = document.createElement("tr");
+      const dateHeader = document.createElement("th");
+      dateHeader.textContent = "Date";
+      headerRow.appendChild(dateHeader);
+      const groupHeader = document.createElement("th");
+      groupHeader.textContent = "Group";
+      headerRow.appendChild(groupHeader);
+      data.members.forEach(m => {
+        const th = document.createElement("th");
+        th.textContent = m;
+        headerRow.appendChild(th);
+      });
+      thead.appendChild(headerRow);
+      table.appendChild(thead);
+
+      // Body rows
+      const tbody = document.createElement("tbody");
+      data.entries.forEach(entry => {
+        const tr = document.createElement("tr");
+        const dateTd = document.createElement("td");
+        dateTd.textContent = entry.date;
+        tr.appendChild(dateTd);
+        const groupTd = document.createElement("td");
+        groupTd.textContent = entry.group;
+        tr.appendChild(groupTd);
+        data.members.forEach(m => {
+          const td = document.createElement("td");
+          const val = entry.attendance[m];
+          td.textContent = val;
+          td.className = val === "Present" ? "present" : "absent";
+          tr.appendChild(td);
+        });
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+    }
+
+    function generateCsv(data) {
+      const escape = (v) => {
+        const s = String(v || "");
+        return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const header = ["Date", "Group", ...data.members].map(escape).join(",");
+      const rows = data.entries.map(entry => {
+        return [entry.date, entry.group, ...data.members.map(m => entry.attendance[m])].map(escape).join(",");
+      });
+      return header + "\n" + rows.join("\n") + "\n";
+    }
+
+    async function init() {
+      const status = document.getElementById("status");
+      const downloadBtn = document.getElementById("downloadBtn");
+      try {
+        const notes = await fetchAllNotes();
+        const data = buildAttendanceData(notes);
+        renderTable(data);
+        status.textContent = `${data.entries.length} stream dates, ${data.members.length} members`;
+
+        downloadBtn.disabled = false;
+        downloadBtn.addEventListener("click", () => {
+          const csv = generateCsv(data);
+          const blob = new Blob([csv], { type: "text/csv" });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = "attendance.csv";
+          a.click();
+          URL.revokeObjectURL(url);
+        });
+      } catch (e) {
+        status.textContent = `Failed to load attendance: ${e}`;
+        status.className = "status-text error";
+      }
+    }
+
+    init();
+  </script>
+</body>
+</html>

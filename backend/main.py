@@ -1643,6 +1643,11 @@ async def notes_page() -> FileResponse:
     return _static_file("notes.html")
 
 
+@app.get("/notes/attendance")
+async def notes_attendance_page() -> FileResponse:
+    return _static_file("attendance.html")
+
+
 @app.get("/top/gifters")
 async def top_gifters_page() -> FileResponse:
     return _static_file("top_gifters.html")
