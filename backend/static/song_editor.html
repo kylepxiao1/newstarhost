@@ -103,6 +103,16 @@
     <div id="knowsList"></div>
 
     <div class="row" style="margin-top:10px;">
+      <label style="width:100%;">Add special dance for</label>
+    </div>
+    <div class="row add-row">
+      <input id="specialSearch" list="specialSuggestions" placeholder="Search dancer name" style="flex:1;">
+      <datalist id="specialSuggestions"></datalist>
+      <button onclick="addTo('special_dance_for')">Add</button>
+    </div>
+    <div id="specialList"></div>
+
+    <div class="row" style="margin-top:10px;">
       <label style="width:100%;">Exclusive MVP for (one dancer max)</label>
     </div>
     <div class="row">
@@ -138,6 +148,7 @@
   let mvpsAssigned = [];
   let rolesAssigned = [];
   let knowsAssigned = [];
+  let specialDanceFor = [];
   let exclusiveMvpFor = "";
   let cameraDance = false;
   let duoDance = false;
@@ -229,6 +240,7 @@
       mvpsAssigned = [...(song.mvp_dancers || [])];
       rolesAssigned = [...(song.roles || [])];
       knowsAssigned = [...(song.knows_song || [])];
+      specialDanceFor = [...(song.special_dance_for || [])];
       exclusiveMvpFor = song.exclusive_mvp_for || "";
       cameraDance = !!song.camera_dance;
       duoDance = !!song.duo_dance;
@@ -284,7 +296,7 @@
           if (state && state.library) {
             songs = state.library;
           }
-          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance}});
+          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, special_dance_for: specialDanceFor, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance}});
         })
         .then(()=>loadSongs())
         .finally(()=>btns.forEach(b=>b.disabled=false));
@@ -452,12 +464,13 @@
     }
 
     function addTo(field) {
-      const inputId = field === "dancers" ? "dancerSearch" : field === "front_dancers" ? "frontSearch" : "knowsSearch";
+      const inputId = field === "dancers" ? "dancerSearch" : field === "front_dancers" ? "frontSearch" : field === "special_dance_for" ? "specialSearch" : "knowsSearch";
       const val = document.getElementById(inputId).value.trim();
       if (!val) return;
       if (field === "dancers" && !dancersAssigned.includes(val)) dancersAssigned.push(val);
       if (field === "front_dancers" && !frontsAssigned.includes(val)) frontsAssigned.push(val);
       if (field === "knows_song" && !knowsAssigned.includes(val)) knowsAssigned.push(val);
+      if (field === "special_dance_for" && !specialDanceFor.includes(val)) specialDanceFor.push(val);
       renderLists();
       save();
     }
@@ -466,6 +479,7 @@
       if (field === "dancers") dancersAssigned = dancersAssigned.filter(x=>x!==name);
       if (field === "front_dancers") frontsAssigned = frontsAssigned.filter(x=>x!==name);
       if (field === "knows_song") knowsAssigned = knowsAssigned.filter(x=>x!==name);
+      if (field === "special_dance_for") specialDanceFor = specialDanceFor.filter(x=>x!==name);
       renderLists();
       save();
     }
@@ -474,6 +488,7 @@
       populateList("dancersList", dancersAssigned, "dancers");
       populateList("frontList", frontsAssigned, "front_dancers");
       populateList("knowsList", knowsAssigned, "knows_song");
+      populateList("specialList", specialDanceFor, "special_dance_for");
       populateSuggestions();
       renderRoles();
       renderExclusive();
@@ -547,7 +562,7 @@
     }
 
     function populateSuggestions() {
-      ["dancerSuggestions","frontSuggestions","knowsSuggestions"].forEach(id=>{
+      ["dancerSuggestions","frontSuggestions","knowsSuggestions","specialSuggestions"].forEach(id=>{
         const dl = document.getElementById(id);
         dl.innerHTML = "";
         dancers.forEach(d=>{

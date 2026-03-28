@@ -283,6 +283,7 @@ class BattleStateManager:
         mvp_dancers: Optional[list] = None,
         roles: Optional[list] = None,
         knows_song: Optional[list] = None,
+        special_dance_for: Optional[list] = None,
         exclusive_mvp_for: Optional[str] = None,
         volume: Optional[float] = None,
         difficulty: Optional[str] = None,
@@ -318,6 +319,7 @@ class BattleStateManager:
                 "mvp_dancers": mvp_dancers or [],
                 "roles": roles_list,
                 "knows_song": knows_song or [],
+                "special_dance_for": special_dance_for or [],
                 "exclusive_mvp_for": exclusive_mvp_for or "",
                 "volume": vol_value,
                 "duration_sec": lib.get(song_id, {}).get("duration_sec"),
@@ -346,7 +348,7 @@ class BattleStateManager:
             self._persist_library(lib)
             return self._state.copy()
 
-    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None, duo_dance: Optional[bool] = None) -> Dict:
+    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, special_dance_for: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None, duo_dance: Optional[bool] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             if song_id in lib:
@@ -364,6 +366,10 @@ class BattleStateManager:
                     lib[song_id]["knows_song"] = knows_song
                 else:
                     lib[song_id].setdefault("knows_song", [])
+                if special_dance_for is not None:
+                    lib[song_id]["special_dance_for"] = special_dance_for
+                else:
+                    lib[song_id].setdefault("special_dance_for", [])
                 if exclusive_mvp_for is not None:
                     lib[song_id]["exclusive_mvp_for"] = exclusive_mvp_for
                 else:
@@ -581,6 +587,7 @@ class BattleStateManager:
                 v.setdefault("mvp_dancers", [])
                 v.setdefault("roles", [])
                 v.setdefault("knows_song", [])
+                v.setdefault("special_dance_for", [])
                 v.setdefault("duration_sec", None)
                 v.setdefault("difficulty", "medium")
                 v.setdefault("camera_dance", False)

@@ -294,6 +294,7 @@ class RegisterSongRequest(BaseModel):
     front_dancers: Optional[List[str]] = None
     mvp_dancers: Optional[List[str]] = None
     knows_song: Optional[List[str]] = None
+    special_dance_for: Optional[List[str]] = None
     roles: Optional[List[str]] = None
     exclusive_mvp_for: Optional[str] = None
     volume: Optional[float] = None
@@ -313,6 +314,7 @@ class UpdateSongDancersRequest(BaseModel):
     front_dancers: List[str]
     mvp_dancers: List[str]
     knows_song: Optional[List[str]] = None
+    special_dance_for: Optional[List[str]] = None
     roles: Optional[List[str]] = None
     exclusive_mvp_for: Optional[str] = None
     volume: Optional[float] = None
@@ -1265,6 +1267,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
         mvp_dancers=body.mvp_dancers,
         roles=body.roles,
         knows_song=body.knows_song,
+        special_dance_for=body.special_dance_for,
         exclusive_mvp_for=body.exclusive_mvp_for,
         volume=body.volume,
         difficulty=body.difficulty,
@@ -1337,6 +1340,7 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
         body.mvp_dancers,
         body.roles,
         body.knows_song,
+        body.special_dance_for,
         body.exclusive_mvp_for,
         body.volume,
         body.difficulty,

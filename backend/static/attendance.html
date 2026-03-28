@@ -69,6 +69,11 @@
       return allNotes;
     }
 
+    function capitalize(s) {
+      const str = String(s || "").trim();
+      return str ? str.charAt(0).toUpperCase() + str.slice(1) : "";
+    }
+
     function buildAttendanceData(notes) {
       const memberSet = new Set();
       const dateEntries = [];
@@ -83,6 +88,7 @@
       notes.forEach(note => {
         const date = String(note?.stream_date || "").trim() || "Unknown";
         const group = String(note?.group_name || "").trim();
+        const host = capitalize(note?.host);
         const presentSet = new Set(
           (Array.isArray(note?.members_present) ? note.members_present : []).map(m => String(m).trim()).filter(Boolean)
         );
@@ -90,7 +96,7 @@
         allMembers.forEach(m => {
           attendance[m] = presentSet.has(m) ? "Present" : "Absent";
         });
-        dateEntries.push({ date, group, attendance });
+        dateEntries.push({ date, group, host, attendance });
       });
 
       // Sort by date ascending
@@ -117,6 +123,9 @@
       const groupHeader = document.createElement("th");
       groupHeader.textContent = "Group";
       headerRow.appendChild(groupHeader);
+      const hostHeader = document.createElement("th");
+      hostHeader.textContent = "Host";
+      headerRow.appendChild(hostHeader);
       data.members.forEach(m => {
         const th = document.createElement("th");
         th.textContent = m;
@@ -135,6 +144,9 @@
         const groupTd = document.createElement("td");
         groupTd.textContent = entry.group;
         tr.appendChild(groupTd);
+        const hostTd = document.createElement("td");
+        hostTd.textContent = entry.host;
+        tr.appendChild(hostTd);
         data.members.forEach(m => {
           const td = document.createElement("td");
           const val = entry.attendance[m];
@@ -152,9 +164,9 @@
         const s = String(v || "");
         return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
       };
-      const header = ["Date", "Group", ...data.members].map(escape).join(",");
+      const header = ["Date", "Group", "Host", ...data.members].map(escape).join(",");
       const rows = data.entries.map(entry => {
-        return [entry.date, entry.group, ...data.members.map(m => entry.attendance[m])].map(escape).join(",");
+        return [entry.date, entry.group, entry.host, ...data.members.map(m => entry.attendance[m])].map(escape).join(",");
       });
       return header + "\n" + rows.join("\n") + "\n";
     }
