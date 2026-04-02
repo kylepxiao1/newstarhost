@@ -1768,6 +1768,7 @@
       const lib = state.songs?.library || {};
       const target = (name||"").toLowerCase();
       return Object.values(lib).filter(s => {
+        if (s.camera_dance) return false;
         const dancers = (s.dancers||[]).map(x=>x.toLowerCase());
         return dancers.includes(target);
       });
