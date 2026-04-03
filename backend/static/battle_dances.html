@@ -2236,12 +2236,14 @@
         evaluateWinner();
         return;
       }
-      if (remaining <= 30000) {
-        // stop current audio
+      const warnRemaining = routine.warnTime - now;
+      if (warnRemaining <= 30000 && !routine.warned) {
+        // stop current audio and play attention 30s before scheduled end (end_timestamp)
         const player = document.getElementById("player");
         try { player.pause(); } catch(e){}
         setCenterLine(false);
         stopSwitchInterval();
+        routine.warned = true;
         playSequence(["applause","attention"], false, () => {
           const wait = Math.max(0, routine.endTime - Date.now());
           const t = setTimeout(() => playRoutineSong(null), wait);
