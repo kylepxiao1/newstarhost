@@ -155,7 +155,7 @@
     const api = window.PageShared.api;
     let state = {};
     let currentTab = "";
-    let routine = { active:false, live:false, timers:[], endTime:0, warnTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false };
+    let routine = { active:false, live:false, timers:[], endTime:0, warnTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false, slotOneIds:new Set(), slotTwoIds:new Set() };
     let timerInterval = null;
     const SPECIAL_ROLES = ["bell","duo_sfx","applause","attention","background","win","closing"];
     const PRACTICE_SONG_ROLE = "practice_song";
@@ -429,6 +429,8 @@
       }
       state.slot_one = dancerOne;
       state.slot_two = dancerTwo;
+      routine.slotOneIds = new Set(team1.map(id => normalizeId(id)).filter(Boolean));
+      routine.slotTwoIds = new Set(team2.map(id => normalizeId(id)).filter(Boolean));
       const slotOneSel = document.getElementById("slotOneSelect");
       const slotTwoSel = document.getElementById("slotTwoSelect");
       if (slotOneSel) slotOneSel.value = dancerOne;
@@ -440,6 +442,8 @@
         team_2_id: team2Id,
         dancer_1: dancerOne,
         dancer_2: dancerTwo,
+        slot_one_ids: [...routine.slotOneIds],
+        slot_two_ids: [...routine.slotTwoIds],
       });
       return { dancerOne, dancerTwo };
     }
@@ -513,9 +517,9 @@
         });
         return;
       }
-      const teamOneScore = parseNonNegativeInt(row.team_1_score ?? row.team1_score ?? row.teamOneScore);
-      const teamTwoScore = parseNonNegativeInt(row.team_2_score ?? row.team2_score ?? row.teamTwoScore);
-      if (teamOneScore == null || teamTwoScore == null) {
+      const rawTeamOneScore = parseNonNegativeInt(row.team_1_score ?? row.team1_score ?? row.teamOneScore);
+      const rawTeamTwoScore = parseNonNegativeInt(row.team_2_score ?? row.team2_score ?? row.teamTwoScore);
+      if (rawTeamOneScore == null || rawTeamTwoScore == null) {
         battleListenerLog("ignored score update: invalid team scores", {
           team_1_score: row.team_1_score,
           team_2_score: row.team_2_score,
@@ -523,6 +527,49 @@
         });
         return;
       }
+
+      // Resolve which raw team index belongs to slot_one using stored member IDs.
+      // TikTok may return teams in a different order in SCORE_CHANGE vs START.
+      let teamOneScore = rawTeamOneScore;
+      let teamTwoScore = rawTeamTwoScore;
+      let teamOrderSource = "index";
+      if (routine.slotOneIds && routine.slotOneIds.size > 0) {
+        let teamInfos = row?.team_infos_json;
+        if (typeof teamInfos === "string") {
+          try { teamInfos = JSON.parse(teamInfos); } catch (e) { teamInfos = null; }
+        }
+        if (Array.isArray(teamInfos) && teamInfos.length >= 2) {
+          const rawScores = [rawTeamOneScore, rawTeamTwoScore];
+          for (let i = 0; i < 2; i++) {
+            const team = teamInfos[i];
+            if (!team || typeof team !== "object") continue;
+            const users = Array.isArray(team.users) ? team.users : (Array.isArray(team.members) ? team.members : []);
+            if (!users.length) continue;
+            const teamIds = new Set();
+            users.forEach(u => {
+              if (!u || typeof u !== "object") return;
+              const direct = normalizeId(u.userId);
+              if (direct) teamIds.add(direct);
+              const nested = normalizeId(u?.user?.userId);
+              if (nested) teamIds.add(nested);
+            });
+            const overlaps = [...teamIds].some(id => routine.slotOneIds.has(id));
+            if (overlaps) {
+              teamOneScore = rawScores[i];
+              teamTwoScore = rawScores[1 - i];
+              teamOrderSource = i === 0 ? "id-match-index-0" : "id-match-swapped";
+              break;
+            }
+          }
+        }
+      }
+      battleListenerLog("resolved team order", {
+        team_order_source: teamOrderSource,
+        slot_one_score: teamOneScore,
+        slot_two_score: teamTwoScore,
+        message_id: row.message_id || row.messageId || row.id,
+      });
+
       const nextScoreKey = competitionScoreKey(activeCompetitionId, teamOneScore, teamTwoScore);
       if (nextScoreKey && lastAppliedCompetitionScoreKey === nextScoreKey) {
         battleListenerLog("ignored score update: duplicate score payload", {
@@ -2133,6 +2180,8 @@
       routine.isSpoofBattle = false;
       routine.warned = false;
       routine.playedSongs = new Set();
+      routine.slotOneIds = new Set();
+      routine.slotTwoIds = new Set();
       clearRoutineTimers();
       stopPointsInterval();
       stopSwitchInterval();
