@@ -563,7 +563,6 @@ def build_supabase_topic_song_rows(
                 "topic_score": float(row.get("topic_score") or 0.0),
                 "hashtags": hashtags,
                 "generated_at": generated_at_iso,
-                "shared": False,
             }
         )
     return prepared_rows
