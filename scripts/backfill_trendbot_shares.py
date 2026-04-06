@@ -179,7 +179,7 @@ def send_discord(webhook_url: str, content: str) -> bool:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backfill unshared trendbot rows to Discord.")
     parser.add_argument("--dry-run", action="store_true", help="Print rows without sending or marking.")
-    parser.add_argument("--limit", type=int, default=50, help="Max rows to process (default 50).")
+    parser.add_argument("--limit", type=int, default=5, help="Max rows to process (default 5).")
     parser.add_argument("--delay", type=float, default=1.5, help="Seconds between Discord sends (default 1.5).")
     args = parser.parse_args()
 

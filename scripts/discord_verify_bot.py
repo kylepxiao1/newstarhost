@@ -959,7 +959,7 @@ class FanVerifyBot(commands.Bot):
             return
         try:
             await verify_channel.send(
-                f"{member.mention} welcome. Please click the button below to verify.",
+                f"{member.mention} welcome! Please join our insider list to gain access to exclusive badges, behind the scenes content, private channels, giveaways, and many more perks.",
                 view=VerificationStartView(self),
             )
         except Exception:
