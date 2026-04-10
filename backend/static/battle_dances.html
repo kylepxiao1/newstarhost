@@ -1508,9 +1508,11 @@
       const played = routine.playedSongs || new Set();
       const both = intersectSongsFor(slotOne, slotTwo)
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+        .filter(s => !s.camera_dance && !s.exclusive_mvp_for)
         .filter(s => !played.has(s.url) && s.url !== currentUrl);
       const groups = groupSongs()
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
+        .filter(s => !s.camera_dance && !s.exclusive_mvp_for)
         .filter(s => !played.has(s.url) && s.url !== currentUrl);
       const combined = new Set([...both, ...groups]);
       let url = "";
