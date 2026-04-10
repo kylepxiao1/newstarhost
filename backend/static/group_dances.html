@@ -125,6 +125,8 @@
   <script>
     const api = window.PageShared.api;
     let library = {};
+    let playHistoryEvents = [];
+    let lastSeenSongUrl = null;
     let songsState = {};
     let state = {};
     let currentTab = "group";
@@ -189,31 +191,48 @@
       renderPlayHistory();
     }
 
-    async function renderPlayHistory() {
+    function timeAgo(unix_ts) {
+      if (!unix_ts) return "";
+      const secs = Math.floor(Date.now() / 1000) - unix_ts;
+      if (secs < 60) return `${secs}s ago`;
+      const mins = Math.floor(secs / 60);
+      if (mins < 60) return `${mins}m ago`;
+      const hrs = Math.floor(mins / 60);
+      if (hrs < 24) return `${hrs}h ago`;
+      return `${Math.floor(hrs / 24)}d ago`;
+    }
+
+    function renderPlayHistoryFromCache() {
       const container = document.getElementById("playHistoryList");
       if (!container) return;
+      if (!playHistoryEvents.length) {
+        container.innerHTML = '<span style="color:#64748b;">No history</span>';
+        return;
+      }
+      container.innerHTML = playHistoryEvents.map(e => {
+        const name = e.song_name || e.song_url || "Unknown";
+        return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #1f2937;">
+          <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${name}</span>
+          <span style="color:#64748b;margin-left:8px;white-space:nowrap;flex-shrink:0;">${timeAgo(e.unix_ts)}</span>
+        </div>`;
+      }).join("");
+    }
+
+    async function renderPlayHistory() {
       try {
         const data = await api("/analytics/plays?limit=30").then(r => r.json());
-        const events = (data.events || []).filter(e => {
+        playHistoryEvents = (data.events || []).filter(e => {
           const song = Object.values(library).find(s => s.url === e.song_url);
           return !song || !(song.roles || []).some(r => (r || "").toLowerCase() === "background");
         });
-        if (!events.length) {
-          container.innerHTML = '<span style="color:#64748b;">No history</span>';
-          return;
-        }
-        container.innerHTML = events.map(e => {
-          const name = e.song_name || e.song_url || "Unknown";
-          const time = e.time || "";
-          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #1f2937;">
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${name}</span>
-            <span style="color:#64748b;margin-left:8px;white-space:nowrap;flex-shrink:0;">${time}</span>
-          </div>`;
-        }).join("");
+        renderPlayHistoryFromCache();
       } catch(err) {
-        container.innerHTML = '<span style="color:#64748b;">Failed to load history</span>';
+        const container = document.getElementById("playHistoryList");
+        if (container) container.innerHTML = '<span style="color:#64748b;">Failed to load history</span>';
       }
     }
+
+    setInterval(renderPlayHistoryFromCache, 30000);
 
     function renderFronts() {
       const sel = document.getElementById("frontSelect");
@@ -891,6 +910,11 @@
           state = payload;
           renderState();
           renderFormationEnabled();
+          const cur = payload?.songs?.current || null;
+          if (cur !== lastSeenSongUrl) {
+            lastSeenSongUrl = cur;
+            setTimeout(renderPlayHistory, 800);
+          }
         },
       });
     }
