@@ -389,14 +389,14 @@
           const frontList = (song.front_dancers || []).filter(Boolean);
           const dancerList = (song.dancers || []).filter(Boolean);
           const specialList = (song.special_dance_for || []).filter(Boolean);
-          const artistLine = song.artist ? `Artist: ${song.artist}` : "";
+          const artistLine = song.artist ? `<div style="color:#94a3b8;font-size:12px;margin-bottom:4px;">${song.artist}</div>` : "";
           const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
           const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
           const specialRow = specialList.length
             ? `<div style="margin:4px 0 2px 0;"><span style="padding:2px 6px;border-radius:6px;background:#c084fc;color:#0f172a;font-weight:700;">Special: ${specialList.join(", ")}</span></div>`
             : "";
-          const details = [artistLine, frontLine, dancerLine].filter(Boolean).join("<br>");
-          card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${mvpRow}${specialRow}${details ? `<div>${details}</div>` : ""}`;
+          const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
+          card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${artistLine}${mvpRow}${specialRow}${details ? `<div>${details}</div>` : ""}`;
           const flags = document.createElement("div");
           flags.className = "corner-flags";
           const difficulty = document.createElement("img");

@@ -1386,8 +1386,9 @@
             const dancerList = (song.dancers || []).filter(Boolean);
             const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
             const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
+            const artistLine = song.artist ? `<div style="color:#94a3b8;font-size:12px;margin-bottom:4px;">${song.artist}</div>` : "";
             const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
-            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${details ? `<div>${details}</div>` : ""}`;
+            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${artistLine}${details ? `<div>${details}</div>` : ""}`;
             const hasClosingRole = songHasRole(song, "closing");
             const hasPracticeRole = songHasRole(song, PRACTICE_SONG_ROLE);
             const flags = document.createElement("div");

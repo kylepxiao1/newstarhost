@@ -284,10 +284,10 @@
             const card = document.createElement("div");
             card.className = "card";
             const frontList = (song.front_dancers || []).filter(Boolean);
-            const artistLine = song.artist ? `Artist: ${song.artist}` : "";
+            const artistLine = song.artist ? `<div style="color:#94a3b8;font-size:12px;margin-bottom:4px;">${song.artist}</div>` : "";
             const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
-            const details = [artistLine, frontLine].filter(Boolean).join("<br>");
-            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${details ? `<div>${details}</div>` : ""}`;
+            const details = [frontLine].filter(Boolean).join("<br>");
+            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${artistLine}${details ? `<div>${details}</div>` : ""}`;
             const hasClosingRole = (song.roles || []).some(r => String(r || "").toLowerCase() === "closing");
             const hasPracticeRole = isPracticeSong(song);
             if (song.camera_dance || hasClosingRole || hasPracticeRole) {
