@@ -113,6 +113,10 @@
     </div>
   </section>
 
+  <section>
+    <h2>Play History</h2>
+    <div id="playHistoryList" style="font-size:13px;max-height:220px;overflow-y:auto;"></div>
+  </section>
 
   </main>
 
@@ -182,6 +186,33 @@
       renderGroups();
       renderSongs();
       ensureBackground();
+      renderPlayHistory();
+    }
+
+    async function renderPlayHistory() {
+      const container = document.getElementById("playHistoryList");
+      if (!container) return;
+      try {
+        const data = await api("/analytics/plays?limit=30").then(r => r.json());
+        const events = (data.events || []).filter(e => {
+          const song = Object.values(library).find(s => s.url === e.song_url);
+          return !song || !(song.roles || []).some(r => (r || "").toLowerCase() === "background");
+        });
+        if (!events.length) {
+          container.innerHTML = '<span style="color:#64748b;">No history</span>';
+          return;
+        }
+        container.innerHTML = events.map(e => {
+          const name = e.song_name || e.song_url || "Unknown";
+          const time = e.time || "";
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #1f2937;">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${name}</span>
+            <span style="color:#64748b;margin-left:8px;white-space:nowrap;flex-shrink:0;">${time}</span>
+          </div>`;
+        }).join("");
+      } catch(err) {
+        container.innerHTML = '<span style="color:#64748b;">Failed to load history</span>';
+      }
     }
 
     function renderFronts() {

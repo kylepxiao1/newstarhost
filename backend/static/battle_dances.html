@@ -146,6 +146,12 @@
       <div id="songsEmpty" class="songs-empty"></div>
       <div id="songsContainer" class="songs"></div>
     </section>
+
+  <section style="grid-column: 1 / -1;">
+    <h2>Play History</h2>
+    <div id="playHistoryList" style="font-size:13px;max-height:220px;overflow-y:auto;"></div>
+  </section>
+
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
@@ -1457,7 +1463,37 @@
         state.songs.current = state.songs.current || s.current || "";
         renderSongs();
         ensureBackground();
+        renderPlayHistory();
       });
+    }
+
+    async function renderPlayHistory() {
+      const container = document.getElementById("playHistoryList");
+      if (!container) return;
+      try {
+        const data = await api("/analytics/plays?limit=30").then(r => r.json());
+        const lib = state.songs?.library || {};
+        const events = (data.events || []).filter(e => {
+          const song = Object.values(lib).find(s => s.url === e.song_url);
+          return !song || !(song.roles || []).some(r => (r || "").toLowerCase() === "background");
+        });
+        if (!events.length) {
+          container.innerHTML = '<span style="color:#64748b;">No history</span>';
+          return;
+        }
+        container.innerHTML = events.map(e => {
+          const name = e.song_name || e.song_url || "Unknown";
+          const time = e.time || "";
+          const slots = [e.slot_one, e.slot_two].filter(Boolean).join(" vs ");
+          const sub = slots ? `<span style="color:#64748b;margin-left:6px;font-size:11px;">${slots}</span>` : "";
+          return `<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0;border-bottom:1px solid #1f2937;">
+            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0;">${name}${sub}</span>
+            <span style="color:#64748b;margin-left:8px;white-space:nowrap;flex-shrink:0;">${time}</span>
+          </div>`;
+        }).join("");
+      } catch(err) {
+        container.innerHTML = '<span style="color:#64748b;">Failed to load history</span>';
+      }
     }
 
     async function playSongUrl(url) {
