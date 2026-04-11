@@ -947,19 +947,20 @@ class TikTokLiveListener:
             gift_streaking = False
             try:
                 if isinstance(payload, dict):
-                    gift = payload.get("gift") or {}
+                    gift = payload.get("gift") or payload.get("m_gift") or {}
                     gift_name = gift.get("name") or gift.get("describe") or gift.get("id") or ""
-                    if "user" in payload and isinstance(payload["user"], dict):
+                    _sender = payload.get("from_user") or payload.get("user")
+                    if isinstance(_sender, dict):
                         gift_from = (
-                            payload["user"].get("unique_id")
-                            or payload["user"].get("display_id")
-                            or payload["user"].get("nickname")
+                            _sender.get("unique_id")
+                            or _sender.get("display_id")
+                            or _sender.get("nickname")
                             or gift_from
                         )
                         gift_from_handle = (
-                            payload["user"].get("unique_id")
-                            or payload["user"].get("display_id")
-                            or payload["user"].get("username")
+                            _sender.get("unique_id")
+                            or _sender.get("display_id")
+                            or _sender.get("username")
                             or gift_from_handle
                         )
                     if "to_user" in payload:
@@ -999,6 +1000,7 @@ class TikTokLiveListener:
                         or gift.get("diamond_count")
                         or gift.get("diamonds")
                         or gift.get("diamond_cost")
+                        or payload.get("fan_ticket_count")
                     )
                     repeat_count = _coerce_int(repeat_count_raw)
                     combo_count = _coerce_int(combo_count_raw)

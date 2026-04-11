@@ -1228,15 +1228,17 @@ class SupabaseEventStore:
         if isinstance(payload, dict):
             user_identity_payload = payload.get("user_identity") or payload.get("userIdentity")
         user_identity_event = _get_attr_any(event, "user_identity", "userIdentity")
-        gift = payload.get("gift") if isinstance(payload, dict) else {}
+        gift = (payload.get("gift") or payload.get("m_gift")) if isinstance(payload, dict) else {}
         if not isinstance(gift, dict):
             gift = {}
-        gift_obj = _get_attr_any(event, "gift")
+        gift_obj = _get_attr_any(event, "gift", "m_gift")
         gift_id = _get_any(gift, "id", "gift_id", "giftId") or _get_attr_any(gift_obj, "id", "gift_id", "giftId")
         gift_name = _get_any(gift, "name", "describe") or _get_attr_any(gift_obj, "name", "describe")
         diamond_count = _get_any(payload, "diamond_count", default=_get_any(gift, "diamond_count", "diamond_cost"))
         if diamond_count is None:
             diamond_count = _get_attr_any(gift_obj, "diamond_count", "diamondCost", "diamond_cost")
+        if diamond_count is None:
+            diamond_count = _get_any(payload, "fan_ticket_count")
         repeat_count = _get_any(payload, "repeat_count", "repeatCount", default=_get_any(gift, "repeat_count"))
         if repeat_count is None:
             repeat_count = _get_attr_any(gift_obj, "repeat_count", "repeatCount")
@@ -1324,9 +1326,15 @@ class SupabaseEventStore:
             "room_fan_ticket_count": room_fan_ticket_count,
             "group_count": _get_any(payload, "group_count"),
             "repeat_end": _get_any(payload, "repeat_end", "repeatEnd"),
-            "from_user_id": _get_any(payload, "user_id", "userId"),
-            "from_username": _get_any(payload, "user_name", "userName"),
-            "from_nickname": _get_any(payload, "user_nickname", "nickname"),
+            "from_user_id": _get_any(payload, "user_id", "userId") or (
+                _get_any(payload.get("from_user") or {}, "id", "uid", "user_id") if isinstance(payload, dict) else None
+            ),
+            "from_username": _get_any(payload, "user_name", "userName") or (
+                _get_any(payload.get("from_user") or {}, "unique_id", "display_id", "username") if isinstance(payload, dict) else None
+            ),
+            "from_nickname": _get_any(payload, "user_nickname", "nickname") or (
+                _get_any(payload.get("from_user") or {}, "nickname") if isinstance(payload, dict) else None
+            ),
             "to_user_id": _get_any(payload, "to_user_id", "toUserId"),
             "to_username": _get_any(payload, "to_user_name", "toUserName"),
             "to_nickname": _get_any(payload, "to_user_nickname", "toNickname"),
