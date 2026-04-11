@@ -662,11 +662,12 @@ class TikTokLiveListener:
             sender = ""
             if isinstance(payload, dict):
                 comment_text = payload.get("comment") or payload.get("content") or ""
-                if "user" in payload and isinstance(payload["user"], dict):
-                    sender = payload["user"].get("unique_id") or payload["user"].get("display_id") or ""
+                _cu = payload.get("user_info") or payload.get("user") or payload.get("from_user")
+                if isinstance(_cu, dict):
+                    sender = _cu.get("unique_id") or _cu.get("display_id") or ""
             else:
                 comment_text = getattr(evt, "comment", "") or getattr(evt, "content", "") or ""
-                user_obj = getattr(evt, "user", None)
+                user_obj = getattr(evt, "user_info", None) or getattr(evt, "user", None)
                 if user_obj:
                     sender = getattr(user_obj, "unique_id", "") or getattr(user_obj, "display_id", "") or ""
             if comment_text:
@@ -682,8 +683,9 @@ class TikTokLiveListener:
         ts = payload.get("timestamp") or payload.get("create_time") if isinstance(payload, dict) else None
         sender = ""
         if isinstance(payload, dict):
-            if "user" in payload and isinstance(payload["user"], dict):
-                sender = payload["user"].get("unique_id") or payload["user"].get("display_id") or ""
+            _sender_dict = payload.get("from_user") or payload.get("user")
+            if isinstance(_sender_dict, dict):
+                sender = _sender_dict.get("unique_id") or _sender_dict.get("display_id") or ""
             elif "user_id" in payload:
                 sender = str(payload.get("user_id"))
         if ts:
@@ -948,6 +950,8 @@ class TikTokLiveListener:
             try:
                 if isinstance(payload, dict):
                     gift = payload.get("gift") or payload.get("m_gift") or {}
+                    if not isinstance(gift, dict):
+                        gift = {}
                     gift_name = gift.get("name") or gift.get("describe") or gift.get("id") or ""
                     _sender = payload.get("from_user") or payload.get("user")
                     if isinstance(_sender, dict):
@@ -1016,20 +1020,23 @@ class TikTokLiveListener:
                         delta_count = self._combo_delta(payload, combo_total)
                         gift_value = int(diamond_count) * int(delta_count)
                         combo_delta_computed = True
-                if hasattr(event, "gift") and hasattr(event.gift, "streakable"):
-                    gift_streakable = bool(getattr(event.gift, "streakable", False))
+                _gift_obj = getattr(event, "m_gift", None) or getattr(event, "gift", None)
+                if _gift_obj and hasattr(_gift_obj, "streakable"):
+                    gift_streakable = bool(getattr(_gift_obj, "streakable", False))
                 if hasattr(event, "streaking"):
                     gift_streaking = bool(getattr(event, "streaking", False))
-                if hasattr(event, "gift") and hasattr(event.gift, "name"):
-                    gift_name = gift_name or event.gift.name
-                if hasattr(event, "gift") and hasattr(event.gift, "diamond_count"):
-                    event_diamond = _coerce_int(getattr(event.gift, "diamond_count"))
+                if _gift_obj and hasattr(_gift_obj, "name"):
+                    gift_name = gift_name or _gift_obj.name
+                if _gift_obj and hasattr(_gift_obj, "diamond_count"):
+                    event_diamond = _coerce_int(getattr(_gift_obj, "diamond_count"))
                     if event_diamond is not None:
                         gift_amount = gift_amount or str(event_diamond)
                         if diamond_count is None:
                             diamond_count = event_diamond
                         if gift_value_raw is None:
                             gift_value_raw = int(event_diamond)
+                if diamond_count is None and hasattr(event, "fan_ticket_count"):
+                    diamond_count = _coerce_int(getattr(event, "fan_ticket_count", None))
                 event_repeat = _coerce_int(getattr(event, "repeat_count", None))
                 if repeat_count is None and event_repeat is not None:
                     repeat_count = event_repeat
@@ -1045,35 +1052,33 @@ class TikTokLiveListener:
                         delta_count = self._combo_delta(payload, combo_total)
                         gift_value = int(diamond_count) * int(delta_count)
                         combo_delta_computed = True
-                if hasattr(event, "gift") and hasattr(event.gift, "id") and not gift_name:
-                    gift_name = str(getattr(event.gift, "id"))
-                if hasattr(event, "user") and event.user:
+                if _gift_obj and hasattr(_gift_obj, "id") and not gift_name:
+                    gift_name = str(getattr(_gift_obj, "id"))
+                # Try from_user (new proto field 7) then fall back to user
+                _event_sender = getattr(event, "from_user", None) or getattr(event, "user", None)
+                if _event_sender:
                     gift_from = (
                         gift_from
-                        or getattr(event.user, "unique_id", "")
-                        or getattr(event.user, "display_id", "")
-                        or getattr(event.user, "nickname", "")
+                        or getattr(_event_sender, "unique_id", "")
+                        or getattr(_event_sender, "display_id", "")
+                        or getattr(_event_sender, "nickname", "")
                     )
                     gift_from_handle = (
-                        getattr(event.user, "unique_id", "")
-                        or getattr(event.user, "display_id", "")
-                        or getattr(event.user, "username", "")
+                        getattr(_event_sender, "unique_id", "")
+                        or getattr(_event_sender, "display_id", "")
+                        or getattr(_event_sender, "username", "")
                         or gift_from_handle
                     )
-                if hasattr(event, "receiver") and event.receiver:
+                # Try to_user (new proto field 8) then fall back to receiver
+                _event_receiver = getattr(event, "to_user", None) or getattr(event, "receiver", None)
+                if _event_receiver:
                     gift_to = (
                         gift_to
-                        or getattr(event.receiver, "unique_id", "")
-                        or getattr(event.receiver, "display_id", "")
-                        or getattr(event.receiver, "nickname", "")
+                        or getattr(_event_receiver, "unique_id", "")
+                        or getattr(_event_receiver, "display_id", "")
+                        or getattr(_event_receiver, "nickname", "")
                     )
-                    if isinstance(event.receiver, object):
-                        logger.info("Gift receiver object: %r", event.receiver)
-                    gift_to_handle = gift_to_handle or _extract_handle(event.receiver)
-                if not gift_to and hasattr(event, "to_user") and event.to_user:
-                    tu_handle = _extract_handle(event.to_user)
-                    gift_to = gift_to or tu_handle
-                    gift_to_handle = gift_to_handle or tu_handle
+                    gift_to_handle = gift_to_handle or _extract_handle(_event_receiver)
                 if not gift_to:
                     desc = ""
                     if isinstance(payload, dict):

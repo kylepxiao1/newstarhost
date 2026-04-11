@@ -30,6 +30,15 @@ from utils import (
 
 logger = logging.getLogger("tiktok-listener")
 
+
+def _get_nested_user(user_obj, *keys):
+    """Extract a field from a nested user object that may be a dict or a protobuf object."""
+    if user_obj is None:
+        return None
+    if isinstance(user_obj, dict):
+        return _get_any(user_obj, *keys)
+    return _get_attr_any(user_obj, *keys)
+
 _ROOM_UPDATE_STATE_FIELDS = (
     "viewer_count_m_total",
     "viewer_count_total_user",
@@ -1031,10 +1040,17 @@ class SupabaseEventStore:
 
         try:
             msg = WebcastCompetitionMessage().parse(raw_bytes)
-            decoded = msg.to_dict()
         except Exception:
-            logger.exception("Failed to decode WebcastCompetitionMessage")
+            logger.exception("Failed to parse WebcastCompetitionMessage")
             return
+
+        try:
+            decoded = msg.to_dict()
+        except (IndexError, Exception):
+            # TikTok may send enum values not present in our proto definition; fall back to empty dict
+            # and let the attribute-based fallbacks below handle it
+            logger.debug("Failed to to_dict() WebcastCompetitionMessage (likely unknown enum value), continuing with empty dict")
+            decoded = {}
 
         active_stage = None
         for field_name in (
@@ -1321,23 +1337,32 @@ class SupabaseEventStore:
             "diamond_count": diamond_count,
             "repeat_count": repeat_count,
             "combo_count": _get_any(payload, "combo_count", "comboCount"),
-            "amount_value": gift_value_raw if gift_value_raw is not None else _get_any(payload, "amount", "total_value"),
+            "amount_value": gift_value_raw if gift_value_raw is not None else (
+                (diamond_count * (repeat_count or combo_count or 1)) if diamond_count is not None else
+                _get_any(payload, "amount", "total_value")
+            ),
             "fan_ticket_count": fan_ticket_count,
             "room_fan_ticket_count": room_fan_ticket_count,
             "group_count": _get_any(payload, "group_count"),
             "repeat_end": _get_any(payload, "repeat_end", "repeatEnd"),
             "from_user_id": _get_any(payload, "user_id", "userId") or (
-                _get_any(payload.get("from_user") or {}, "id", "uid", "user_id") if isinstance(payload, dict) else None
+                _get_nested_user(payload.get("from_user"), "id", "uid", "user_id") if isinstance(payload, dict) else None
             ),
             "from_username": _get_any(payload, "user_name", "userName") or (
-                _get_any(payload.get("from_user") or {}, "unique_id", "display_id", "username") if isinstance(payload, dict) else None
+                _get_nested_user(payload.get("from_user"), "unique_id", "display_id", "username") if isinstance(payload, dict) else None
             ),
             "from_nickname": _get_any(payload, "user_nickname", "nickname") or (
-                _get_any(payload.get("from_user") or {}, "nickname") if isinstance(payload, dict) else None
+                _get_nested_user(payload.get("from_user"), "nickname") if isinstance(payload, dict) else None
             ),
-            "to_user_id": _get_any(payload, "to_user_id", "toUserId"),
-            "to_username": _get_any(payload, "to_user_name", "toUserName"),
-            "to_nickname": _get_any(payload, "to_user_nickname", "toNickname"),
+            "to_user_id": _get_any(payload, "to_user_id", "toUserId") or (
+                _get_nested_user(payload.get("to_user"), "id", "uid", "user_id") if isinstance(payload, dict) else None
+            ),
+            "to_username": _get_any(payload, "to_user_name", "toUserName") or (
+                _get_nested_user(payload.get("to_user"), "unique_id", "display_id", "username") if isinstance(payload, dict) else None
+            ),
+            "to_nickname": _get_any(payload, "to_user_nickname", "toNickname") or (
+                _get_nested_user(payload.get("to_user"), "nickname") if isinstance(payload, dict) else None
+            ),
             "to_member_id_int": _get_any(payload, "to_member_id_int", "toMemberIdInt"),
             "to_member_nickname": _get_any(payload, "to_member_nickname", "toMemberNickname"),
             "anchor_id": anchor_id,
@@ -1359,7 +1384,9 @@ class SupabaseEventStore:
             "gift_monitor_from_version": gift_monitor_from_version,
             "gift_monitor_send_msg_ms": _get_any(payload, "gift_monitor_send_msg_ms")
             or gift_monitor_send_message_success_ms,
-            "priority": _get_any(payload, "priority"),
+            "priority": (lambda p: p.priority if hasattr(p, "priority") else (p if isinstance(p, int) else None))(
+                _get_any(payload, "priority") or _get_attr_any(event, "priority")
+            ),
             "room_message_heat_level": room_heat_val,
             "gift_monitor_anchor_id": _gift_monitor_val("anchor_id", "anchorId"),
             "gift_monitor_to_user_id": gift_monitor_to_user_id,
