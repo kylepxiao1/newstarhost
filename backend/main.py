@@ -618,14 +618,16 @@ def _gift_row_diamond_amount(row: dict) -> int:
     if amount_value is not None:
         return max(0, amount_value)
     diamond_count = _tg_to_int(row.get("diamond_count"))
-    if diamond_count is None:
+    fan_ticket_count = _tg_to_int(row.get("fan_ticket_count"))
+    per_gift = diamond_count if diamond_count is not None else fan_ticket_count
+    if per_gift is None:
         return 0
     repeat_count = _tg_to_int(row.get("repeat_count"))
     combo_count = _tg_to_int(row.get("combo_count"))
     multiplier = repeat_count if repeat_count is not None else combo_count
     if multiplier is None:
         multiplier = 1
-    return max(0, diamond_count * max(1, multiplier))
+    return max(0, per_gift * max(1, multiplier))
 
 
 def _rank_top_gifters(rows: list[dict]) -> dict[str, list[dict]]:
