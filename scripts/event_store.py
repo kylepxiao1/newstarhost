@@ -1351,8 +1351,8 @@ class SupabaseEventStore:
             "from_username": _get_any(payload, "user_name", "userName") or (
                 _get_nested_user(payload.get("from_user"), "unique_id", "display_id", "username") if isinstance(payload, dict) else None
             ),
-            "from_nickname": _get_any(payload, "user_nickname", "nickname") or (
-                _get_nested_user(payload.get("from_user"), "nickname") if isinstance(payload, dict) else None
+            "from_nickname": _get_any(payload, "user_nickname", "nickname", "nick_name") or (
+                _get_nested_user(payload.get("from_user"), "nickname", "nick_name", "nickName") if isinstance(payload, dict) else None
             ),
             "to_user_id": _get_any(payload, "to_user_id", "toUserId") or (
                 _get_nested_user(payload.get("to_user"), "id", "uid", "user_id") if isinstance(payload, dict) else None
@@ -1360,8 +1360,8 @@ class SupabaseEventStore:
             "to_username": _get_any(payload, "to_user_name", "toUserName") or (
                 _get_nested_user(payload.get("to_user"), "unique_id", "display_id", "username") if isinstance(payload, dict) else None
             ),
-            "to_nickname": _get_any(payload, "to_user_nickname", "toNickname") or (
-                _get_nested_user(payload.get("to_user"), "nickname") if isinstance(payload, dict) else None
+            "to_nickname": _get_any(payload, "to_user_nickname", "toNickname", "to_nickname") or (
+                _get_nested_user(payload.get("to_user"), "nickname", "nick_name", "nickName") if isinstance(payload, dict) else None
             ),
             "to_member_id_int": _get_any(payload, "to_member_id_int", "toMemberIdInt"),
             "to_member_nickname": _get_any(payload, "to_member_nickname", "toMemberNickname"),
