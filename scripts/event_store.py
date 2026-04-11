@@ -1044,25 +1044,26 @@ class SupabaseEventStore:
             logger.exception("Failed to parse WebcastCompetitionMessage")
             return
 
+        # to_dict() can fail when TikTok sends unknown enum values; use proto attrs directly
         try:
             decoded = msg.to_dict()
-        except (IndexError, Exception):
-            # TikTok may send enum values not present in our proto definition; fall back to empty dict
-            # and let the attribute-based fallbacks below handle it
-            logger.debug("Failed to to_dict() WebcastCompetitionMessage (likely unknown enum value), continuing with empty dict")
+        except Exception:
+            logger.debug("WebcastCompetitionMessage to_dict() failed (unknown enum); using proto attributes directly")
             decoded = {}
 
+        # Detect active stage via betterproto.serialized_on_wire
+        _STAGE_TO_TYPE = {
+            "initiate": "COMPETITION_MESSAGE_TYPE_INITIATE",
+            "reply": "COMPETITION_MESSAGE_TYPE_REPLY",
+            "start": "COMPETITION_MESSAGE_TYPE_START",
+            "score_change": "COMPETITION_MESSAGE_TYPE_SCORE_CHANGE",
+            "finish": "COMPETITION_MESSAGE_TYPE_FINISH",
+            "settle_start": "COMPETITION_MESSAGE_TYPE_SETTLE_START",
+            "settle_end": "COMPETITION_MESSAGE_TYPE_SETTLE_END",
+            "switch_turn": "COMPETITION_MESSAGE_TYPE_SWITCH_TURN",
+        }
         active_stage = None
-        for field_name in (
-            "initiate",
-            "reply",
-            "start",
-            "settle_start",
-            "settle_end",
-            "score_change",
-            "finish",
-            "switch_turn",
-        ):
+        for field_name in _STAGE_TO_TYPE:
             try:
                 if betterproto.serialized_on_wire(getattr(msg, field_name)):
                     active_stage = field_name
@@ -1070,125 +1071,197 @@ class SupabaseEventStore:
             except Exception:
                 continue
 
-        active_payload = None
-        if active_stage:
-            active_payload = decoded.get(self._camel_from_snake(active_stage))
-
+        # Read competition_message_type from proto enum directly (avoids IndexError from unknown values)
         competition_message_type = None
-        if isinstance(decoded, dict):
-            raw_type = decoded.get("type")
-            if isinstance(raw_type, str) and raw_type.strip():
-                competition_message_type = raw_type.strip()
-            elif raw_type is not None:
-                enum_name = getattr(raw_type, "name", None)
-                if isinstance(enum_name, str) and enum_name.strip():
-                    competition_message_type = enum_name.strip()
+        try:
+            msg_type_val = msg.type
+            type_name = getattr(msg_type_val, "name", None)
+            if isinstance(type_name, str) and type_name.strip():
+                competition_message_type = type_name.strip()
+            elif msg_type_val:
+                competition_message_type = str(int(msg_type_val))
+        except Exception:
+            pass
         if not competition_message_type and active_stage:
-            stage_to_type = {
-                "initiate": "COMPETITION_MESSAGE_TYPE_INITIATE",
-                "reply": "COMPETITION_MESSAGE_TYPE_REPLY",
-                "start": "COMPETITION_MESSAGE_TYPE_START",
-                "score_change": "COMPETITION_MESSAGE_TYPE_SCORE_CHANGE",
-                "finish": "COMPETITION_MESSAGE_TYPE_FINISH",
-                "settle_start": "COMPETITION_MESSAGE_TYPE_SETTLE_START",
-                "settle_end": "COMPETITION_MESSAGE_TYPE_SETTLE_END",
-                "switch_turn": "COMPETITION_MESSAGE_TYPE_SWITCH_TURN",
-            }
-            competition_message_type = stage_to_type.get(active_stage)
+            competition_message_type = _STAGE_TO_TYPE.get(active_stage)
 
-        base_message = decoded.get("baseMessage") if isinstance(decoded, dict) else {}
-        if not isinstance(base_message, dict):
-            base_message = {}
-        biz_common = decoded.get("bizCommon") if isinstance(decoded, dict) else {}
-        if not isinstance(biz_common, dict):
-            biz_common = {}
+        # Read base_message and biz_common from proto objects
+        base_msg_obj = getattr(msg, "base_message", None)
+        biz_common_obj = getattr(msg, "biz_common", None)
 
-        team_infos = []
-        if isinstance(active_payload, dict):
-            candidate = active_payload.get("teamInfos")
-            if isinstance(candidate, list):
-                team_infos = candidate
-            if not team_infos:
-                direct_teams = active_payload.get("teams")
-                if isinstance(direct_teams, list):
-                    team_infos = direct_teams
-            if not team_infos:
-                initiate_info = active_payload.get("initiateInfo")
-                if isinstance(initiate_info, dict):
-                    start_teams = initiate_info.get("teams")
-                    if isinstance(start_teams, list):
-                        team_infos = start_teams
+        def _safe_int(obj, *attrs):
+            for a in attrs:
+                try:
+                    v = getattr(obj, a, None)
+                    if v:
+                        return int(v)
+                except Exception:
+                    continue
+            return None
+
+        def _safe_str(obj, *attrs):
+            for a in attrs:
+                try:
+                    v = getattr(obj, a, None)
+                    if v:
+                        return str(v).strip() or None
+                except Exception:
+                    continue
+            return None
+
+        def _safe_enum_name(obj, attr):
+            try:
+                v = getattr(obj, attr, None)
+                name = getattr(v, "name", None)
+                if isinstance(name, str):
+                    return name
+                if v is not None:
+                    return str(int(v))
+            except Exception:
+                pass
+            return None
 
         def _to_id_str(value) -> Optional[str]:
             if value is None:
                 return None
             try:
                 text = str(value).strip()
+                if text.endswith(".0"):
+                    text = text[:-2]
+                return text or None
             except Exception:
                 return None
-            if not text:
-                return None
-            if text.endswith(".0"):
-                text = text[:-2]
-            return text
+
+        # Extract team_infos from proto objects directly
+        def _extract_team_infos_proto():
+            if not active_stage:
+                return []
+            try:
+                stage_obj = getattr(msg, active_stage, None)
+                if stage_obj is None:
+                    return []
+
+                teams_out = []
+
+                if active_stage in ("score_change", "settle_end"):
+                    # CompetitionResultsTeamInfo: team_id, score, members (CompetitionTeamMemberInfo with .user)
+                    for team in (getattr(stage_obj, "team_infos", None) or []):
+                        member_ids = []
+                        for m in (getattr(team, "members", None) or []):
+                            user = getattr(m, "user", None)
+                            uid = _to_id_str(getattr(user, "user_id", None) or getattr(user, "user_id_str", None))
+                            if uid:
+                                member_ids.append(uid)
+                        teams_out.append({
+                            "team_id": getattr(team, "team_id", None),
+                            "score": getattr(team, "score", None),
+                            "members": member_ids,
+                        })
+
+                elif active_stage in ("start", "initiate"):
+                    # CompetitionTeamBase: team_id, users (CompetitionUserBase with .user_id)
+                    initiate_info = getattr(stage_obj, "initiate_info", None)
+                    for team in (getattr(initiate_info, "teams", None) or []):
+                        user_ids = []
+                        for u in (getattr(team, "users", None) or []):
+                            uid = _to_id_str(getattr(u, "user_id", None) or getattr(u, "user_id_str", None))
+                            if uid:
+                                user_ids.append(uid)
+                        teams_out.append({
+                            "team_id": getattr(team, "team_id", None),
+                            "score": None,
+                            "members": user_ids,
+                        })
+
+                elif active_stage == "reply":
+                    initiate = getattr(stage_obj, "initiate", None)
+                    initiate_info = getattr(initiate, "initiate_info", None) if initiate else None
+                    for team in (getattr(initiate_info, "teams", None) or []):
+                        user_ids = []
+                        for u in (getattr(team, "users", None) or []):
+                            uid = _to_id_str(getattr(u, "user_id", None) or getattr(u, "user_id_str", None))
+                            if uid:
+                                user_ids.append(uid)
+                        teams_out.append({
+                            "team_id": getattr(team, "team_id", None),
+                            "score": None,
+                            "members": user_ids,
+                        })
+
+                return teams_out
+            except Exception:
+                logger.debug("Failed to extract team_infos from proto", exc_info=True)
+                return []
+
+        team_infos = _extract_team_infos_proto()
+
+        # Fall back to decoded dict team extraction if proto gave nothing
+        if not team_infos and active_stage:
+            active_payload = decoded.get(self._camel_from_snake(active_stage)) if decoded else None
+            if isinstance(active_payload, dict):
+                for key in ("teamInfos", "teams"):
+                    candidate = active_payload.get(key)
+                    if isinstance(candidate, list):
+                        team_infos = candidate
+                        break
+                if not team_infos:
+                    initiate_info = active_payload.get("initiateInfo")
+                    if isinstance(initiate_info, dict):
+                        start_teams = initiate_info.get("teams")
+                        if isinstance(start_teams, list):
+                            team_infos = start_teams
 
         team_scores = []
         team_member_ids = []
         for team in team_infos:
-            if not isinstance(team, dict):
-                continue
-            score_val = self._to_int(team.get("score"))
+            if isinstance(team, dict):
+                score_val = self._to_int(team.get("score"))
+                members_raw = team.get("members") or team.get("users") or []
+                member_ids = []
+                for member in members_raw:
+                    if isinstance(member, dict):
+                        user_obj = member.get("user")
+                        uid = None
+                        if isinstance(user_obj, dict):
+                            uid = _to_id_str(user_obj.get("userId") or user_obj.get("user_id"))
+                        if uid is None:
+                            uid = _to_id_str(member.get("userId") or member.get("user_id"))
+                        if uid:
+                            member_ids.append(uid)
+                    elif isinstance(member, str):
+                        member_ids.append(member)
+            else:
+                score_val = None
+                member_ids = []
             if score_val is not None:
                 team_scores.append(score_val)
-            members = team.get("members")
-            if not isinstance(members, list):
-                members = team.get("users")
-            member_ids = []
-            if isinstance(members, list):
-                for member in members:
-                    if not isinstance(member, dict):
-                        continue
-                    user_obj = member.get("user")
-                    user_id = None
-                    if isinstance(user_obj, dict):
-                        user_id = _to_id_str(user_obj.get("userId"))
-                    if user_id is None:
-                        user_id = _to_id_str(member.get("userId"))
-                    if user_id is not None:
-                        member_ids.append(user_id)
             team_member_ids.append(member_ids)
 
+        # end_timestamp: from start proto or decoded dict
         end_timestamp = None
         end_timestamp_actual = None
-        if isinstance(active_payload, dict):
-            end_timestamp = self._to_int(
-                _get_any(
-                    active_payload,
-                    "endTimestamp",
-                    "end_timestamp",
-                )
-            )
-            end_timestamp_actual = self._to_int(
-                _get_any(
-                    active_payload,
-                    "actualEndTimestamp",
-                    "endTimestampActual",
-                    "end_timestamp_actual",
-                )
-            )
+        if active_stage == "start":
+            start_obj = getattr(msg, "start", None)
+            end_timestamp = _safe_int(start_obj, "end_timestamp")
+            end_timestamp_actual = _safe_int(start_obj, "actual_end_timestamp")
+        if end_timestamp is None and decoded and active_stage:
+            active_payload_d = decoded.get(self._camel_from_snake(active_stage))
+            if isinstance(active_payload_d, dict):
+                end_timestamp = self._to_int(_get_any(active_payload_d, "endTimestamp", "end_timestamp"))
+                end_timestamp_actual = self._to_int(_get_any(active_payload_d, "actualEndTimestamp", "end_timestamp_actual"))
 
         now_dt = datetime.now(timezone.utc)
         row = {
             "id": raw_id if raw_id is not None else self._next_row_id(),
             "iso_ts": now_dt.isoformat(),
             "unix_ts": int(now_dt.timestamp()),
-            "message_id": self._to_int(base_message.get("messageId"))
+            "message_id": _safe_int(base_msg_obj, "message_id")
             or self._to_int(_get_any(payload, "msgId", "msg_id", "messageId", "message_id")),
-            "room_id": self._to_int(base_message.get("roomId")) or self._to_int(biz_common.get("roomId")),
-            "create_time_ms": self._to_int(base_message.get("createTime")),
-            "competition_id": self._to_int(biz_common.get("competitionId")),
-            "competition_room_id": self._to_int(biz_common.get("roomId")),
-            "competition_type": biz_common.get("type"),
+            "room_id": _safe_int(base_msg_obj, "room_id") or _safe_int(biz_common_obj, "room_id"),
+            "create_time_ms": _safe_int(base_msg_obj, "create_time"),
+            "competition_id": _safe_int(biz_common_obj, "competition_id"),
+            "competition_room_id": _safe_int(biz_common_obj, "room_id"),
+            "competition_type": _safe_enum_name(biz_common_obj, "type"),
             "competition_message_type": competition_message_type,
             "active_stage": active_stage,
             "team_count": len(team_infos) if team_infos else 0,
