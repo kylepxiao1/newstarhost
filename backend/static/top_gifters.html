@@ -158,6 +158,7 @@
         if (!low.includes("boys") && !low.includes("girls")) return;
         out.push({ name, handle: handle.toLowerCase() });
       });
+      out.push({ name: "AfterDark", handle: "afterdark_ns" });
       const dedup = new Map();
       out.forEach((g) => {
         if (!dedup.has(g.handle)) dedup.set(g.handle, g);
