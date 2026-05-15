@@ -112,8 +112,53 @@ def _normalize_name_key(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", _normalize_space(text).lower())
 
 
-def _format_google_dt(dt: datetime) -> str:
-    return dt.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+_lark_token_cache: tuple[str, float] | None = None
+
+
+async def _get_lark_token(client: httpx.AsyncClient, app_id: str, app_secret: str) -> str:
+    import time as _time
+    global _lark_token_cache
+    now = _time.monotonic()
+    if _lark_token_cache is not None:
+        token, expires_at = _lark_token_cache
+        if now + 60 < expires_at:
+            return token
+    response = await client.post(
+        "https://open.larksuite.com/open-apis/auth/v3/tenant_access_token/internal",
+        json={"app_id": app_id, "app_secret": app_secret},
+    )
+    if not response.is_success:
+        raise RuntimeError(f"Lark auth failed: {response.status_code} {(response.text or '').strip()[:300]}")
+    data = response.json()
+    if data.get("code") != 0:
+        raise RuntimeError(f"Lark auth error: {data.get('msg', '')} (code={data.get('code')})")
+    token = str(data["tenant_access_token"])
+    expire = int(data.get("expire", 7200))
+    _lark_token_cache = (token, now + expire)
+    return token
+
+
+def _normalize_lark_event(event: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {
+        "summary": event.get("summary", ""),
+        "description": event.get("description", ""),
+    }
+    for lark_key, gc_key in (("start_time", "start"), ("end_time", "end")):
+        time_obj = event.get(lark_key)
+        if not isinstance(time_obj, dict):
+            continue
+        ts = time_obj.get("timestamp")
+        tz_name = str(time_obj.get("timezone") or "UTC")
+        date_str = time_obj.get("date")
+        if ts:
+            try:
+                dt = datetime.fromtimestamp(int(ts), tz=timezone.utc)
+                out[gc_key] = {"dateTime": dt.isoformat(), "timeZone": tz_name}
+            except (ValueError, TypeError):
+                pass
+        elif date_str:
+            out[gc_key] = {"date": str(date_str), "timeZone": tz_name}
+    return out
 
 
 def _parse_event_datetime(value: dict[str, Any]) -> datetime | None:
@@ -339,37 +384,44 @@ def _save_state(path: Path, payload: dict[str, Any]) -> None:
         logging.warning("Failed to write reminder state file: %s", path)
 
 
-async def _fetch_google_events(
+async def _fetch_lark_events(
     *,
     client: httpx.AsyncClient,
     calendar_id: str,
-    api_key: str,
+    app_id: str,
+    app_secret: str,
     day_start_local: datetime,
     day_end_local: datetime,
 ) -> list[dict[str, Any]]:
+    token = await _get_lark_token(client=client, app_id=app_id, app_secret=app_secret)
+    start_ts = str(int(day_start_local.astimezone(timezone.utc).timestamp()))
+    end_ts = str(int(day_end_local.astimezone(timezone.utc).timestamp()))
     encoded_calendar = quote(calendar_id, safe="")
-    endpoint = f"https://www.googleapis.com/calendar/v3/calendars/{encoded_calendar}/events"
-    params: dict[str, str] = {
-        "singleEvents": "true",
-        "orderBy": "startTime",
-        "timeMin": _format_google_dt(day_start_local),
-        "timeMax": _format_google_dt(day_end_local),
-    }
-    if api_key:
-        params["key"] = api_key
-    response = await client.get(endpoint, params=params)
-    if not response.is_success:
-        raise RuntimeError(
-            f"Google Calendar query failed status={response.status_code} body={(response.text or '').strip()[:600]}"
-        )
-    payload = response.json()
-    items = payload.get("items") if isinstance(payload, dict) else None
-    if not isinstance(items, list):
-        return []
+    endpoint = f"https://open.larksuite.com/open-apis/calendar/v4/calendars/{encoded_calendar}/events"
+    headers = {"Authorization": f"Bearer {token}"}
     out: list[dict[str, Any]] = []
-    for item in items:
-        if isinstance(item, dict):
-            out.append(item)
+    page_token: str | None = None
+    while True:
+        params: dict[str, str] = {"start_time": start_ts, "end_time": end_ts, "page_size": "50"}
+        if page_token:
+            params["page_token"] = page_token
+        response = await client.get(endpoint, params=params, headers=headers)
+        if not response.is_success:
+            raise RuntimeError(
+                f"Lark Calendar query failed status={response.status_code} body={(response.text or '').strip()[:600]}"
+            )
+        payload = response.json()
+        if payload.get("code") != 0:
+            raise RuntimeError(f"Lark Calendar error: {payload.get('msg', '')} (code={payload.get('code')})")
+        data = payload.get("data") or {}
+        for item in data.get("items") or []:
+            if isinstance(item, dict):
+                out.append(_normalize_lark_event(item))
+        if not data.get("has_more"):
+            break
+        page_token = data.get("page_token") or None
+        if not page_token:
+            break
     return out
 
 
@@ -383,7 +435,8 @@ async def _send_webhook_message(*, client: httpx.AsyncClient, webhook_url: str, 
 @dataclass
 class Config:
     calendar_id: str
-    calendar_api_key: str
+    lark_app_id: str
+    lark_app_secret: str
     webhook_url: str
     event_name: str
     supabase_url: str
@@ -401,7 +454,8 @@ def _load_config() -> Config:
     supabase_url = _resolve_supabase_url()
     return Config(
         calendar_id=_env("WILDCARDZ_CALENDAR_ID", "").strip(),
-        calendar_api_key=_env("WILDCARDZ_CALENDAR_API_KEY", "").strip(),
+        lark_app_id=_env("WILDCARDZ_LARK_APP_ID", "").strip(),
+        lark_app_secret=_env("WILDCARDZ_LARK_APP_SECRET", "").strip(),
         webhook_url=_env("WILDCARDZ_REMINDER_WEBHOOK", DEFAULT_WEBHOOK_URL).strip(),
         event_name=_normalize_space(_env("WILDCARDZ_REMINDER_EVENT_NAME", "Wildcardz Live")) or "Wildcardz Live",
         supabase_url=supabase_url,
@@ -525,10 +579,11 @@ async def _run_notes_followups(
     day_local = now_utc.astimezone(tz).date()
     day_start_local = datetime.combine(day_local, time(hour=0, minute=0), tzinfo=tz)
     day_end_local = day_start_local + timedelta(days=1)
-    events = await _fetch_google_events(
+    events = await _fetch_lark_events(
         client=client,
         calendar_id=cfg.calendar_id,
-        api_key=cfg.calendar_api_key,
+        app_id=cfg.lark_app_id,
+        app_secret=cfg.lark_app_secret,
         day_start_local=day_start_local,
         day_end_local=day_end_local,
     )
@@ -607,10 +662,11 @@ async def _run_for_day(
     day_start_local = datetime.combine(target_day, time(hour=0, minute=0), tzinfo=tz)
     day_end_local = day_start_local + timedelta(days=1)
     now_local = datetime.now(timezone.utc).astimezone(tz)
-    events = await _fetch_google_events(
+    events = await _fetch_lark_events(
         client=client,
         calendar_id=cfg.calendar_id,
-        api_key=cfg.calendar_api_key,
+        app_id=cfg.lark_app_id,
+        app_secret=cfg.lark_app_secret,
         day_start_local=day_start_local,
         day_end_local=day_end_local,
     )
@@ -656,8 +712,10 @@ async def run() -> None:
 
     if not cfg.calendar_id:
         raise SystemExit("Missing WILDCARDZ_CALENDAR_ID")
-    if not cfg.calendar_api_key:
-        raise SystemExit("Missing WILDCARDZ_CALENDAR_API_KEY")
+    if not cfg.lark_app_id:
+        raise SystemExit("Missing WILDCARDZ_LARK_APP_ID")
+    if not cfg.lark_app_secret:
+        raise SystemExit("Missing WILDCARDZ_LARK_APP_SECRET")
     if not cfg.webhook_url:
         raise SystemExit("Missing WILDCARDZ_REMINDER_WEBHOOK")
     if not cfg.supabase_url:

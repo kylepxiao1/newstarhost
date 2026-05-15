@@ -139,8 +139,8 @@ else
 fi
 
 if [ "${REMINDER_ENABLED}" = "1" ] || [ "${REMINDER_ENABLED}" = "true" ]; then
-  if [ -z "${WILDCARDZ_CALENDAR_ID:-}" ] || [ -z "${WILDCARDZ_CALENDAR_API_KEY:-}" ]; then
-    log "Wildcardz reminder bot not started (missing WILDCARDZ_CALENDAR_ID or WILDCARDZ_CALENDAR_API_KEY)"
+  if [ -z "${WILDCARDZ_CALENDAR_ID:-}" ] || [ -z "${WILDCARDZ_LARK_APP_ID:-}" ] || [ -z "${WILDCARDZ_LARK_APP_SECRET:-}" ]; then
+    log "Wildcardz reminder bot not started (missing WILDCARDZ_CALENDAR_ID, WILDCARDZ_LARK_APP_ID, or WILDCARDZ_LARK_APP_SECRET)"
   else
     log "Starting Wildcardz reminder bot: ${REMINDER_CMD}"
     bash -lc "${REMINDER_CMD}" &
@@ -151,8 +151,8 @@ else
 fi
 
 if [ "${TOPGIFTER_ENABLED}" = "1" ] || [ "${TOPGIFTER_ENABLED}" = "true" ]; then
-  if [ -z "${WILDCARDZ_CALENDAR_ID:-}" ] || [ -z "${WILDCARDZ_CALENDAR_API_KEY:-}" ]; then
-    log "Wildcardz top-gifters bot not started (missing WILDCARDZ_CALENDAR_ID or WILDCARDZ_CALENDAR_API_KEY)"
+  if [ -z "${WILDCARDZ_CALENDAR_ID:-}" ] || [ -z "${WILDCARDZ_LARK_APP_ID:-}" ] || [ -z "${WILDCARDZ_LARK_APP_SECRET:-}" ]; then
+    log "Wildcardz top-gifters bot not started (missing WILDCARDZ_CALENDAR_ID, WILDCARDZ_LARK_APP_ID, or WILDCARDZ_LARK_APP_SECRET)"
   elif [ -z "${WILDCARDZ_TOPGIFTER_WEBHOOK:-}" ]; then
     log "Wildcardz top-gifters bot not started (missing WILDCARDZ_TOPGIFTER_WEBHOOK)"
   else

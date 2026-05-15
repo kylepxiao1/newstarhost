@@ -274,13 +274,13 @@ flyctl ssh sftp put -a newstarhost -g app ~/local/file.ext /path/on/machine/file
   - `DISCORD_SUPPRESS_RECONNECT_TRACEBACKS=1` (default) suppresses transient Discord gateway reconnect timeout tracebacks.
   - Set `DISCORD_SUPPRESS_RECONNECT_TRACEBACKS=0` for full raw traceback logging while debugging connectivity.
 - Wildcardz reminder env:
-  - Required: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
+  - Required: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_LARK_APP_ID`, `WILDCARDZ_LARK_APP_SECRET`
   - Defaults: `WILDCARDZ_REMINDER_TIMEZONE=America/Denver`, `WILDCARDZ_REMINDER_HOUR=12`, `WILDCARDZ_REMINDER_MINUTE=0`
   - Event name match (case/whitespace-insensitive): `WILDCARDZ_REMINDER_EVENT_NAME=Wildcardz Live`
   - Webhook (required, set in `app.env`): `WILDCARDZ_REMINDER_WEBHOOK`
   - Optional toggles: `WILDCARDZ_REMINDER_ENABLED=1`, `WILDCARDZ_REMINDER_SEND_IF_NONE=0`
 - Wildcardz top gifters env:
-  - Uses same calendar keys: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
+  - Uses same calendar keys: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_LARK_APP_ID`, `WILDCARDZ_LARK_APP_SECRET`
   - Defaults: `WILDCARDZ_TOPGIFTER_TIMEZONE=America/Denver`, `WILDCARDZ_TOPGIFTER_POLL_SECONDS=60`
   - Event name match (case/whitespace-insensitive): `WILDCARDZ_TOPGIFTER_EVENT_NAME=Wildcardz Live`
   - TikTok account filter: `WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME=wildcard_ns`
