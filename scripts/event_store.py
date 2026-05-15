@@ -157,6 +157,12 @@ class SupabaseEventStore:
         self._batch_like_shed_counters = {}
         self._batch_shed_warnings = 0
         self._batch_coalesce_warnings = 0
+        _raw_usernames = _env("TIKTOK_USERNAMES", "").strip()
+        self._allowed_usernames: set[str] = {
+            u.strip().lstrip("@").lower()
+            for u in _raw_usernames.replace(",", " ").split()
+            if u.strip().lstrip("@")
+        }
         if not url or not key:
             logger.error(
                 "Supabase credentials missing. Set SUPABASE_URL and SUPABASE_SECRET_KEY (or SERVICE_ROLE_KEY)."
@@ -1621,6 +1627,8 @@ class SupabaseEventStore:
                 logger.exception("Failed to log gift event")
 
     async def log_join(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
+        if self._allowed_usernames and tiktok_username.strip().lstrip("@").lower() not in self._allowed_usernames:
+            return
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
@@ -1830,6 +1838,8 @@ class SupabaseEventStore:
         tiktok_username: str,
         raw_id: Optional[int] = None,
     ) -> None:
+        if self._allowed_usernames and tiktok_username.strip().lstrip("@").lower() not in self._allowed_usernames:
+            return
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
@@ -2459,6 +2469,8 @@ class SupabaseEventStore:
                 logger.exception("Failed to log comment event")
 
     async def log_like(self, payload: dict, event, tiktok_username: str, raw_id: Optional[int] = None) -> None:
+        if self._allowed_usernames and tiktok_username.strip().lstrip("@").lower() not in self._allowed_usernames:
+            return
         now_dt = datetime.now(timezone.utc)
         ts = now_dt.isoformat()
         unix_ts = int(now_dt.timestamp())
