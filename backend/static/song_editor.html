@@ -54,6 +54,7 @@
         <select id="songList" style="flex:2;" onchange="loadSong()"></select>
         <button class="secondary" onclick="loadSongs()">Refresh</button>
         <button onclick="playSelected()">Play</button>
+        <button onclick="downloadSelected()">Download</button>
       </div>
       <div class="row">
         <input id="renameInput" placeholder="Rename song" style="flex:2;">
@@ -377,6 +378,21 @@
     audio.volume = volumeToScalar(song.volume);
     audio.loop = false;
     audio.play().catch(()=>{});
+  }
+
+  async function downloadSelected() {
+    const id = document.getElementById("songList").value;
+    if (!id) return;
+    const song = songs[id] || {};
+    if (!song.url) return;
+    let url = song.url;
+    if (window.PageShared?.resolveAudioUrlFromCache) {
+      try { url = await window.PageShared.resolveAudioUrlFromCache(song.url); } catch (e) {}
+    }
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (song.name || id) + ".mp3";
+    a.click();
   }
 
   function volumeToScalar(val) {
