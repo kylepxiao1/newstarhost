@@ -97,6 +97,7 @@
     <h2>Group Songs</h2>
     <div class="row">
       <input id="songSearch" placeholder="Search song or artist" oninput="renderSongs()">
+      <button id="speedToggleBtn" onclick="toggleSpeed()" style="flex:0 0 auto;">2x Speed</button>
     </div>
     <div id="songsContainer" class="songs"></div>
   </section>
@@ -142,7 +143,29 @@
     let settingsLoopSameSongAfterFinish = false;
     let settingsDisplayBackgroundTimer = false;
     let backgroundTimerTickHandle = null;
+    let speedDouble = false;
     const PRACTICE_ROLE = "practice_song";
+
+    function songHasRole(url) {
+      const song = Object.values(library).find(s => s.url === url);
+      return song ? (song.roles || []).length > 0 : false;
+    }
+
+    function applySpeedToPlayer(url) {
+      const player = getAudioPlayer();
+      if (!player) return;
+      player.playbackRate = (speedDouble && !songHasRole(url)) ? 2 : 1;
+    }
+
+    function toggleSpeed() {
+      speedDouble = !speedDouble;
+      const btn = document.getElementById("speedToggleBtn");
+      if (btn) {
+        btn.textContent = speedDouble ? "1x Speed" : "2x Speed";
+        btn.style.background = speedDouble ? "#dc2626" : "";
+      }
+      applySpeedToPlayer(currentUrl);
+    }
 
     function normalizeRoleToken(role) {
       return String(role || "").trim().toLowerCase().replace(/\s+/g, "_");
@@ -665,6 +688,7 @@
         settingsFadeOut,
         onTrackPlay: () => { notePlay(url); },
       });
+      applySpeedToPlayer(url);
       updateBackgroundTimerOverlay();
     }
 
