@@ -631,8 +631,24 @@ def _gift_row_diamond_amount(row: dict) -> int:
 
 
 def _rank_top_gifters(rows: list[dict]) -> dict[str, list[dict]]:
-    totals: dict[str, dict[str, dict[str, object]]] = {}
+    # Combo gifts emit one row per tick with a cumulative repeat_count and a
+    # per-tick amount_value that is NOT simply diamond_count * repeat_count.
+    # Collapse all rows sharing the same group_id down to the one with the
+    # highest repeat_count, then compute diamonds as repeat_count * diamond_count.
+    combo_best: dict[str, dict] = {}
+    singles: list[dict] = []
     for row in rows:
+        gid = row.get("group_id")
+        if gid and str(gid) != "0":
+            key = str(gid)
+            prev = combo_best.get(key)
+            if prev is None or (_tg_to_int(row.get("repeat_count")) or 0) > (_tg_to_int(prev.get("repeat_count")) or 0):
+                combo_best[key] = row
+        else:
+            singles.append(row)
+
+    totals: dict[str, dict[str, dict[str, object]]] = {}
+    for row in singles + list(combo_best.values()):
         member = str(row.get("to_member_nickname") or "").strip()
         gifter = str(row.get("from_username") or "").strip()
         nickname = str(row.get("from_nickname") or "").strip()
@@ -642,7 +658,13 @@ def _rank_top_gifters(rows: list[dict]) -> dict[str, list[dict]]:
             continue
         if not gifter:
             gifter = "(unknown)"
-        diamonds = _gift_row_diamond_amount(row)
+        gid = row.get("group_id")
+        if gid and str(gid) != "0":
+            diamond_count = _tg_to_int(row.get("diamond_count")) or 0
+            repeat_count = max(1, _tg_to_int(row.get("repeat_count")) or 1)
+            diamonds = max(0, diamond_count * repeat_count)
+        else:
+            diamonds = _gift_row_diamond_amount(row)
         if diamonds <= 0:
             continue
         member_bucket = totals.setdefault(member, {})
@@ -691,7 +713,7 @@ async def _fetch_gift_rows_for_window(
         async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
             while True:
                 query = [
-                    ("select", "id,iso_ts,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,tiktok_username"),
+                    ("select", "id,iso_ts,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,group_id,tiktok_username"),
                     ("tiktok_username", f"eq.{handle}"),
                     ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
                     ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),
