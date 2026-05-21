@@ -224,6 +224,7 @@
       });
       const div = document.getElementById("result");
       div.innerHTML += `<br>Registered as: ${derivedName || url}${artist ? ` - ${artist}` : ""}`;
+      location.reload();
     }
 
     async function processCsv() {

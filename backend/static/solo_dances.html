@@ -100,6 +100,9 @@
       <label class="filter-opt">
         <input type="checkbox" id="filterMvp" onchange="renderSongs()"> MVP
       </label>
+      <label class="filter-opt">
+        <input type="checkbox" id="filterDuo" onchange="onDuoFilterChange()"> Duo dances
+      </label>
     </div>
   </section>
 
@@ -327,6 +330,10 @@
       return !hasNonPracticeRole && hasDancers && !isMvpExclusive;
     }
 
+    function onDuoFilterChange() {
+      renderSongs();
+    }
+
     function hasFilterToggle() {
       const a = document.getElementById("filterAssigned")?.checked !== false;
       const f = document.getElementById("filterFronts")?.checked !== false;
@@ -342,14 +349,20 @@
       const includeFronts = document.getElementById("filterFronts")?.checked !== false;
       const includeKnows = document.getElementById("filterKnows")?.checked === true;
       const includeMvp = document.getElementById("filterMvp")?.checked === true;
+      const includeDuo = document.getElementById("filterDuo")?.checked === true;
       return Object.values(library)
         .filter(shouldDisplayForPracticeMode)
         .filter(s => {
+          if (includeDuo && !s.duo_dance) return false;
           if (baseFilterSong(s)) return true;
           return includeMvp && !!(s.exclusive_mvp_for || "");
         })
         .filter(s => {
           if (!dancerFilter) return true;
+          if (includeDuo) {
+            const pool = [...(s.dancers || []), ...(s.knows_song || [])];
+            return pool.some(n => (n || "").toLowerCase().includes(dancerFilter));
+          }
           const assigned = [];
           if (includeAssigned) assigned.push(...(s.dancers||[]));
           if (includeFronts) assigned.push(...(s.front_dancers||[]).slice(0, 1));
@@ -461,14 +474,16 @@
             : "";
           const frontList = (song.front_dancers || []).filter(Boolean);
           const dancerList = (song.dancers || []).filter(Boolean);
+          const knowsList = (song.knows_song || []).filter(Boolean);
           const specialList = (song.special_dance_for || []).filter(Boolean);
           const artistLine = song.artist ? `<div style="color:#94a3b8;font-size:12px;margin-bottom:4px;">${song.artist}</div>` : "";
           const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
           const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
+          const knowsLine = song.duo_dance && knowsList.length ? `Knows: ${knowsList.join(", ")}` : "";
           const specialRow = specialList.length
             ? `<div style="margin:4px 0 2px 0;"><span style="padding:2px 6px;border-radius:6px;background:#c084fc;color:#0f172a;font-weight:700;">Special: ${specialList.join(", ")}</span></div>`
             : "";
-          const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
+          const details = [frontLine, dancerLine, knowsLine].filter(Boolean).join("<br>");
           card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)}</h3>${artistLine}${mvpRow}${specialRow}${details ? `<div>${details}</div>` : ""}`;
           const flags = document.createElement("div");
           flags.className = "corner-flags";
