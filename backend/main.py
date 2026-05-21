@@ -321,6 +321,7 @@ class UpdateSongDancersRequest(BaseModel):
     difficulty: Optional[str] = None
     camera_dance: Optional[bool] = None
     duo_dance: Optional[bool] = None
+    tags: Optional[List[dict]] = None
 
 
 class RenameSongRequest(BaseModel):
@@ -1370,6 +1371,7 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
         body.difficulty,
         body.camera_dance,
         body.duo_dance,
+        body.tags,
     )
     _broadcast_state(state)
     return JSONResponse(state)

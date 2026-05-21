@@ -134,6 +134,16 @@
       <button class="danger" onclick="removeSong()">Delete Song</button>
     </div>
   </section>
+
+  <section>
+    <h2>Tags</h2>
+    <div class="row add-row">
+      <input id="tagText" placeholder="Tag name" style="flex:2;">
+      <input id="tagColor" type="color" value="#3b82f6" style="flex:0 0 44px;padding:4px;height:36px;cursor:pointer;border-radius:6px;border:1px solid #334155;">
+      <button onclick="addTag()">Add Tag</button>
+    </div>
+    <div id="tagsList"></div>
+  </section>
   </main>
 
   <script src="/static/state_ws_helper.js"></script>
@@ -150,6 +160,7 @@
   let knowsAssigned = [];
   let specialDanceFor = [];
   let exclusiveMvpFor = "";
+  let tagsAssigned = [];
   let cameraDance = false;
   let duoDance = false;
   let volumeValue = 100;
@@ -215,6 +226,7 @@
       rolesAssigned = [];
       knowsAssigned = [];
       exclusiveMvpFor = "";
+      tagsAssigned = [];
       cameraDance = false;
       duoDance = false;
       volumeValue = 100;
@@ -242,6 +254,7 @@
       knowsAssigned = [...(song.knows_song || [])];
       specialDanceFor = [...(song.special_dance_for || [])];
       exclusiveMvpFor = song.exclusive_mvp_for || "";
+      tagsAssigned = [...(song.tags || [])];
       cameraDance = !!song.camera_dance;
       duoDance = !!song.duo_dance;
       volumeValue = parseFloat(song.volume);
@@ -296,7 +309,7 @@
           if (state && state.library) {
             songs = state.library;
           }
-          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, special_dance_for: specialDanceFor, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance}});
+          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, special_dance_for: specialDanceFor, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance, tags: tagsAssigned}});
         })
         .then(()=>loadSongs())
         .finally(()=>btns.forEach(b=>b.disabled=false));
@@ -455,6 +468,7 @@
       volume,
       camera_dance: cameraDance,
       duo_dance: duoDance,
+      tags: tagsAssigned,
     }}).then(r=>r.json()).then(state => {
       if (state && state.songs && state.songs.library) {
         songs = state.songs.library;
@@ -470,6 +484,52 @@
       songs[currentSongId].volume = volume;
     }
   }
+
+    function tagTextColor(hex) {
+      if (!hex || !hex.startsWith("#") || hex.length < 7) return "#0f172a";
+      const r = parseInt(hex.slice(1,3),16);
+      const g = parseInt(hex.slice(3,5),16);
+      const b = parseInt(hex.slice(5,7),16);
+      return (0.299*r + 0.587*g + 0.114*b) > 140 ? "#0f172a" : "#f8fafc";
+    }
+
+    function addTag() {
+      const text = document.getElementById("tagText").value.trim();
+      const color = document.getElementById("tagColor").value || "#3b82f6";
+      if (!text) return;
+      if (!tagsAssigned.some(t => t.text === text)) {
+        tagsAssigned.push({text, color});
+      }
+      document.getElementById("tagText").value = "";
+      renderTagsList();
+      save();
+    }
+
+    function removeTag(text) {
+      tagsAssigned = tagsAssigned.filter(t => t.text !== text);
+      renderTagsList();
+      save();
+    }
+
+    function renderTagsList() {
+      const container = document.getElementById("tagsList");
+      if (!container) return;
+      container.innerHTML = "";
+      tagsAssigned.forEach(tag => {
+        const div = document.createElement("div");
+        div.className = "row";
+        div.style.alignItems = "center";
+        const pill = document.createElement("span");
+        pill.style.cssText = `display:inline-block;padding:3px 10px;border-radius:6px;font-size:13px;font-weight:600;background:${tag.color||"#3b82f6"};color:${tagTextColor(tag.color||"#3b82f6")};margin-right:8px;`;
+        pill.textContent = tag.text;
+        const btn = document.createElement("button");
+        btn.textContent = "Remove";
+        btn.onclick = () => removeTag(tag.text);
+        div.appendChild(pill);
+        div.appendChild(btn);
+        container.appendChild(div);
+      });
+    }
 
     function loadDancers() {
       api("/dancers").then(r=>r.json()).then(d => {
@@ -507,6 +567,7 @@
       populateSuggestions();
       renderRoles();
       renderExclusive();
+      renderTagsList();
     }
 
     function renderRoles() {
