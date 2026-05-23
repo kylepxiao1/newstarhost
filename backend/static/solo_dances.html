@@ -160,7 +160,9 @@
     function applySpeedToPlayer(url) {
       const player = getAudioPlayer();
       if (!player) return;
-      player.playbackRate = (speedDouble && !songHasRole(url)) ? 2 : 1;
+      const rate = (speedDouble && !songHasRole(url)) ? 2 : 1;
+      player.defaultPlaybackRate = rate;
+      player.playbackRate = rate;
     }
 
     function toggleSpeed() {
