@@ -161,6 +161,7 @@
   let specialDanceFor = [];
   let exclusiveMvpFor = "";
   let tagsAssigned = [];
+  let battleDisabled = false;
   let cameraDance = false;
   let duoDance = false;
   let volumeValue = 100;
@@ -227,6 +228,7 @@
       knowsAssigned = [];
       exclusiveMvpFor = "";
       tagsAssigned = [];
+      battleDisabled = false;
       cameraDance = false;
       duoDance = false;
       volumeValue = 100;
@@ -255,6 +257,7 @@
       specialDanceFor = [...(song.special_dance_for || [])];
       exclusiveMvpFor = song.exclusive_mvp_for || "";
       tagsAssigned = [...(song.tags || [])];
+      battleDisabled = !!song.battle_disabled;
       cameraDance = !!song.camera_dance;
       duoDance = !!song.duo_dance;
       volumeValue = parseFloat(song.volume);
@@ -309,7 +312,7 @@
           if (state && state.library) {
             songs = state.library;
           }
-          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, special_dance_for: specialDanceFor, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance, tags: tagsAssigned}});
+          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, special_dance_for: specialDanceFor, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance, tags: tagsAssigned, battle_disabled: battleDisabled}});
         })
         .then(()=>loadSongs())
         .finally(()=>btns.forEach(b=>b.disabled=false));
@@ -469,6 +472,7 @@
       camera_dance: cameraDance,
       duo_dance: duoDance,
       tags: tagsAssigned,
+      battle_disabled: battleDisabled,
     }}).then(r=>r.json()).then(state => {
       if (state && state.songs && state.songs.library) {
         songs = state.songs.library;
@@ -617,6 +621,22 @@
       duoWrap.appendChild(duoCb);
       duoWrap.appendChild(duoSpan);
       c.appendChild(duoWrap);
+
+      const battleWrap = document.createElement("label");
+      battleWrap.className = "check-opt";
+      const battleCb = document.createElement("input");
+      battleCb.type = "checkbox";
+      battleCb.id = "battleDisabledToggle";
+      battleCb.checked = !!battleDisabled;
+      battleCb.onchange = () => {
+        battleDisabled = !!battleCb.checked;
+        save();
+      };
+      const battleSpan = document.createElement("span");
+      battleSpan.textContent = "exclude from battles";
+      battleWrap.appendChild(battleCb);
+      battleWrap.appendChild(battleSpan);
+      c.appendChild(battleWrap);
     }
 
     function toggleRole(role, checked) {

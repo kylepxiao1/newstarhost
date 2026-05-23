@@ -1384,6 +1384,7 @@
           return Number.isFinite(d) && d > 0 ? ` <span class="duration">(${d}s)</span>` : "";
         };
 
+        list = list.filter(s => !s.battle_disabled);
         if (!list.length && !empty.textContent) {
           empty.textContent = "No songs found for this selection.";
         }
@@ -1583,11 +1584,11 @@
       const played = routine.playedSongs || new Set();
       const both = intersectSongsFor(slotOne, slotTwo)
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
-        .filter(s => !s.camera_dance && !s.exclusive_mvp_for)
+        .filter(s => !s.camera_dance && !s.exclusive_mvp_for && !s.battle_disabled)
         .filter(s => !played.has(s.url) && s.url !== currentUrl);
       const groups = groupSongs()
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
-        .filter(s => !s.camera_dance && !s.exclusive_mvp_for)
+        .filter(s => !s.camera_dance && !s.exclusive_mvp_for && !s.battle_disabled)
         .filter(s => !played.has(s.url) && s.url !== currentUrl);
       const combined = new Set([...both, ...groups]);
       let url = "";

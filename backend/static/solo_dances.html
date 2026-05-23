@@ -455,7 +455,7 @@
     }
 
     async function playSuggested() {
-      const list = getFilteredSongsForCards().filter(s => !s.camera_dance && !s.exclusive_mvp_for);
+      const list = getFilteredSongsForCards().filter(s => !s.camera_dance && !s.exclusive_mvp_for && !s.battle_disabled);
       const pick = await pickWithRecencyPenalty(list);
       if (!pick?.url) {
         alert("No suggested song found.");
