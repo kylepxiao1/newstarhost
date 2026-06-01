@@ -1,0 +1,909 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>RPD</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px 16px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    .sub { color: #94a3b8; font-size: 13px; margin-top: 3px; }
+    .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; text-transform: uppercase; }
+    main { padding: 20px; display: grid; gap: 16px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
+    h2 { margin: 0 0 10px 0; font-size: 16px; letter-spacing: 0.02em; }
+    h3 { margin: 0 0 8px 0; font-size: 16px; }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+      gap: 16px;
+      align-items: start;
+    }
+    .hero > div {
+      background: #0b1222;
+      border: 1px solid #1f2937;
+      border-radius: 8px;
+      padding: 16px;
+    }
+    .panel-inner { padding: 0; }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    button {
+      appearance: none;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 12px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.14s ease, filter 0.14s ease, opacity 0.14s ease;
+    }
+    button:hover { transform: translateY(-1px); filter: brightness(1.05); }
+    button:disabled { cursor: not-allowed; opacity: 0.55; transform: none; }
+    .primary { background: #2563eb; color: #fff; }
+    .secondary { background: #334155; color: #fff; }
+    .ghost { background: #334155; color: #fff; }
+    .danger { background: #ef4444; color: #fff; }
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    .stat {
+      padding: 14px;
+      border-radius: 8px;
+      background: #0b1222;
+      border: 1px solid #1f2937;
+    }
+    .stat-label {
+      color: #94a3b8;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .stat-value {
+      margin-top: 8px;
+      font-size: 22px;
+      font-weight: 800;
+    }
+    .stat-note {
+      margin-top: 4px;
+      color: #94a3b8;
+      font-size: 12px;
+    }
+    .controls-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .search {
+      width: 100%;
+      border: 1px solid #334155;
+      background: #0b1222;
+      color: #e2e8f0;
+      border-radius: 6px;
+      padding: 8px;
+      font: inherit;
+    }
+    .chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+      min-height: 22px;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: #0b1222;
+      border: 1px solid #334155;
+      color: #e2e8f0;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .chip button {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+      border: 0;
+      font-size: 13px;
+      font-weight: 900;
+    }
+    .dancer-grid {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 14px;
+    }
+    .dancer-card {
+      position: relative;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #1f2937;
+      background: #0b1222;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      cursor: pointer;
+      width: 180px;
+      min-height: 72px;
+    }
+    .dancer-card.selected {
+      background: #172554;
+      border-color: #2563eb;
+    }
+    .dancer-name { font-size: 13px; font-weight: 700; word-break: break-word; color: #e2e8f0; }
+    .dancer-meta { color: #94a3b8; font-size: 11px; }
+    .song-grid { display: flex; gap: 8px; flex-wrap: wrap; }
+    .song-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding: 10px;
+      border-radius: 8px;
+      border: 1px solid #1f2937;
+      background: #0b1222;
+      width: 220px;
+      min-height: 160px;
+    }
+    .song-card.current {
+      border-color: #2563eb;
+    }
+    .song-title { font-size: 14px; font-weight: 700; line-height: 1.25; word-break: break-word; }
+    .song-artist { color: #94a3b8; font-size: 13px; }
+    .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      background: #172554;
+      color: #dbeafe;
+      border: 1px solid #1d4ed8;
+    }
+    .pill.warn {
+      background: #3f1d1d;
+      color: #fecaca;
+      border-color: #7f1d1d;
+    }
+    .pill.good {
+      background: #143123;
+      color: #dcfce7;
+      border-color: #166534;
+    }
+    .match-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 7px;
+      font-size: 13px;
+    }
+    .match-list li {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      padding-top: 7px;
+      border-top: 1px solid #1f2937;
+    }
+    .match-name { font-weight: 700; }
+    .match-reason { color: #94a3b8; text-align: right; }
+    .song-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: auto;
+    }
+    .song-actions button { flex: 1; }
+    .history-list {
+      display: grid;
+      gap: 10px;
+      max-height: 460px;
+      overflow: auto;
+    }
+    .history-item {
+      padding: 12px 14px;
+      border-radius: 8px;
+      background: #0b1222;
+      border: 1px solid #1f2937;
+    }
+    .history-item strong { display: block; margin-bottom: 4px; }
+    .history-meta { color: #94a3b8; font-size: 12px; }
+    .empty {
+      padding: 18px;
+      border-radius: 8px;
+      border: 1px dashed #334155;
+      color: #94a3b8;
+      text-align: center;
+    }
+    @media (max-width: 1100px) {
+      .hero { grid-template-columns: 1fr; }
+      .summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+    @media (max-width: 760px) {
+      header { padding: 12px 12px 8px; }
+      header .status { display: none !important; }
+      h1 { font-size: 18px; }
+      main { padding: 12px; }
+      section { padding: 12px; }
+      .hero > div { padding: 12px; }
+      .summary-grid { grid-template-columns: 1fr 1fr; }
+      .controls-top { flex-direction: column; align-items: stretch; }
+      .dancer-card, .song-card { width: 100%; min-height: 0; }
+      .song-actions { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
+      <div>
+        <h1>Random Dance Play</h1>
+      </div>
+    </div>
+    <div class="status">
+      <span id="statusText">Connecting</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="hero">
+      <div>
+        <div class="actions">
+          <button class="primary" id="playSuggestedBtn" type="button">Play Suggested</button>
+          <button class="secondary" id="selectAllBtn" type="button">Select All Dancers</button>
+          <button class="ghost" id="clearSelectionBtn" type="button">Clear Selection</button>
+          <button class="danger" id="resetHistoryBtn" type="button">Reset RPD History</button>
+        </div>
+        <div class="summary-grid">
+          <div class="stat">
+            <div class="stat-label">Selected Dancers</div>
+            <div class="stat-value" id="selectedCount">0</div>
+            <div class="stat-note" id="selectedNamesNote">Choose at least one dancer</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Candidate Songs</div>
+            <div class="stat-value" id="candidateCount">0</div>
+            <div class="stat-note">Live updates from current song metadata</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Unplayed Pool</div>
+            <div class="stat-value" id="unplayedCount">0</div>
+            <div class="stat-note">Suggestions prefer this pool first</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Session Spins</div>
+            <div class="stat-value" id="historyCount">0</div>
+            <div class="stat-note">Saved locally for this browser session</div>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="panel-inner">
+          <div class="controls-top">
+            <h2>Dancer Selection</h2>
+          </div>
+          <input id="dancerSearch" class="search" placeholder="Search dancers by name or handle">
+          <div id="selectedChips" class="chips"></div>
+          <div id="dancerGrid" class="dancer-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="panel-inner">
+        <div class="controls-top">
+          <div>
+            <h2>Eligible Songs</h2>
+            <div class="sub">Every song that at least one selected dancer knows.</div>
+          </div>
+          <input id="songSearch" class="search" placeholder="Search songs or artists" style="max-width:320px;">
+        </div>
+        <div id="songGrid" class="song-grid"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="panel-inner">
+        <div class="controls-top">
+          <div>
+            <h2>RPD Session History</h2>
+            <div class="sub">Used to reduce repeats and balance suggestions for the selected group.</div>
+          </div>
+        </div>
+        <div id="historyList" class="history-list"></div>
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
+  <script>
+    const api = window.PageShared.api;
+    const SESSION_KEY = "rpd_session_history_v1";
+    const RELATION_CONFIG = [
+      { key: "dancers", label: "Assigned", short: "Assigned", weight: 1.2 },
+      { key: "front_dancers", label: "Front", short: "Front", weight: 1.1 },
+      { key: "knows_song", label: "Knows dance", short: "Knows", weight: 1.0 },
+      { key: "mvp_dancers", label: "MVP", short: "MVP", weight: 1.15 },
+      { key: "special_dance_for", label: "Special", short: "Special", weight: 1.05 },
+      { key: "exclusive_mvp_for", label: "Exclusive MVP", short: "Exclusive", weight: 1.15, scalar: true },
+    ];
+
+    let library = {};
+    let state = {};
+    let dancers = [];
+    let settings = {
+      fade_in: true,
+      fade_out: true,
+      loop_same_song_after_finish: false,
+    };
+    let selectedKeys = new Set();
+    let sessionHistory = loadSessionHistory();
+    let currentSongUrl = "";
+    let backgroundStarted = false;
+
+    function normalizeName(value) {
+      return String(value || "").trim().toLowerCase();
+    }
+
+    function escapeHtml(value) {
+      return String(value || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function loadSessionHistory() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(SESSION_KEY) || "[]");
+        if (!Array.isArray(parsed)) return [];
+        return parsed.filter((item) => item && item.url);
+      } catch (err) {
+        return [];
+      }
+    }
+
+    function saveSessionHistory() {
+      try {
+        localStorage.setItem(SESSION_KEY, JSON.stringify(sessionHistory.slice(-300)));
+      } catch (err) {}
+    }
+
+    function formatTimeAgo(ts) {
+      const diff = Math.max(0, Date.now() - Number(ts || 0));
+      const seconds = Math.floor(diff / 1000);
+      if (seconds < 60) return seconds + "s ago";
+      const minutes = Math.floor(seconds / 60);
+      if (minutes < 60) return minutes + "m ago";
+      const hours = Math.floor(minutes / 60);
+      if (hours < 24) return hours + "h ago";
+      return Math.floor(hours / 24) + "d ago";
+    }
+
+    function getSongVolume(url) {
+      for (const song of Object.values(library || {})) {
+        if (song && song.url === url) return song.volume;
+      }
+      return 1;
+    }
+
+    function getRoleUrl(role) {
+      return Object.values(library).find((song) => (song?.roles || []).includes(role))?.url || "";
+    }
+
+    function setCurrent(url) {
+      currentSongUrl = url || "";
+    }
+
+    function queueSongPaused(url) {
+      window.PageShared.queueSongPaused({url, getSongVolume, setCurrent});
+    }
+
+    function runPracticeRepeatCues(url) {
+      queueSongPaused(url);
+    }
+
+    function startAudio(url, opts = {}) {
+      window.PageShared.startAudio({
+        url,
+        opts,
+        getRoleUrl,
+        getSongVolume,
+        settingsFadeIn: settings.fade_in,
+        settingsFadeOut: settings.fade_out,
+      });
+    }
+
+    function playSequence(steps, onDone = null) {
+      if (!steps || !steps.length) return;
+      const [first, ...rest] = steps.filter(Boolean);
+      if (!first) {
+        if (onDone) onDone();
+        return;
+      }
+      let url = first;
+      let isRole = false;
+      if (first === "applause_role") {
+        url = getRoleUrl("applause");
+        if (!url) {
+          playSequence(rest, onDone);
+          return;
+        }
+        isRole = true;
+      } else if (first === "background_role") {
+        url = getRoleUrl("background");
+        if (!url) {
+          playSequence(rest, onDone);
+          return;
+        }
+        setCurrent(url);
+        startAudio(url, {loop: true, fade: false, fadeOut: false, skipFadeOut: true, isRole: true});
+        return;
+      }
+      setCurrent(url);
+      startAudio(url, {
+        loop: false,
+        fade: true,
+        fadeOut: false,
+        skipFadeOut: true,
+        isRole,
+        onEnd: () => playSequence(rest, onDone),
+      });
+    }
+
+    function ensureBackground() {
+      if (backgroundStarted) return;
+      const bg = getRoleUrl("background");
+      if (!bg) return;
+      backgroundStarted = true;
+      setCurrent(bg);
+      startAudio(bg, {loop: true, fade: false, fadeOut: false, skipFadeOut: true, isRole: true});
+    }
+
+    function getSongByUrl(url) {
+      for (const song of Object.values(library || {})) {
+        if (song && song.url === url) return song;
+      }
+      return null;
+    }
+
+    function getDancerHandle(dancer) {
+      return String(dancer?.handle || "").trim().replace(/^@+/, "");
+    }
+
+    function dancerKey(dancer) {
+      return normalizeName(dancer?.name || getDancerHandle(dancer));
+    }
+
+    function selectedDancers() {
+      return dancers.filter((dancer) => selectedKeys.has(dancerKey(dancer)));
+    }
+
+    function getRelationMatches(song, dancer) {
+      const target = normalizeName(dancer?.name);
+      if (!target) return [];
+      const found = [];
+      for (const relation of RELATION_CONFIG) {
+        if (relation.scalar) {
+          if (normalizeName(song?.[relation.key]) === target) found.push(relation);
+          continue;
+        }
+        const values = Array.isArray(song?.[relation.key]) ? song[relation.key] : [];
+        if (values.some((entry) => normalizeName(entry) === target)) {
+          found.push(relation);
+        }
+      }
+      return found;
+    }
+
+    function analyzeSongForSelection(song) {
+      const matched = [];
+      const matchedKeySet = new Set();
+      let relationWeight = 0;
+      for (const dancer of selectedDancers()) {
+        const relations = getRelationMatches(song, dancer);
+        if (!relations.length) continue;
+        const key = dancerKey(dancer);
+        matchedKeySet.add(key);
+        relationWeight += Math.max(...relations.map((entry) => entry.weight || 1));
+        matched.push({
+          dancer,
+          key,
+          relations,
+        });
+      }
+      if (!matched.length) return null;
+      return {
+        song,
+        matched,
+        matchedKeys: Array.from(matchedKeySet),
+        relationWeight,
+      };
+    }
+
+    function getCandidateEntries() {
+      const search = normalizeName(document.getElementById("songSearch")?.value || "");
+      const entries = [];
+      for (const song of Object.values(library || {})) {
+        if (!song || !song.url) continue;
+        const analysis = analyzeSongForSelection(song);
+        if (!analysis) continue;
+        if (search) {
+          const haystack = normalizeName((song.name || "") + " " + (song.artist || ""));
+          if (!haystack.includes(search)) continue;
+        }
+        entries.push(analysis);
+      }
+      entries.sort((a, b) => String(a.song.name || "").localeCompare(String(b.song.name || "")));
+      return entries;
+    }
+
+    function countSessionPlaysByUrl() {
+      const counts = Object.create(null);
+      for (const entry of sessionHistory) {
+        counts[entry.url] = (counts[entry.url] || 0) + 1;
+      }
+      return counts;
+    }
+
+    function countSelectedDancerExposure() {
+      const counts = Object.create(null);
+      for (const dancer of selectedDancers()) {
+        counts[dancerKey(dancer)] = 0;
+      }
+      for (const entry of sessionHistory) {
+        const keys = Array.isArray(entry.matched_dancer_keys) ? entry.matched_dancer_keys : [];
+        for (const key of keys) {
+          if (key in counts) counts[key] += 1;
+        }
+      }
+      return counts;
+    }
+
+    function chooseWeighted(entries) {
+      if (!entries.length) return null;
+      const total = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.weight) || 0), 0);
+      if (!total) return entries[Math.floor(Math.random() * entries.length)] || null;
+      let cursor = Math.random() * total;
+      for (const entry of entries) {
+        cursor -= Math.max(0, Number(entry.weight) || 0);
+        if (cursor <= 0) return entry;
+      }
+      return entries[entries.length - 1] || null;
+    }
+
+    function getSuggestedEntry() {
+      const entries = getCandidateEntries();
+      if (!entries.length) return null;
+
+      const sessionCounts = countSessionPlaysByUrl();
+      const unplayed = entries.filter((entry) => !sessionCounts[entry.song.url]);
+      const pool = unplayed.length ? unplayed : entries;
+      const dancerExposure = countSelectedDancerExposure();
+      const exposureValues = Object.values(dancerExposure);
+      const maxExposure = exposureValues.length ? Math.max(...exposureValues) : 0;
+      const recentUrls = new Set(sessionHistory.slice(-5).map((entry) => entry.url));
+
+      const weightedPool = pool.map((entry) => {
+        const globalPlayCount = Number(state?.play_counts?.[entry.song.url] || 0);
+        const sessionPlays = Number(sessionCounts[entry.song.url] || 0);
+        const fairnessScores = entry.matchedKeys.map((key) => (maxExposure - Number(dancerExposure[key] || 0)) + 1);
+        const fairness = fairnessScores.length
+          ? fairnessScores.reduce((sum, value) => sum + value, 0) / fairnessScores.length
+          : 1;
+        const breadthBoost = 1 + Math.min(0.8, (entry.matchedKeys.length - 1) * 0.18);
+        const relationBoost = 0.85 + Math.min(0.6, entry.relationWeight / Math.max(1, entry.matchedKeys.length) / 2.5);
+        const repeatPenalty = sessionPlays > 0 ? 1 / (1 + sessionPlays * 4) : 1;
+        const globalPenalty = 1 / (1 + Math.log1p(Math.max(0, globalPlayCount)));
+        const recentPenalty = recentUrls.has(entry.song.url) && !unplayed.length ? 0.18 : 1;
+        return {
+          entry,
+          weight: fairness * breadthBoost * relationBoost * repeatPenalty * globalPenalty * recentPenalty,
+        };
+      });
+
+      const choice = chooseWeighted(weightedPool);
+      return choice ? choice.entry : null;
+    }
+
+    function updateSummary(entries) {
+      const selected = selectedDancers();
+      const selectedNames = selected.map((dancer) => dancer.name).sort((a, b) => a.localeCompare(b));
+      const sessionCounts = countSessionPlaysByUrl();
+      const unplayedCount = entries.filter((entry) => !sessionCounts[entry.song.url]).length;
+
+      document.getElementById("selectedCount").textContent = String(selected.length);
+      document.getElementById("selectedNamesNote").textContent = selectedNames.length
+        ? selectedNames.slice(0, 4).join(", ") + (selectedNames.length > 4 ? " +" + (selectedNames.length - 4) : "")
+        : "Choose at least one dancer";
+      document.getElementById("candidateCount").textContent = String(entries.length);
+      document.getElementById("unplayedCount").textContent = String(unplayedCount);
+      document.getElementById("historyCount").textContent = String(sessionHistory.length);
+      document.getElementById("playSuggestedBtn").disabled = !selected.length || !entries.length;
+    }
+
+    function renderSelectedChips() {
+      const wrap = document.getElementById("selectedChips");
+      const selected = selectedDancers().sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+      if (!selected.length) {
+        wrap.innerHTML = "";
+        return;
+      }
+      wrap.innerHTML = selected.map((dancer) => {
+        const key = escapeHtml(dancerKey(dancer));
+        return '<span class="chip">' +
+          escapeHtml(dancer.name || "Unknown") +
+          '<button type="button" data-remove-key="' + key + '">x</button>' +
+          "</span>";
+      }).join("");
+      wrap.querySelectorAll("[data-remove-key]").forEach((button) => {
+        button.addEventListener("click", () => {
+          selectedKeys.delete(button.getAttribute("data-remove-key") || "");
+          renderAll();
+        });
+      });
+    }
+
+    function renderDancers() {
+      const search = normalizeName(document.getElementById("dancerSearch")?.value || "");
+      const grid = document.getElementById("dancerGrid");
+      const visible = dancers
+        .filter((dancer) => {
+          if (!search) return true;
+          const haystack = normalizeName((dancer.name || "") + " " + (dancer.handle || ""));
+          return haystack.includes(search);
+        })
+        .sort((a, b) => String(a.name || "").localeCompare(String(b.name || "")));
+
+      if (!visible.length) {
+        grid.innerHTML = '<div class="empty">No dancers match that search.</div>';
+        return;
+      }
+
+      grid.innerHTML = visible.map((dancer) => {
+        const key = dancerKey(dancer);
+        const selected = selectedKeys.has(key);
+        const handle = getDancerHandle(dancer);
+        return '<button type="button" class="dancer-card' + (selected ? " selected" : "") + '" data-dancer-key="' + escapeHtml(key) + '">' +
+          '<div class="dancer-name">' + escapeHtml(dancer.name || "Unknown") + '</div>' +
+          '<div class="dancer-meta">' + (handle ? "@" + escapeHtml(handle) : "No handle") + '</div>' +
+          "</button>";
+      }).join("");
+
+      grid.querySelectorAll("[data-dancer-key]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const key = button.getAttribute("data-dancer-key") || "";
+          if (!key) return;
+          if (selectedKeys.has(key)) selectedKeys.delete(key);
+          else selectedKeys.add(key);
+          renderAll();
+        });
+      });
+    }
+
+    function renderSongs(entries) {
+      const grid = document.getElementById("songGrid");
+      if (!entries.length) {
+        grid.innerHTML = '<div class="empty">Select dancers to build the RPD song pool.</div>';
+        return;
+      }
+
+      const sessionCounts = countSessionPlaysByUrl();
+      grid.innerHTML = entries.map((entry) => {
+        const song = entry.song;
+        const artist = song.artist ? '<div class="song-artist">' + escapeHtml(song.artist) + "</div>" : "";
+        const pills = [];
+        const selectedMatchCount = entry.matchedKeys.length;
+        pills.push('<span class="pill good">' + selectedMatchCount + " dancer" + (selectedMatchCount === 1 ? "" : "s") + " know this</span>");
+        if (sessionCounts[song.url]) pills.push('<span class="pill warn">Played ' + sessionCounts[song.url] + "x this session</span>");
+        if (song.battle_disabled) pills.push('<span class="pill warn">Battle disabled</span>');
+        const matchRows = entry.matched.map((item) => {
+          return "<li><span class=\"match-name\">" + escapeHtml(item.dancer.name || "Unknown") +
+            "</span><span class=\"match-reason\">" +
+            escapeHtml(item.relations.map((relation) => relation.short).join(", ")) +
+            "</span></li>";
+        }).join("");
+        return '<article class="song-card' + (currentSongUrl === song.url ? " current" : "") + '">' +
+          '<div><div class="song-title">' + escapeHtml(song.name || "Unnamed") + "</div>" + artist + "</div>" +
+          '<div class="pill-row">' + pills.join("") + "</div>" +
+          '<ul class="match-list">' + matchRows + "</ul>" +
+          '<div class="song-actions">' +
+            '<button class="primary" type="button" data-play-url="' + escapeHtml(song.url) + '">Play Song</button>' +
+          "</div></article>";
+      }).join("");
+
+      grid.querySelectorAll("[data-play-url]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const song = getSongByUrl(button.getAttribute("data-play-url") || "");
+          if (song) playSong(song, "manual");
+        });
+      });
+    }
+
+    function renderHistory() {
+      const list = document.getElementById("historyList");
+      if (!sessionHistory.length) {
+        list.innerHTML = '<div class="empty">No RPD plays yet. Start with Play Suggested.</div>';
+        return;
+      }
+      list.innerHTML = sessionHistory.slice().reverse().map((entry) => {
+        const dancersText = Array.isArray(entry.matched_dancers) && entry.matched_dancers.length
+          ? entry.matched_dancers.join(", ")
+          : "No dancer data";
+        const reasonText = Array.isArray(entry.relation_labels) && entry.relation_labels.length
+          ? entry.relation_labels.join(" | ")
+          : "Manual play";
+        return '<div class="history-item">' +
+          "<strong>" + escapeHtml(entry.song_name || "Unknown song") + "</strong>" +
+          '<div class="history-meta">' + escapeHtml(reasonText) + "</div>" +
+          '<div class="history-meta">Matched: ' + escapeHtml(dancersText) + "</div>" +
+          '<div class="history-meta">' + escapeHtml(entry.mode || "play") + " | " + escapeHtml(formatTimeAgo(entry.ts)) + "</div>" +
+          "</div>";
+      }).join("");
+    }
+
+    function renderAll() {
+      renderSelectedChips();
+      renderDancers();
+      const entries = getCandidateEntries();
+      updateSummary(entries);
+      renderSongs(entries);
+      renderHistory();
+    }
+
+    function trackPlay(song, mode, analysis) {
+      const details = analysis || analyzeSongForSelection(song);
+      const relationLabels = (details?.matched || []).map((item) => {
+        return item.dancer.name + ": " + item.relations.map((relation) => relation.short).join(", ");
+      });
+      sessionHistory.push({
+        url: song.url,
+        song_name: song.name || song.url,
+        ts: Date.now(),
+        mode,
+        matched_dancers: (details?.matched || []).map((item) => item.dancer.name || ""),
+        matched_dancer_keys: details?.matchedKeys || [],
+        relation_labels: relationLabels,
+      });
+      sessionHistory = sessionHistory.slice(-300);
+      saveSessionHistory();
+    }
+
+    async function playSong(song, mode, cachedAnalysis) {
+      if (!song?.url) return;
+      const bellUrl = getRoleUrl("bell");
+      const applauseUrl = getRoleUrl("applause");
+      const backgroundUrl = getRoleUrl("background");
+      window.PageShared?.primeAudioCache?.(song.url);
+      if (bellUrl) window.PageShared?.primeAudioCache?.(bellUrl);
+      if (applauseUrl) window.PageShared?.primeAudioCache?.(applauseUrl);
+      if (backgroundUrl) window.PageShared?.primeAudioCache?.(backgroundUrl);
+      await api("/songs/play", {
+        method: "POST",
+        body: {
+          target: "group",
+          url: song.url,
+          context: "rpd",
+        },
+      }).catch(() => {});
+      if (settings.loop_same_song_after_finish) {
+        const steps = [];
+        if (bellUrl) steps.push(bellUrl);
+        steps.push(song.url);
+        playSequence(steps, () => runPracticeRepeatCues(song.url));
+      } else {
+        const steps = [];
+        if (bellUrl) steps.push(bellUrl);
+        steps.push(song.url);
+        steps.push("applause_role");
+        steps.push("background_role");
+        playSequence(steps);
+      }
+      currentSongUrl = song.url;
+      trackPlay(song, mode, cachedAnalysis);
+      renderAll();
+    }
+
+    async function playSuggested() {
+      const suggestion = getSuggestedEntry();
+      if (!suggestion) {
+        alert("No eligible RPD song found for the current dancer selection.");
+        return;
+      }
+      await playSong(suggestion.song, "suggested", suggestion);
+    }
+
+    async function refreshData() {
+      const [songsResp, dancersResp, stateResp, settingsResp] = await Promise.all([
+        api("/songs").then((res) => res.json()),
+        api("/dancers").then((res) => res.json()),
+        api("/state").then((res) => res.json()),
+        window.PageShared.fetchAppSettings(api),
+      ]);
+      library = songsResp?.library || {};
+      dancers = Array.isArray(dancersResp) ? dancersResp.filter(Boolean) : [];
+      state = stateResp || {};
+      currentSongUrl = state?.songs?.current || "";
+      settings = settingsResp || settings;
+      settings.loop_same_song_after_finish = settingsResp?.loop_same_song_after_finish === true;
+
+      if (selectedKeys.size) {
+        const validKeys = new Set(dancers.map((dancer) => dancerKey(dancer)));
+        selectedKeys = new Set(Array.from(selectedKeys).filter((key) => validKeys.has(key)));
+      }
+
+      renderAll();
+      ensureBackground();
+    }
+
+    function selectAllDancers() {
+      selectedKeys = new Set(dancers.map((dancer) => dancerKey(dancer)).filter(Boolean));
+      renderAll();
+    }
+
+    function clearSelection() {
+      selectedKeys.clear();
+      renderAll();
+    }
+
+    function resetHistory() {
+      sessionHistory = [];
+      saveSessionHistory();
+      renderAll();
+    }
+
+    function bindEvents() {
+      document.getElementById("playSuggestedBtn").addEventListener("click", playSuggested);
+      document.getElementById("selectAllBtn").addEventListener("click", selectAllDancers);
+      document.getElementById("clearSelectionBtn").addEventListener("click", clearSelection);
+      document.getElementById("resetHistoryBtn").addEventListener("click", resetHistory);
+      document.getElementById("dancerSearch").addEventListener("input", renderDancers);
+      document.getElementById("songSearch").addEventListener("input", renderAll);
+    }
+
+    function bindRealtime() {
+      window.PageShared.connectWsStatus({
+        onState: (payload) => {
+          state = payload || state;
+          library = payload?.songs?.library || library;
+          currentSongUrl = payload?.songs?.current || "";
+          renderAll();
+          ensureBackground();
+        },
+      });
+    }
+
+    bindEvents();
+    bindRealtime();
+    window.PageShared.initPracticeModeHeader({apiFn: api});
+    window.addEventListener("message", (evt) => {
+      if (evt?.data?.type === "settings-updated") {
+        refreshData().catch(() => {});
+      }
+    });
+    refreshData().catch((err) => {
+      console.error("Failed to load RPD data", err);
+      document.getElementById("songGrid").innerHTML = '<div class="empty">Failed to load RPD data.</div>';
+    });
+  </script>
+</body>
+</html>

@@ -1791,6 +1791,11 @@ async def dances_solo_page() -> FileResponse:
     return _static_file("solo_dances.html")
 
 
+@app.get("/dances/rpd")
+async def dances_rpd_page() -> FileResponse:
+    return _static_file("rpd.html")
+
+
 @app.get("/app")
 async def spa_root() -> FileResponse:
     return _static_file("app.html")
