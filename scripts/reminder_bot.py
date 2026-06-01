@@ -295,6 +295,7 @@ def _build_message_for_events(
     target_day: date,
     events: list[dict[str, Any]],
     tz: ZoneInfo,
+    practice_time_text: str = "",
 ) -> str:
     header = f"Wildcardz Live reminder for {target_day.strftime('%A, %B %d, %Y')} (MT)"
     lines = [header, ""]
@@ -308,6 +309,8 @@ def _build_message_for_events(
         outfit = ", ".join(sections["outfit"]) if sections["outfit"] else "Not listed"
         lines.append(summary)
         lines.append(f"Time: {_event_time_text(event, tz)}")
+        if practice_time_text:
+            lines.append(f"Practice: {practice_time_text}")
         lines.append(f"Dancers: {dancers}")
         lines.append(f"Hosts: {hosts}")
         lines.append(f"Outfit: {outfit}")
@@ -386,6 +389,7 @@ class Config:
     calendar_api_key: str
     webhook_url: str
     event_name: str
+    practice_event_name: str
     supabase_url: str
     supabase_key: str
     timezone_name: str
@@ -404,6 +408,8 @@ def _load_config() -> Config:
         calendar_api_key=_env("WILDCARDZ_CALENDAR_API_KEY", "").strip(),
         webhook_url=_env("WILDCARDZ_REMINDER_WEBHOOK", DEFAULT_WEBHOOK_URL).strip(),
         event_name=_normalize_space(_env("WILDCARDZ_REMINDER_EVENT_NAME", "Wildcardz Live")) or "Wildcardz Live",
+        practice_event_name=_normalize_space(_env("WILDCARDZ_REMINDER_PRACTICE_EVENT_NAME", "Wildcardz Practice"))
+        or "Wildcardz Practice",
         supabase_url=supabase_url,
         supabase_key=_env("SUPABASE_SECRET_KEY", "").strip() or _env("SUPABASE_PUBLISHABLE_KEY", "").strip(),
         timezone_name=_env("WILDCARDZ_REMINDER_TIMEZONE", "America/Denver").strip() or "America/Denver",
@@ -425,6 +431,19 @@ def _event_matches(summary: str, target_name: str) -> bool:
     if not normalized_summary or not normalized_target:
         return False
     return normalized_target in normalized_summary
+
+
+def _matching_events_by_name(
+    *,
+    events: list[dict[str, Any]],
+    event_name: str,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for event in events:
+        summary = _normalize_space(str(event.get("summary") or ""))
+        if _event_matches(summary, event_name):
+            out.append(event)
+    return out
 
 
 def _matching_live_events(
@@ -450,6 +469,15 @@ def _matching_live_events(
         key = f"{key_base}|{start_dt.astimezone(timezone.utc).isoformat()}|{end_dt.astimezone(timezone.utc).isoformat()}"
         out.append((key, start_dt, end_dt, summary or "Wildcardz Live"))
     return out
+
+
+def _build_practice_time_text(*, events: list[dict[str, Any]], tz: ZoneInfo) -> str:
+    parts: list[str] = []
+    for event in events:
+        time_text = _event_time_text(event, tz)
+        if time_text not in parts:
+            parts.append(time_text)
+    return ", ".join(parts)
 
 
 def _prune_notes_followup_state(state: dict[str, Any], now_utc: datetime) -> dict[str, Any]:
@@ -615,6 +643,8 @@ async def _run_for_day(
         day_end_local=day_end_local,
     )
     matching: list[dict[str, Any]] = []
+    practice_events = _matching_events_by_name(events=events, event_name=cfg.practice_event_name)
+    practice_time_text = _build_practice_time_text(events=practice_events, tz=tz)
     past_or_started_count = 0
     for event in events:
         summary = _normalize_space(str(event.get("summary") or ""))
@@ -643,7 +673,12 @@ async def _run_for_day(
             )
             await _send_webhook_message(client=client, webhook_url=cfg.webhook_url, content=content)
         return True
-    content = _build_message_for_events(target_day=target_day, events=matching, tz=tz)
+    content = _build_message_for_events(
+        target_day=target_day,
+        events=matching,
+        tz=tz,
+        practice_time_text=practice_time_text,
+    )
     await _send_webhook_message(client=client, webhook_url=cfg.webhook_url, content=content)
     logger.info("Sent Wildcardz reminder for %s with %s matching event(s)", target_day.isoformat(), len(matching))
     return True
