@@ -280,6 +280,13 @@ flyctl ssh sftp put -a newstarhost -g app ~/local/file.ext /path/on/machine/file
   - Practice event name match included in each live reminder when present: `WILDCARDZ_REMINDER_PRACTICE_EVENT_NAME=Wildcardz Practice`
   - Webhook (required, set in `app.env`): `WILDCARDZ_REMINDER_WEBHOOK`
   - Optional toggles: `WILDCARDZ_REMINDER_ENABLED=1`, `WILDCARDZ_REMINDER_SEND_IF_NONE=0`
+- Outfit calendar writer:
+  - Script: `scripts/update_calendar_outfits.py`
+  - Uses the same `Outfit: ...` description line that `scripts/reminder_bot.py` reads.
+  - Required write auth: `GOOGLE_SERVICE_ACCOUNT_FILE=/abs/path/to/service-account.json` or `GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'`
+  - Uses `WILDCARDZ_CALENDAR_ID` and defaults to `WILDCARDZ_REMINDER_EVENT_NAME=Wildcardz Live`
+  - Dry run: `.venv/bin/python scripts/update_calendar_outfits.py --dry-run`
+  - Write June 2026 outfits: `.venv/bin/python scripts/update_calendar_outfits.py`
 - Wildcardz top gifters env:
   - Uses same calendar keys: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
   - Defaults: `WILDCARDZ_TOPGIFTER_TIMEZONE=America/Denver`, `WILDCARDZ_TOPGIFTER_POLL_SECONDS=60`

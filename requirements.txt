@@ -13,3 +13,5 @@ supabase==2.27.3
 TikTokApi==7.2.2
 discord.py==2.4.0
 brotlicffi==1.2.0.0
+google-api-python-client==2.154.0
+google-auth==2.36.0
