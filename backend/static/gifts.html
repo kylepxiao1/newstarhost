@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Gifts</title>
+  <style>
+    body { font-family: "Segoe UI", Arial, sans-serif; margin: 0; background: #0f172a; color: #e2e8f0; }
+    header { padding: 16px 24px; background: #1e293b; box-shadow: 0 2px 6px rgba(0,0,0,.3); display: flex; align-items: center; justify-content: space-between; }
+    h1 { margin: 0; font-size: 20px; }
+    main { padding: 20px; }
+    section { background: #111827; border: 1px solid #1f2937; border-radius: 10px; padding: 16px; margin-bottom: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.02); }
+    h2 { margin: 0 0 10px 0; font-size: 16px; }
+    .row { display: flex; gap: 8px; margin-bottom: 10px; align-items: center; flex-wrap: wrap; }
+    select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; }
+    button { cursor: pointer; background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 8px 12px; font-weight: 600; }
+    .meta { color: #94a3b8; font-size: 13px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 4px 10px; border-radius: 20px; border: 1px solid #334155;
+      background: #1e293b; color: #94a3b8; font-size: 12px; cursor: pointer;
+      user-select: none; transition: background .15s, color .15s, border-color .15s;
+    }
+    .chip.active { background: #1d4ed8; color: #fff; border-color: #2563eb; }
+    .chip:hover:not(.active) { background: #273549; color: #e2e8f0; }
+    .chip-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 7px 6px; border-bottom: 1px solid #1f2937; text-align: left; }
+    th { color: #94a3b8; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; white-space: nowrap; }
+    td.num { font-variant-numeric: tabular-nums; }
+    tr.seen td { opacity: 0.38; }
+    tr.seen td.seen-cell { opacity: 1; }
+    .empty { color: #94a3b8; font-weight: 600; padding: 12px 0; }
+    .seen-cb { width: 16px; height: 16px; cursor: pointer; accent-color: #2563eb; }
+    @media (max-width: 900px) {
+      header { padding: 12px 12px 8px; }
+      header .status { display: none !important; }
+      h1 { font-size: 18px; }
+      main { padding: 12px; }
+      section { padding: 12px; }
+      .row > * { flex: 1 1 200px; min-width: 0; }
+      table { display: block; overflow-x: auto; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <span id="wsDot" style="display:inline-flex;align-items:center;justify-content:center;width:10px;height:10px;border-radius:50%;background:#ef4444;box-shadow:0 0 8px #ef4444;"></span>
+      <h1>Gifts</h1>
+    </div>
+    <div class="status" style="display:flex;align-items:center;gap:6px;font-weight:700;text-transform:uppercase;">
+      <span id="statusText">Connecting</span>
+    </div>
+  </header>
+  <main>
+    <section>
+      <h2>Filters</h2>
+      <div class="row">
+        <label for="groupSelect">Group</label>
+        <select id="groupSelect"></select>
+        <label for="dateInput">Date (MT)</label>
+        <input id="dateInput" type="date">
+        <button id="refreshBtn" type="button">Refresh</button>
+      </div>
+      <div class="row meta">
+        <span id="summaryMeta">Loading...</span>
+      </div>
+      <div class="row meta">
+        <span id="realtimeMeta">Realtime: connecting...</span>
+      </div>
+    </section>
+
+    <section id="typeFilterSection">
+      <h2>Gift Types <span id="typeFilterHint" style="font-size:12px;color:#94a3b8;font-weight:400;">(none selected = show all)</span></h2>
+      <div class="row" style="margin-bottom:8px;">
+        <button id="clearTypesBtn" type="button" style="background:#374151;font-size:12px;padding:5px 10px;">Clear Filter</button>
+        <button id="selectAllTypesBtn" type="button" style="background:#374151;font-size:12px;padding:5px 10px;">Select All</button>
+      </div>
+      <div id="typeChips" class="chips"></div>
+    </section>
+
+    <section>
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+        <h2 style="margin:0;">Gift Log</h2>
+        <button id="clearSeenBtn" type="button" style="background:#374151;font-size:12px;padding:5px 10px;">Clear Seen</button>
+      </div>
+      <div style="overflow-x:auto;">
+        <table id="giftsTable">
+          <thead>
+            <tr>
+              <th>Seen</th>
+              <th>Gifter</th>
+              <th>Nickname</th>
+              <th>Gift</th>
+              <th>Recipient</th>
+              <th>Diamonds</th>
+              <th>USD</th>
+              <th>Time (MT)</th>
+            </tr>
+          </thead>
+          <tbody id="giftsBody"></tbody>
+        </table>
+      </div>
+      <div id="emptyState" class="empty" style="display:none;">No gifts found for this group/date.</div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="/static/state_ws_helper.js"></script>
+  <script src="/static/page_shared.js"></script>
+  <script>
+    const api = window.PageShared.api;
+    const MT_TZ = "America/Denver";
+    const MT_DATE_FMT = new Intl.DateTimeFormat("en-US", { timeZone: MT_TZ, year: "numeric", month: "2-digit", day: "2-digit" });
+    const MT_TIME_FMT = new Intl.DateTimeFormat("en-US", { timeZone: MT_TZ, hour: "numeric", minute: "2-digit", second: "2-digit", hour12: true });
+
+    function formatMountainYmd(d) {
+      const p = MT_DATE_FMT.formatToParts(d);
+      return `${p.find(x=>x.type==="year").value}-${p.find(x=>x.type==="month").value}-${p.find(x=>x.type==="day").value}`;
+    }
+    function todayMountain() { return formatMountainYmd(new Date()); }
+    function isoToMountainDate(v) { try { return formatMountainYmd(new Date(String(v))); } catch(e) { return ""; } }
+    function isoToMountainTime(v) { try { return MT_TIME_FMT.format(new Date(String(v))); } catch(e) { return ""; } }
+
+    let groups = [];
+    let supabaseClient = null;
+    let realtimeChannel = null;
+    let refreshTimer = null;
+    let fallbackPollHandle = null;
+    let realtimeSubscribed = false;
+    let lastRefreshMs = 0;
+    const FALLBACK_POLL_MS = 30000;
+
+    // All gifts from last fetch
+    let allGifts = [];
+    let allGiftTypes = [];
+    // Session state
+    const SESSION_SEEN_KEY = "gifts_seen_ids";
+    const SESSION_TYPES_KEY = "gifts_type_filter";
+
+    function loadSeenIds() {
+      try { return new Set(JSON.parse(localStorage.getItem(SESSION_SEEN_KEY) || "[]")); } catch(e) { return new Set(); }
+    }
+    function saveSeenIds(set) {
+      try { localStorage.setItem(SESSION_SEEN_KEY, JSON.stringify([...set])); } catch(e) {}
+    }
+    function loadTypeFilter() {
+      try { return new Set(JSON.parse(localStorage.getItem(SESSION_TYPES_KEY) || "[]")); } catch(e) { return new Set(); }
+    }
+    function saveTypeFilter(set) {
+      try { localStorage.setItem(SESSION_TYPES_KEY, JSON.stringify([...set])); } catch(e) {}
+    }
+
+    let seenIds = loadSeenIds();
+    let activeTypes = loadTypeFilter();
+
+    function currentGroupHandle() {
+      return String(document.getElementById("groupSelect")?.value || "").trim().replace(/^@+/, "");
+    }
+    function currentDate() {
+      return String(document.getElementById("dateInput")?.value || "").trim();
+    }
+    function setSummaryMeta(t) { const el = document.getElementById("summaryMeta"); if (el) el.textContent = t; }
+    function setRealtimeMeta(t) { const el = document.getElementById("realtimeMeta"); if (el) el.textContent = t; }
+
+    function renderTypeChips(types) {
+      const container = document.getElementById("typeChips");
+      if (!container) return;
+      container.innerHTML = "";
+      types.forEach(t => {
+        const chip = document.createElement("span");
+        chip.className = "chip" + (activeTypes.has(t) ? " active" : "");
+        chip.innerHTML = `<span class="chip-dot"></span>${escHtml(t)}`;
+        chip.addEventListener("click", () => {
+          if (activeTypes.has(t)) activeTypes.delete(t);
+          else activeTypes.add(t);
+          saveTypeFilter(activeTypes);
+          chip.classList.toggle("active", activeTypes.has(t));
+          renderGiftsTable();
+        });
+        container.appendChild(chip);
+      });
+    }
+
+    function escHtml(s) {
+      return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
+    }
+
+    function visibleGifts() {
+      if (activeTypes.size === 0) return allGifts;
+      return allGifts.filter(g => activeTypes.has(g.gift_name));
+    }
+
+    function renderGiftsTable() {
+      const tbody = document.getElementById("giftsBody");
+      const emptyEl = document.getElementById("emptyState");
+      if (!tbody || !emptyEl) return;
+      const gifts = visibleGifts();
+      if (!gifts.length) {
+        tbody.innerHTML = "";
+        emptyEl.style.display = "block";
+        return;
+      }
+      emptyEl.style.display = "none";
+      const group = currentGroupHandle();
+      tbody.innerHTML = "";
+      [...gifts].reverse().forEach(g => {
+        const isSeen = seenIds.has(g.id);
+        const recipient = g.recipient || group || "";
+        const tr = document.createElement("tr");
+        tr.id = `gift-row-${g.id}`;
+        if (isSeen) tr.classList.add("seen");
+        tr.innerHTML = `
+          <td class="seen-cell"><input type="checkbox" class="seen-cb" data-id="${escHtml(g.id)}"${isSeen ? " checked" : ""}></td>
+          <td>${escHtml(g.from_username)}</td>
+          <td>${escHtml(g.from_nickname)}</td>
+          <td>${escHtml(g.gift_name)}</td>
+          <td>${escHtml(recipient)}</td>
+          <td class="num">${Number(g.diamonds).toLocaleString()}</td>
+          <td class="num">$${Number(g.usd).toFixed(2)}</td>
+          <td>${escHtml(isoToMountainTime(g.iso_ts))}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      tbody.querySelectorAll(".seen-cb").forEach(cb => {
+        cb.addEventListener("change", () => {
+          const id = cb.dataset.id;
+          if (cb.checked) seenIds.add(id);
+          else seenIds.delete(id);
+          saveSeenIds(seenIds);
+          const row = document.getElementById(`gift-row-${id}`);
+          if (row) row.classList.toggle("seen", cb.checked);
+        });
+      });
+    }
+
+    function renderGroupOptions() {
+      const select = document.getElementById("groupSelect");
+      if (!select) return;
+      const current = currentGroupHandle();
+      select.innerHTML = "";
+      groups.forEach(g => {
+        const opt = document.createElement("option");
+        opt.value = g.handle;
+        opt.textContent = `${g.name} (@${g.handle})`;
+        select.appendChild(opt);
+      });
+      if (current && groups.some(g => g.handle === current)) select.value = current;
+      else if (groups.length) select.value = groups[0].handle;
+    }
+
+    async function loadGroups() {
+      const dancers = await api("/dancers").then(r => r.json()).catch(() => []);
+      const out = [];
+      (Array.isArray(dancers) ? dancers : []).forEach(d => {
+        const name = String(d?.name || "").trim();
+        const handle = String(d?.handle || "").trim().replace(/^@+/, "");
+        if (!name || !handle) return;
+        const low = name.toLowerCase();
+        if (!low.includes("boys") && !low.includes("girls")) return;
+        out.push({ name, handle: handle.toLowerCase() });
+      });
+      out.push({ name: "AfterDark", handle: "afterdark_ns" });
+      const dedup = new Map();
+      out.forEach(g => { if (!dedup.has(g.handle)) dedup.set(g.handle, g); });
+      groups = Array.from(dedup.values()).sort((a, b) => b.name.localeCompare(a.name));
+      renderGroupOptions();
+    }
+
+    async function refreshGifts() {
+      const handle = currentGroupHandle();
+      const date = currentDate();
+      if (!handle || !date) {
+        setSummaryMeta("Select a group and date.");
+        allGifts = [];
+        allGiftTypes = [];
+        renderTypeChips([]);
+        renderGiftsTable();
+        return;
+      }
+      setSummaryMeta("Loading...");
+      try {
+        const qs = new URLSearchParams({ group_handle: handle, date_mt: date });
+        const payload = await api(`/gifts/list?${qs}`).then(r => r.json());
+        if (!payload?.ok) {
+          setSummaryMeta(payload?.error || "Failed to load data.");
+          allGifts = [];
+          allGiftTypes = [];
+          renderTypeChips([]);
+          renderGiftsTable();
+          return;
+        }
+        allGifts = Array.isArray(payload.gifts) ? payload.gifts : [];
+        allGiftTypes = Array.isArray(payload.gift_types) ? payload.gift_types : [];
+        renderTypeChips(allGiftTypes);
+        renderGiftsTable();
+        const totalDiamonds = Number(payload.total_diamonds || 0);
+        setSummaryMeta(
+          `@${payload.group_handle} · ${payload.date_mt} MT · ${allGifts.length} gifts · ${totalDiamonds.toLocaleString()} diamonds · $${(totalDiamonds * 0.005).toFixed(2)}`
+        );
+        lastRefreshMs = Date.now();
+      } catch (e) {
+        setSummaryMeta("Failed to load data.");
+        allGifts = [];
+        allGiftTypes = [];
+        renderTypeChips([]);
+        renderGiftsTable();
+      }
+    }
+
+    function scheduleRefresh(delayMs = 250) {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => { refreshTimer = null; refreshGifts(); }, Math.max(0, Number(delayMs) || 0));
+    }
+
+    async function ensureSupabaseClient() {
+      if (supabaseClient) return supabaseClient;
+      if (!window.supabase?.createClient) return null;
+      const cfg = await api("/config").then(r => r.json()).catch(() => ({}));
+      if (!cfg?.supabase_url || !cfg?.supabase_key) return null;
+      supabaseClient = window.supabase.createClient(cfg.supabase_url, cfg.supabase_key);
+      return supabaseClient;
+    }
+
+    function isInsertRelevant(row) {
+      if (!row || typeof row !== "object") return false;
+      const handle = currentGroupHandle();
+      const selectedDate = currentDate();
+      if (!handle || !selectedDate) return false;
+      const rowHandle = String(row.tiktok_username || "").trim().replace(/^@+/, "").toLowerCase();
+      if (!rowHandle || rowHandle !== handle.toLowerCase()) return false;
+      const rowDate = isoToMountainDate(row.iso_ts);
+      if (!rowDate || rowDate !== selectedDate) return false;
+      return true;
+    }
+
+    async function connectGiftRealtime() {
+      const client = await ensureSupabaseClient();
+      if (!client) {
+        realtimeSubscribed = false;
+        setRealtimeMeta("Realtime: unavailable (missing Supabase config). Fallback polling active.");
+        return;
+      }
+      if (realtimeChannel) {
+        try { await client.removeChannel(realtimeChannel); } catch(e) {}
+        realtimeChannel = null;
+      }
+      realtimeChannel = client
+        .channel("gifts-live")
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "gift_events" }, (payload) => {
+          const row = payload?.new || {};
+          if (!isInsertRelevant(row)) return;
+          setRealtimeMeta("Realtime: new gift detected, refreshing...");
+          scheduleRefresh(120);
+        })
+        .subscribe((status) => {
+          if (status === "SUBSCRIBED") {
+            realtimeSubscribed = true;
+            setRealtimeMeta("Realtime: subscribed to gift_events inserts");
+          } else {
+            realtimeSubscribed = false;
+            setRealtimeMeta(`Realtime: ${status}. Fallback polling active.`);
+          }
+        });
+    }
+
+    function startFallbackPolling() {
+      if (fallbackPollHandle) return;
+      fallbackPollHandle = setInterval(() => {
+        if (document.hidden) return;
+        if (!realtimeSubscribed) { scheduleRefresh(0); return; }
+        if (!lastRefreshMs) return;
+        if ((Date.now() - lastRefreshMs) > (FALLBACK_POLL_MS * 2)) scheduleRefresh(0);
+      }, FALLBACK_POLL_MS);
+    }
+
+    function bindEvents() {
+      const group = document.getElementById("groupSelect");
+      const date = document.getElementById("dateInput");
+      const refresh = document.getElementById("refreshBtn");
+      if (group) group.addEventListener("change", () => scheduleRefresh(0));
+      if (date) date.addEventListener("change", () => scheduleRefresh(0));
+      if (refresh) refresh.addEventListener("click", () => scheduleRefresh(0));
+      const clearBtn = document.getElementById("clearTypesBtn");
+      const selectAllBtn = document.getElementById("selectAllTypesBtn");
+      if (clearBtn) clearBtn.addEventListener("click", () => {
+        activeTypes.clear();
+        saveTypeFilter(activeTypes);
+        renderTypeChips(allGiftTypes);
+        renderGiftsTable();
+      });
+      if (selectAllBtn) selectAllBtn.addEventListener("click", () => {
+        allGiftTypes.forEach(t => activeTypes.add(t));
+        saveTypeFilter(activeTypes);
+        renderTypeChips(allGiftTypes);
+        renderGiftsTable();
+      });
+      const clearSeenBtn = document.getElementById("clearSeenBtn");
+      if (clearSeenBtn) clearSeenBtn.addEventListener("click", () => {
+        seenIds.clear();
+        saveSeenIds(seenIds);
+        renderGiftsTable();
+      });
+    }
+
+    async function init() {
+      const dateInput = document.getElementById("dateInput");
+      if (dateInput && !dateInput.value) dateInput.value = todayMountain();
+      bindEvents();
+      await loadGroups();
+      await refreshGifts();
+      await connectGiftRealtime();
+      startFallbackPolling();
+    }
+
+    window.PageShared?.connectWsStatus?.({ connectedText: "Live", disconnectedText: "Disconnected" });
+    window.PageShared.initPracticeModeHeader({ apiFn: api });
+    init();
+  </script>
+</body>
+</html>

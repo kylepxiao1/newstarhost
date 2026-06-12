@@ -715,7 +715,7 @@ async def _fetch_gift_rows_for_window(
         async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
             while True:
                 query = [
-                    ("select", "id,iso_ts,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,group_id,tiktok_username"),
+                    ("select", "id,iso_ts,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,group_id,tiktok_username,gift_name"),
                     ("tiktok_username", f"eq.{handle}"),
                     ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
                     ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),
@@ -1683,6 +1683,90 @@ async def notes_attendance_page() -> FileResponse:
 @app.get("/top/gifters")
 async def top_gifters_page() -> FileResponse:
     return _static_file("top_gifters.html")
+
+
+@app.get("/gifts/list")
+async def gifts_list(group_handle: str = "", date_mt: Optional[str] = None) -> JSONResponse:
+    handle = str(group_handle or "").strip().lstrip("@")
+    if not handle:
+        return JSONResponse({"ok": False, "error": "group_handle is required."}, status_code=400)
+    try:
+        mt_tz = ZoneInfo("America/Denver")
+    except Exception:
+        mt_tz = timezone.utc
+
+    if date_mt:
+        try:
+            day = datetime.strptime(str(date_mt).strip(), "%Y-%m-%d").date()
+        except Exception:
+            return JSONResponse({"ok": False, "error": "date_mt must be YYYY-MM-DD."}, status_code=400)
+    else:
+        day = datetime.now(mt_tz).date()
+
+    start_local = datetime.combine(day, datetime.min.time(), tzinfo=mt_tz)
+    end_local = start_local + timedelta(days=1)
+    rows, err = await _fetch_gift_rows_for_window(
+        tiktok_username=handle,
+        start_utc=start_local.astimezone(timezone.utc),
+        end_utc=end_local.astimezone(timezone.utc),
+    )
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+
+    combo_best: dict[str, dict] = {}
+    singles: list[dict] = []
+    for row in rows:
+        gid = row.get("group_id")
+        if gid and str(gid) != "0":
+            key = str(gid)
+            prev = combo_best.get(key)
+            if prev is None or (_tg_to_int(row.get("repeat_count")) or 0) > (_tg_to_int(prev.get("repeat_count")) or 0):
+                combo_best[key] = row
+        else:
+            singles.append(row)
+
+    gifts = []
+    for row in singles + list(combo_best.values()):
+        gid = row.get("group_id")
+        if gid and str(gid) != "0":
+            diamond_count = _tg_to_int(row.get("diamond_count")) or 0
+            repeat_count = max(1, _tg_to_int(row.get("repeat_count")) or 1)
+            diamonds = max(0, diamond_count * repeat_count)
+        else:
+            diamonds = _gift_row_diamond_amount(row)
+        if diamonds <= 0:
+            continue
+        recipient = str(row.get("to_member_nickname") or "").strip()
+        if not recipient or "the host" in recipient.lower():
+            recipient = ""
+        gift_name = str(row.get("gift_name") or "").strip() or "Unknown"
+        gifts.append({
+            "id": str(row.get("id") or ""),
+            "iso_ts": str(row.get("iso_ts") or ""),
+            "from_username": str(row.get("from_username") or "").strip(),
+            "from_nickname": str(row.get("from_nickname") or "").strip(),
+            "gift_name": gift_name,
+            "diamonds": diamonds,
+            "usd": round(diamonds * 0.005, 2),
+            "recipient": recipient,
+        })
+
+    gifts.sort(key=lambda g: str(g.get("iso_ts") or ""))
+    gift_types = sorted(set(g["gift_name"] for g in gifts if g["gift_name"] and g["gift_name"] != "Unknown"))
+
+    return JSONResponse({
+        "ok": True,
+        "group_handle": handle,
+        "date_mt": day.isoformat(),
+        "total_diamonds": sum(g["diamonds"] for g in gifts),
+        "gifts": gifts,
+        "gift_types": gift_types,
+    })
+
+
+@app.get("/gifts")
+async def gifts_page() -> FileResponse:
+    return _static_file("gifts.html")
 
 
 @app.get("/analytics/plays")
