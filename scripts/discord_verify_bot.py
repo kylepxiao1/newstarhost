@@ -566,7 +566,7 @@ class FanVerifyBot(commands.Bot):
         self.live_announce_handles = _parse_handles_csv(
             _env(
                 "DISCORD_LIVE_ANNOUNCE_HANDLES",
-                "wildcard_ns,cardin_v_,zerokomodo,morgue707,laidbackn0mad,darkminathegone,codename.kai,iambenxx,wildmkhasappeared",
+                "wildcard_ns,cardin_v_,zerokomodo,morgue707,kinginthemaking_ns,darkminathegone,codename.kai,iambenxx,wildmkhasappeared",
             )
         )
         self.live_announce_webhook_url = _env("DISCORD_LIVE_ANNOUNCE_WEBHOOK", "").strip()
