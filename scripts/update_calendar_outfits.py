@@ -32,6 +32,27 @@ JUNE_2026_OUTFITS = {
     26: "Kens",
     30: "Techwear",
 }
+JULY_2026_OUTFITS = {
+    1: "Earthcore",
+    2: "Denim",
+    3: "Cowboys inspired by Ateez",
+    7: "Jock",
+    8: "Video Game Characters",
+    9: "Hyperpop",
+    10: "Sonic Characters",
+    14: "Biker",
+    15: "Camo",
+    16: "Techwear",
+    17: "Cherry Blossom",
+    21: "Punk",
+    22: "Floral",
+    23: "Dark Academia",
+    24: "Kens",
+    28: "Office Siren",
+    29: "Streetwear",
+    30: "Pirates",
+    31: "Shark fits",
+}
 
 
 @dataclass(frozen=True)
@@ -124,6 +145,8 @@ def _load_config() -> ScriptConfig:
 def _month_outfits(year: int, month: int) -> dict[date, str]:
     if year == 2026 and month == 6:
         return {date(year, month, day): outfit for day, outfit in JUNE_2026_OUTFITS.items()}
+    if year == 2026 and month == 7:
+        return {date(year, month, day): outfit for day, outfit in JULY_2026_OUTFITS.items()}
     raise SystemExit(f"No built-in outfit transcription is available for {year:04d}-{month:02d}.")
 
 

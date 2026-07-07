@@ -86,7 +86,7 @@ default_usernames_for_shard() {
   local shard_idx="$1"
   case "${shard_idx}" in
     1) printf '%s\n' "wildcard_ns" ;;
-    2) printf '%s\n' "afterdark_ns,valentinananaaaa,cardin_v_" ;;
+    2) printf '%s\n' "viiceversa_ns,valentinananaaaa,cardin_v_" ;;
     3) printf '%s\n' "snyki.live,sv_cloveris,superv_sv,visiondance.leo,millarboys233,primalkings_officialjwm,sunsetnova__,bdcuphedc3,play.zr4,play.hero8,vfm.aero,chaos001inc" ;;
     *) printf '%s\n' "" ;;
   esac
