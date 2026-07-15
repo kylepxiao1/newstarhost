@@ -40,6 +40,7 @@ MEDIA_DIR = (BASE_DIR / ".." / "media").resolve()
 DIST_DIR = (BASE_DIR / ".." / "dist").resolve()
 MEDIA_DIR.mkdir(exist_ok=True)
 HOTKEYS_PATH = MEDIA_DIR / "hotkeys.json"
+RPD_QUERIES_PATH = MEDIA_DIR / "rpd_queries.json"
 RAPIDAPI_KEY = _env("RAPIDAPI_KEY", "")
 RAPIDAPI_HOST = _env("RAPIDAPI_HOST", "")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID", "").strip()
@@ -93,6 +94,38 @@ def _save_hotkeys(payload: dict) -> None:
         HOTKEYS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to save hotkeys.json: %s", exc)
+
+
+def _load_rpd_queries() -> list:
+    if not RPD_QUERIES_PATH.exists():
+        return []
+    try:
+        payload = json.loads(RPD_QUERIES_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            return []
+    except Exception:
+        return []
+    out = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        qid = str(item.get("id") or "").strip()
+        expression = str(item.get("expression") or "").strip()
+        if not qid or not expression:
+            continue
+        out.append({
+            "id": qid,
+            "name": str(item.get("name") or "").strip() or expression,
+            "expression": expression,
+        })
+    return out
+
+
+def _save_rpd_queries(queries: list) -> None:
+    try:
+        RPD_QUERIES_PATH.write_text(json.dumps(queries, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to save rpd_queries.json: %s", exc)
 
 
 def _find_tiktok_id(data, handle: str) -> Optional[str]:
@@ -279,6 +312,11 @@ class SongBackgroundRequest(BaseModel):
     url: str
 
 
+class SongVolumeRequest(BaseModel):
+    url: str
+    volume: float
+
+
 class AudioProcessResponse(BaseModel):
     output: str
     note: str = ""
@@ -388,6 +426,15 @@ class SettingsRequest(BaseModel):
     hotkeys: Optional[dict] = None
 
 
+class SaveRpdQueryRequest(BaseModel):
+    name: Optional[str] = None
+    expression: str
+
+
+class DeleteRpdQueryRequest(BaseModel):
+    id: str
+
+
 @app.get("/settings/data")
 async def get_settings() -> JSONResponse:
     return JSONResponse(_load_hotkeys())
@@ -421,6 +468,30 @@ async def update_settings(body: SettingsRequest) -> JSONResponse:
         data["hotkeys"] = cleaned
     _save_hotkeys(data)
     return JSONResponse(data)
+
+
+@app.get("/rpd/queries")
+async def get_rpd_queries() -> JSONResponse:
+    return JSONResponse(_load_rpd_queries())
+
+
+@app.post("/rpd/queries")
+async def save_rpd_query(body: SaveRpdQueryRequest) -> JSONResponse:
+    expression = body.expression.strip()
+    if not expression:
+        return JSONResponse({"error": "expression is required"}, status_code=400)
+    queries = _load_rpd_queries()
+    name = (body.name or "").strip() or expression
+    queries.append({"id": str(uuid.uuid4()), "name": name, "expression": expression})
+    _save_rpd_queries(queries)
+    return JSONResponse(queries)
+
+
+@app.post("/rpd/queries/delete")
+async def delete_rpd_query(body: DeleteRpdQueryRequest) -> JSONResponse:
+    queries = [q for q in _load_rpd_queries() if q["id"] != body.id]
+    _save_rpd_queries(queries)
+    return JSONResponse(queries)
 
 
 def _norm_filename(s: str) -> str:
@@ -1273,6 +1344,13 @@ async def camera_devices() -> JSONResponse:
 @app.post("/songs/background")
 async def set_background_song(body: SongBackgroundRequest) -> JSONResponse:
     state = state_manager.set_song("background", body.url)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
+
+@app.post("/songs/volume")
+async def set_song_volume(body: SongVolumeRequest) -> JSONResponse:
+    state = state_manager.set_song_volume(body.url, body.volume)
     _broadcast_state(state)
     return JSONResponse(state)
 

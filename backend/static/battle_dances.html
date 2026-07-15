@@ -46,6 +46,7 @@
     .card button { margin-top: auto; }
     .corner-flags { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; align-items: center; }
     .corner-flag { width: 18px; height: 18px; opacity: 0.92; object-fit: contain; }
+    .corner-flag-ttu { display: inline-flex; align-items: center; justify-content: center; height: 18px; padding: 0 4px; border-radius: 4px; font-size: 9px; font-weight: 800; line-height: 1; background: #f97316; color: #0f172a; }
     .songs-empty { color: #94a3b8; font-style: italic; margin-top: 8px; }
     @media (max-width: 900px) {
       header { padding: 12px 12px 0px; flex-direction: column; align-items: flex-start; gap: 8px; }
@@ -1420,6 +1421,7 @@
             }
             const hasClosingRole = songHasRole(song, "closing");
             const hasPracticeRole = songHasRole(song, PRACTICE_SONG_ROLE);
+            const hasTtuRole = songHasRole(song, "ttu");
             const flags = document.createElement("div");
             flags.className = "corner-flags";
             const difficulty = document.createElement("img");
@@ -1447,6 +1449,13 @@
               practice.alt = "Practice song";
               practice.className = "corner-flag";
               flags.appendChild(practice);
+            }
+            if (hasTtuRole) {
+              const ttu = document.createElement("span");
+              ttu.textContent = "TTU";
+              ttu.title = "TTU";
+              ttu.className = "corner-flag-ttu";
+              flags.appendChild(ttu);
             }
             card.appendChild(flags);
             const playBtn = document.createElement("button");

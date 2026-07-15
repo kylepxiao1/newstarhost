@@ -145,6 +145,20 @@
     }
     .dancer-name { font-size: 13px; font-weight: 700; word-break: break-word; color: #e2e8f0; }
     .dancer-meta { color: #94a3b8; font-size: 11px; }
+    .filter-tabs { display: flex; gap: 8px; margin-bottom: 14px; }
+    .filter-tab { background: #334155; color: #94a3b8; }
+    .filter-tab.active { background: #2563eb; color: #fff; }
+    .logic-status { margin-top: 8px; font-size: 12px; font-weight: 700; min-height: 16px; }
+    .logic-status.valid { color: #22c55e; }
+    .logic-status.invalid { color: #ef4444; }
+    .logic-status.empty { color: #94a3b8; }
+    .logic-save-row { display: flex; gap: 8px; align-items: center; margin-top: 10px; flex-wrap: wrap; }
+    .logic-save-row input { flex: 1; min-width: 160px; }
+    .saved-queries { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+    .saved-query-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 8px; border: 1px solid #1f2937; background: #0b1222; }
+    .saved-query-row .saved-query-name { font-weight: 700; font-size: 12px; color: #e2e8f0; min-width: 100px; }
+    .saved-query-row .saved-query-expr { flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: #94a3b8; overflow-wrap: anywhere; }
+    .logic-empty { color: #94a3b8; font-size: 12px; }
     .song-grid { display: flex; gap: 8px; flex-wrap: wrap; }
     .song-card {
       position: relative;
@@ -272,7 +286,7 @@
         </div>
         <div class="summary-grid">
           <div class="stat">
-            <div class="stat-label">Selected Dancers</div>
+            <div class="stat-label">Relevant Dancers</div>
             <div class="stat-value" id="selectedCount">0</div>
             <div class="stat-note" id="selectedNamesNote">Choose at least one dancer</div>
           </div>
@@ -297,11 +311,29 @@
       <div>
         <div class="panel-inner">
           <div class="controls-top">
-            <h2>Dancer Selection</h2>
+            <h2>Filter</h2>
           </div>
-          <input id="dancerSearch" class="search" placeholder="Search dancers by name or handle">
-          <div id="selectedChips" class="chips"></div>
-          <div id="dancerGrid" class="dancer-grid"></div>
+          <div class="filter-tabs">
+            <button type="button" class="filter-tab active" data-filter-tab="dancer">Dancer Filter</button>
+            <button type="button" class="filter-tab" data-filter-tab="logic">Logic Filter</button>
+          </div>
+
+          <div id="dancerFilterPanel" class="filter-panel">
+            <input id="dancerSearch" class="search" placeholder="Search dancers by name or handle">
+            <div id="selectedChips" class="chips"></div>
+            <div id="dancerGrid" class="dancer-grid"></div>
+          </div>
+
+          <div id="logicFilterPanel" class="filter-panel" style="display:none;">
+            <div class="sub">Boolean expression over dancer names: use | for OR, &amp; for AND, and parentheses to group, e.g. (Morgan | Cardin) &amp; (Kyle | Gabe). Leave empty to match everything.</div>
+            <input id="logicExpressionInput" class="search" placeholder="(Morgan | Cardin) & (Kyle | Gabe)">
+            <div id="logicExpressionStatus" class="logic-status"></div>
+            <div class="logic-save-row">
+              <input id="logicQueryName" class="search" placeholder="Query name (optional)">
+              <button class="secondary" id="saveLogicQueryBtn" type="button">Save Query</button>
+            </div>
+            <div id="savedQueriesList" class="saved-queries"></div>
+          </div>
         </div>
       </div>
     </section>
@@ -311,7 +343,7 @@
         <div class="controls-top">
           <div>
             <h2>Eligible Songs</h2>
-            <div class="sub">Every song that at least one selected dancer knows.</div>
+            <div class="sub">Every song matched by the active filter.</div>
           </div>
           <input id="songSearch" class="search" placeholder="Search songs or artists" style="max-width:320px;">
         </div>
@@ -355,6 +387,8 @@
       loop_same_song_after_finish: false,
     };
     let selectedKeys = new Set();
+    let savedQueries = [];
+    let activeFilterTab = "dancer"; // "dancer" | "logic" — Dancer Filter is an OR-only special case of Logic Filter.
     let sessionHistory = loadSessionHistory();
     let currentSongUrl = "";
     let backgroundStarted = false;
@@ -542,11 +576,40 @@
       return found;
     }
 
+    // Dancer Filter is an OR-only special case of Logic Filter: selecting dancers
+    // {A, B, C} is equivalent to the expression "A | B | C". Both modes therefore
+    // share the same "does dancer know song" predicate (getRelationMatches) so
+    // switching tabs never changes what a given dancer/name resolves to.
+    function currentLogicValidation() {
+      return validateLogicExpression(document.getElementById("logicExpressionInput")?.value || "");
+    }
+
+    function relevantDancersForMode() {
+      if (activeFilterTab === "logic") {
+        const validation = currentLogicValidation();
+        if (!validation.valid || !validation.ast) return [];
+        const names = [];
+        collectLogicExpressionNames(validation.ast, names);
+        const keys = new Set(names.map((name) => normalizeName(name)));
+        return dancers.filter((dancer) => keys.has(dancerKey(dancer)));
+      }
+      return selectedDancers();
+    }
+
+    function isSongEligible(song) {
+      if (activeFilterTab === "logic") {
+        const validation = currentLogicValidation();
+        if (!validation.valid || !validation.ast) return true;
+        return evaluateLogicExpression(validation.ast, song);
+      }
+      return selectedDancers().some((dancer) => getRelationMatches(song, dancer).length > 0);
+    }
+
     function analyzeSongForSelection(song) {
       const matched = [];
       const matchedKeySet = new Set();
       let relationWeight = 0;
-      for (const dancer of selectedDancers()) {
+      for (const dancer of relevantDancersForMode()) {
         const relations = getRelationMatches(song, dancer);
         if (!relations.length) continue;
         const key = dancerKey(dancer);
@@ -558,7 +621,6 @@
           relations,
         });
       }
-      if (!matched.length) return null;
       return {
         song,
         matched,
@@ -567,18 +629,218 @@
       };
     }
 
+    // --- Logic filter expression parsing: supports NAME, &, |, and parentheses. ---
+    // Names may contain spaces (e.g. "Wildcard Boys"), so tokenizing splits only on
+    // the operator/paren characters and treats everything else as name text.
+    function tokenizeLogicExpression(text) {
+      const tokens = [];
+      let buf = "";
+      const flush = () => {
+        const trimmed = buf.trim();
+        if (trimmed) tokens.push({ type: "name", value: trimmed });
+        buf = "";
+      };
+      for (const ch of String(text || "")) {
+        if (ch === "(" || ch === ")" || ch === "&" || ch === "|") {
+          flush();
+          tokens.push({ type: ch });
+        } else {
+          buf += ch;
+        }
+      }
+      flush();
+      return tokens;
+    }
+
+    function parseLogicExpression(text) {
+      const tokens = tokenizeLogicExpression(text);
+      if (!tokens.length) throw new Error("Expression is empty.");
+      let pos = 0;
+      const peek = () => tokens[pos];
+      const advance = () => tokens[pos++];
+
+      function parseOr() {
+        let node = parseAnd();
+        while (peek() && peek().type === "|") {
+          advance();
+          node = { type: "or", left: node, right: parseAnd() };
+        }
+        return node;
+      }
+      function parseAnd() {
+        let node = parsePrimary();
+        while (peek() && peek().type === "&") {
+          advance();
+          node = { type: "and", left: node, right: parsePrimary() };
+        }
+        return node;
+      }
+      function parsePrimary() {
+        const tok = peek();
+        if (!tok) throw new Error("Expression ends unexpectedly — check for a trailing & or |.");
+        if (tok.type === "(") {
+          advance();
+          const node = parseOr();
+          const closing = peek();
+          if (!closing || closing.type !== ")") throw new Error("Missing closing ')'.");
+          advance();
+          return node;
+        }
+        if (tok.type === "name") {
+          advance();
+          return { type: "name", value: tok.value };
+        }
+        if (tok.type === ")") throw new Error("Unexpected ')' — check your parentheses are balanced.");
+        throw new Error("Unexpected '" + tok.type + "' — expected a dancer name or '('.");
+      }
+
+      const result = parseOr();
+      if (pos !== tokens.length) {
+        const leftover = tokens[pos];
+        throw new Error("Unexpected token after expression: '" + (leftover.type === "name" ? leftover.value : leftover.type) + "'.");
+      }
+      return result;
+    }
+
+    function collectLogicExpressionNames(node, out) {
+      if (!node) return;
+      if (node.type === "name") {
+        out.push(node.value);
+        return;
+      }
+      collectLogicExpressionNames(node.left, out);
+      collectLogicExpressionNames(node.right, out);
+    }
+
+    function validateLogicExpression(text) {
+      const trimmed = String(text || "").trim();
+      if (!trimmed) return { valid: true, ast: null, error: null };
+      let ast;
+      try {
+        ast = parseLogicExpression(trimmed);
+      } catch (err) {
+        return { valid: false, ast: null, error: err.message || "Invalid expression." };
+      }
+      const names = [];
+      collectLogicExpressionNames(ast, names);
+      const knownKeys = new Set(dancers.map((dancer) => dancerKey(dancer)));
+      const unknown = Array.from(new Set(names.filter((name) => !knownKeys.has(normalizeName(name)))));
+      if (unknown.length) {
+        return {
+          valid: false,
+          ast,
+          error: "Unknown dancer name" + (unknown.length > 1 ? "s" : "") + ": " + unknown.join(", "),
+        };
+      }
+      return { valid: true, ast, error: null };
+    }
+
+    function evaluateLogicExpression(node, song) {
+      if (!node) return true;
+      if (node.type === "name") {
+        const dancer = dancers.find((d) => dancerKey(d) === normalizeName(node.value));
+        return dancer ? getRelationMatches(song, dancer).length > 0 : false;
+      }
+      if (node.type === "and") return evaluateLogicExpression(node.left, song) && evaluateLogicExpression(node.right, song);
+      if (node.type === "or") return evaluateLogicExpression(node.left, song) || evaluateLogicExpression(node.right, song);
+      return false;
+    }
+
+    function renderLogicExpressionStatus() {
+      const status = document.getElementById("logicExpressionStatus");
+      if (!status) return;
+      const text = document.getElementById("logicExpressionInput")?.value || "";
+      const validation = validateLogicExpression(text);
+      if (!text.trim()) {
+        status.textContent = "No filter applied.";
+        status.className = "logic-status empty";
+      } else if (validation.valid) {
+        status.textContent = "Valid expression.";
+        status.className = "logic-status valid";
+      } else {
+        status.textContent = validation.error;
+        status.className = "logic-status invalid";
+      }
+    }
+
+    async function loadSavedQueries() {
+      try {
+        const res = await api("/rpd/queries");
+        savedQueries = await res.json();
+      } catch (e) {
+        savedQueries = [];
+      }
+      renderSavedQueries();
+    }
+
+    async function saveCurrentQuery() {
+      const expression = (document.getElementById("logicExpressionInput")?.value || "").trim();
+      if (!expression) return;
+      const validation = validateLogicExpression(expression);
+      if (!validation.valid) {
+        alert("Cannot save an invalid expression: " + validation.error);
+        return;
+      }
+      const name = (document.getElementById("logicQueryName")?.value || "").trim();
+      const res = await api("/rpd/queries", { method: "POST", body: { name, expression } });
+      savedQueries = await res.json();
+      const nameInput = document.getElementById("logicQueryName");
+      if (nameInput) nameInput.value = "";
+      renderSavedQueries();
+    }
+
+    async function deleteSavedQuery(id) {
+      const res = await api("/rpd/queries/delete", { method: "POST", body: { id } });
+      savedQueries = await res.json();
+      renderSavedQueries();
+    }
+
+    function applySavedQuery(expression) {
+      const input = document.getElementById("logicExpressionInput");
+      if (!input) return;
+      input.value = expression;
+      renderAll();
+    }
+
+    function renderSavedQueries() {
+      const wrap = document.getElementById("savedQueriesList");
+      if (!wrap) return;
+      if (!savedQueries.length) {
+        wrap.innerHTML = '<div class="logic-empty">No saved queries yet.</div>';
+        return;
+      }
+      wrap.innerHTML = savedQueries.map((query) => {
+        return '<div class="saved-query-row">' +
+          '<span class="saved-query-name">' + escapeHtml(query.name || "") + "</span>" +
+          '<span class="saved-query-expr">' + escapeHtml(query.expression || "") + "</span>" +
+          '<button class="secondary" type="button" data-load-query="' + escapeHtml(query.id) + '">Load</button>' +
+          '<button class="danger" type="button" data-delete-query="' + escapeHtml(query.id) + '">Delete</button>' +
+          "</div>";
+      }).join("");
+      wrap.querySelectorAll("[data-load-query]").forEach((button) => {
+        button.addEventListener("click", () => {
+          const query = savedQueries.find((q) => q.id === button.getAttribute("data-load-query"));
+          if (query) applySavedQuery(query.expression);
+        });
+      });
+      wrap.querySelectorAll("[data-delete-query]").forEach((button) => {
+        button.addEventListener("click", () => {
+          deleteSavedQuery(button.getAttribute("data-delete-query"));
+        });
+      });
+    }
+
     function getCandidateEntries() {
       const search = normalizeName(document.getElementById("songSearch")?.value || "");
       const entries = [];
       for (const song of Object.values(library || {})) {
         if (!song || !song.url) continue;
-        const analysis = analyzeSongForSelection(song);
-        if (!analysis) continue;
+        if (!isSongEligible(song)) continue;
         if (search) {
           const haystack = normalizeName((song.name || "") + " " + (song.artist || ""));
           if (!haystack.includes(search)) continue;
         }
-        entries.push(analysis);
+        entries.push(analyzeSongForSelection(song));
       }
       entries.sort((a, b) => String(a.song.name || "").localeCompare(String(b.song.name || "")));
       return entries;
@@ -594,7 +856,7 @@
 
     function countSelectedDancerExposure() {
       const counts = Object.create(null);
-      for (const dancer of selectedDancers()) {
+      for (const dancer of relevantDancersForMode()) {
         counts[dancerKey(dancer)] = 0;
       }
       for (const entry of sessionHistory) {
@@ -653,19 +915,20 @@
     }
 
     function updateSummary(entries) {
-      const selected = selectedDancers();
-      const selectedNames = selected.map((dancer) => dancer.name).sort((a, b) => a.localeCompare(b));
+      const relevant = relevantDancersForMode();
+      const relevantNames = relevant.map((dancer) => dancer.name).sort((a, b) => a.localeCompare(b));
       const sessionCounts = countSessionPlaysByUrl();
       const unplayedCount = entries.filter((entry) => !sessionCounts[entry.song.url]).length;
 
-      document.getElementById("selectedCount").textContent = String(selected.length);
-      document.getElementById("selectedNamesNote").textContent = selectedNames.length
-        ? selectedNames.slice(0, 4).join(", ") + (selectedNames.length > 4 ? " +" + (selectedNames.length - 4) : "")
-        : "Choose at least one dancer";
+      document.getElementById("selectedCount").textContent = String(relevant.length);
+      document.getElementById("selectedNamesNote").textContent = relevantNames.length
+        ? relevantNames.slice(0, 4).join(", ") + (relevantNames.length > 4 ? " +" + (relevantNames.length - 4) : "")
+        : (activeFilterTab === "logic" ? "No specific dancers referenced" : "Choose at least one dancer");
       document.getElementById("candidateCount").textContent = String(entries.length);
       document.getElementById("unplayedCount").textContent = String(unplayedCount);
       document.getElementById("historyCount").textContent = String(sessionHistory.length);
-      document.getElementById("playSuggestedBtn").disabled = !selected.length || !entries.length;
+      const requiresSelection = activeFilterTab === "dancer";
+      document.getElementById("playSuggestedBtn").disabled = (requiresSelection && !relevant.length) || !entries.length;
     }
 
     function renderSelectedChips() {
@@ -788,9 +1051,23 @@
       }).join("");
     }
 
+    function setFilterTab(tab) {
+      if (tab !== "dancer" && tab !== "logic") return;
+      activeFilterTab = tab;
+      document.querySelectorAll("[data-filter-tab]").forEach((button) => {
+        button.classList.toggle("active", button.getAttribute("data-filter-tab") === tab);
+      });
+      const dancerPanel = document.getElementById("dancerFilterPanel");
+      const logicPanel = document.getElementById("logicFilterPanel");
+      if (dancerPanel) dancerPanel.style.display = tab === "dancer" ? "" : "none";
+      if (logicPanel) logicPanel.style.display = tab === "logic" ? "" : "none";
+      renderAll();
+    }
+
     function renderAll() {
       renderSelectedChips();
       renderDancers();
+      renderLogicExpressionStatus();
       const entries = getCandidateEntries();
       updateSummary(entries);
       renderSongs(entries);
@@ -905,6 +1182,11 @@
       document.getElementById("resetHistoryBtn").addEventListener("click", resetHistory);
       document.getElementById("dancerSearch").addEventListener("input", renderDancers);
       document.getElementById("songSearch").addEventListener("input", renderAll);
+      document.getElementById("logicExpressionInput").addEventListener("input", renderAll);
+      document.getElementById("saveLogicQueryBtn").addEventListener("click", saveCurrentQuery);
+      document.querySelectorAll("[data-filter-tab]").forEach((button) => {
+        button.addEventListener("click", () => setFilterTab(button.getAttribute("data-filter-tab")));
+      });
     }
 
     function bindRealtime() {
@@ -923,6 +1205,7 @@
     bindRealtime();
     document.addEventListener("keydown", handleHotkey);
     window.PageShared.initPracticeModeHeader({apiFn: api});
+    loadSavedQueries();
     window.addEventListener("message", (evt) => {
       if (evt?.data?.type === "settings-updated") {
         refreshData().catch(() => {});

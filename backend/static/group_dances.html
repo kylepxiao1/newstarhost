@@ -20,6 +20,7 @@
     .card { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
     .corner-flags { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; align-items: center; }
     .corner-flag { width: 18px; height: 18px; opacity: 0.92; object-fit: contain; }
+    .corner-flag-ttu { display: inline-flex; align-items: center; justify-content: center; height: 18px; padding: 0 4px; border-radius: 4px; font-size: 9px; font-weight: 800; line-height: 1; background: #f97316; color: #0f172a; }
     .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
     .card .duration { color: #94a3b8; font-weight: 600; }
     .card div { word-break: break-word; }
@@ -385,7 +386,8 @@
             }
             const hasClosingRole = (song.roles || []).some(r => String(r || "").toLowerCase() === "closing");
             const hasPracticeRole = isPracticeSong(song);
-            if (song.camera_dance || hasClosingRole || hasPracticeRole) {
+            const hasTtuRole = (song.roles || []).some(r => String(r || "").toLowerCase() === "ttu");
+            if (song.camera_dance || hasClosingRole || hasPracticeRole || hasTtuRole) {
               const flags = document.createElement("div");
               flags.className = "corner-flags";
               if (song.camera_dance) {
@@ -408,6 +410,13 @@
                 practice.alt = "Practice song";
                 practice.className = "corner-flag";
                 flags.appendChild(practice);
+              }
+              if (hasTtuRole) {
+                const ttu = document.createElement("span");
+                ttu.textContent = "TTU";
+                ttu.title = "TTU";
+                ttu.className = "corner-flag-ttu";
+                flags.appendChild(ttu);
               }
               card.appendChild(flags);
             }

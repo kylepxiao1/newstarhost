@@ -339,6 +339,8 @@
 
     // Global audio: if any iframe posts a "play-audio" message, play it here.
     const globalPlayer = document.getElementById("globalPlayer");
+    let currentPlayingUrl = "";
+    let volumeSaveTimer = null;
     function normalizeVolume(val) {
       let v = parseFloat(val);
       if (!Number.isFinite(v)) return 1;
@@ -392,6 +394,7 @@
       }
       if (data.type === "play-audio" && data.url) {
         pauseAllAudio();
+        currentPlayingUrl = data.url;
         if (globalPlayer.src !== data.url) {
           globalPlayer.src = data.url;
         }
@@ -400,6 +403,24 @@
         globalPlayer.loop = !!data.loop;
         globalPlayer.play().catch(()=>{});
       }
+    });
+
+    // Persist volume changes made via the native player controls back to songs.json.
+    globalPlayer.addEventListener("volumechange", () => {
+      if (!currentPlayingUrl) return;
+      const savedVolume = getVolumeForUrl(currentPlayingUrl);
+      if (Math.abs(savedVolume - globalPlayer.volume) < 0.01) return;
+      const url = currentPlayingUrl;
+      const volume = globalPlayer.volume;
+      if (volumeSaveTimer) clearTimeout(volumeSaveTimer);
+      volumeSaveTimer = setTimeout(() => {
+        volumeSaveTimer = null;
+        fetch("/songs/volume", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({url, volume}),
+        }).then(() => refreshLibrary()).catch(() => {});
+      }, 400);
     });
 
   </script>

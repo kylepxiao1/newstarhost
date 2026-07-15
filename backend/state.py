@@ -352,6 +352,24 @@ class BattleStateManager:
             self._persist_library(lib)
             return self._state.copy()
 
+    def set_song_volume(self, url: str, volume: float) -> Dict:
+        with self._lock:
+            lib = self._state.songs.get("library", {})
+            try:
+                raw = float(volume)
+                vol_value = int(round(raw * 200)) if raw <= 1 else int(round(raw))
+            except Exception:
+                return self._state.copy()
+            vol_value = max(0, min(200, vol_value))
+            for key, val in lib.items():
+                if val.get("url") == url:
+                    val["volume"] = vol_value
+                    lib[key] = val
+                    break
+            self._state.songs["library"] = lib
+            self._persist_library(lib)
+            return self._state.copy()
+
     def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, special_dance_for: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None, duo_dance: Optional[bool] = None, tags: Optional[list] = None, battle_disabled: Optional[bool] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
