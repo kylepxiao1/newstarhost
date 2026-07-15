@@ -479,6 +479,33 @@
       startAudio(bg, {loop: true, fade: false, fadeOut: false, skipFadeOut: true, isRole: true});
     }
 
+    function playRoleHotkey(role) {
+      const url = getRoleUrl(role);
+      if (!url) return;
+      const bg = getRoleUrl("background");
+      startAudio(url, {
+        loop: false,
+        isRole: true,
+        onEnd: () => {
+          if (bg) {
+            startAudio(bg, {loop: true, fade: false, fadeOut: false, skipFadeOut: true, isRole: true});
+          }
+        },
+      });
+    }
+
+    function handleHotkey(evt) {
+      if (evt.defaultPrevented) return;
+      if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+      if (window.PageShared.isTypingTarget(evt.target)) return;
+      const key = evt.key;
+      if (!/^\d$/.test(key)) return;
+      const role = settings.hotkeys?.[key];
+      if (!role) return;
+      evt.preventDefault();
+      playRoleHotkey(role);
+    }
+
     function getSongByUrl(url) {
       for (const song of Object.values(library || {})) {
         if (song && song.url === url) return song;
@@ -894,6 +921,7 @@
 
     bindEvents();
     bindRealtime();
+    document.addEventListener("keydown", handleHotkey);
     window.PageShared.initPracticeModeHeader({apiFn: api});
     window.addEventListener("message", (evt) => {
       if (evt?.data?.type === "settings-updated") {

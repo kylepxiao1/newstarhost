@@ -409,9 +409,67 @@
     return player;
   }
 
+  function initHotkeys(apiFn) {
+    var callApi = apiFn || api;
+    var hotkeyMap = {};
+    var songsLibrary = {};
+
+    function getRoleUrl(role) {
+      var entry = Object.values(songsLibrary || {}).find(function (s) {
+        return (s.roles || []).includes(role);
+      });
+      return entry ? (entry.url || "") : "";
+    }
+
+    function playRole(role) {
+      var url = getRoleUrl(role);
+      if (!url) return;
+      if (window.top && window.top !== window) {
+        window.top.postMessage({type: "play-audio", url: url}, "*");
+      } else {
+        var audio = new Audio(url);
+        audio.play().catch(function () {});
+      }
+    }
+
+    function handleHotkey(evt) {
+      if (evt.defaultPrevented) return;
+      if (evt.metaKey || evt.ctrlKey || evt.altKey) return;
+      if (isTypingTarget(evt.target)) return;
+      var key = evt.key;
+      if (!/^\d$/.test(key)) return;
+      var role = hotkeyMap[key];
+      if (!role) return;
+      evt.preventDefault();
+      playRole(role);
+    }
+
+    function loadLibrary() {
+      return callApi("/songs").then(function (r) { return r.json(); }).then(function (data) {
+        songsLibrary = (data && data.library) || {};
+      }).catch(function () {});
+    }
+
+    function loadHotkeys() {
+      return fetchAppSettings(callApi).then(function (data) {
+        hotkeyMap = data.hotkeys || {};
+      });
+    }
+
+    loadLibrary();
+    loadHotkeys();
+    document.addEventListener("keydown", handleHotkey);
+    window.addEventListener("message", function (evt) {
+      if (evt && evt.data && evt.data.type === "settings-updated") {
+        loadHotkeys();
+      }
+    });
+  }
+
   window.PageShared = {
     api: api,
     isTypingTarget: isTypingTarget,
+    initHotkeys: initHotkeys,
     normalizeVolume: normalizeVolume,
     getGlobalAudioPlayer: getGlobalAudioPlayer,
     readPracticeModeLocal: readPracticeModeLocal,
