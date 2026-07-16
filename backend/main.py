@@ -228,8 +228,19 @@ async def lifespan(app: FastAPI):
     yield
 
 
+class NoCacheStaticFiles(StaticFiles):
+    """Forces browsers to revalidate (cheap 304s) instead of serving a stale cached
+    copy of shared JS/HTML across deploys — these files aren't content-hashed, so a
+    page can load with a version newer than the JS it depends on (or vice versa)."""
+
+    def file_response(self, *args, **kwargs):
+        response = super().file_response(*args, **kwargs)
+        response.headers["Cache-Control"] = "no-cache, must-revalidate"
+        return response
+
+
 app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json", lifespan=lifespan)
-app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
+app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 app.mount("/dist", StaticFiles(directory=str(DIST_DIR), check_dir=False), name="dist")
 app.add_middleware(
