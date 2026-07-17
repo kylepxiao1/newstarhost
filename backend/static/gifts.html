@@ -33,6 +33,9 @@
     tr.seen td.seen-cell { opacity: 1; }
     .empty { color: #94a3b8; font-weight: 600; padding: 12px 0; }
     .seen-cb { width: 16px; height: 16px; cursor: pointer; accent-color: #2563eb; }
+    .note-input { width: 100%; min-width: 140px; background: #0b1222; border: 1px solid #334155; border-radius: 4px; padding: 4px 6px; color: #e2e8f0; font-size: 12px; font: inherit; }
+    .comments-cell { min-width: 220px; max-width: 320px; font-size: 12px; color: #94a3b8; }
+    .comments-cell div { margin-bottom: 2px; }
     @media (max-width: 900px) {
       header { padding: 12px 12px 8px; }
       header .status { display: none !important; }
@@ -86,6 +89,11 @@
         <h2 style="margin:0;">Gift Log</h2>
         <button id="clearSeenBtn" type="button" style="background:#374151;font-size:12px;padding:5px 10px;">Clear Seen</button>
       </div>
+      <div class="row" id="timeSliderRow" style="display:none;">
+        <label for="timeAfterSlider">From (MT)</label>
+        <input id="timeAfterSlider" type="range" style="flex:2;min-width:200px;">
+        <span id="timeAfterLabel" class="meta"></span>
+      </div>
       <div style="overflow-x:auto;">
         <table id="giftsTable">
           <thead>
@@ -98,12 +106,47 @@
               <th>Diamonds</th>
               <th>USD</th>
               <th>Time (MT)</th>
+              <th>Comments</th>
+              <th>Notes</th>
             </tr>
           </thead>
           <tbody id="giftsBody"></tbody>
         </table>
       </div>
       <div id="emptyState" class="empty" style="display:none;">No gifts found for this group/date.</div>
+    </section>
+
+    <section>
+      <h2>Comment Find</h2>
+      <div class="row">
+        <label for="commentUserInput">User</label>
+        <input id="commentUserInput" type="text" placeholder="username contains...">
+        <label for="commentKeywordInput">Keyword</label>
+        <input id="commentKeywordInput" type="text" placeholder="comment contains...">
+      </div>
+      <div class="row">
+        <label for="commentStartInput">From (MT)</label>
+        <input id="commentStartInput" type="datetime-local">
+        <label for="commentEndInput">To (MT)</label>
+        <input id="commentEndInput" type="datetime-local">
+        <button id="commentSearchBtn" type="button">Search</button>
+      </div>
+      <div class="row meta">
+        <span id="commentSearchMeta">Choose filters and press Search.</span>
+      </div>
+      <div style="overflow-x:auto;">
+        <table id="commentSearchTable">
+          <thead>
+            <tr>
+              <th>Time (MT)</th>
+              <th>User</th>
+              <th>Comment</th>
+            </tr>
+          </thead>
+          <tbody id="commentSearchBody"></tbody>
+        </table>
+      </div>
+      <div id="commentSearchEmpty" class="empty" style="display:none;">No comments found.</div>
     </section>
   </main>
 
@@ -123,6 +166,8 @@
     function todayMountain() { return formatMountainYmd(new Date()); }
     function isoToMountainDate(v) { try { return formatMountainYmd(new Date(String(v))); } catch(e) { return ""; } }
     function isoToMountainTime(v) { try { return MT_TIME_FMT.format(new Date(String(v))); } catch(e) { return ""; } }
+    function isoToMountainDateTime(v) { try { return `${isoToMountainDate(v)} ${isoToMountainTime(v)}`; } catch(e) { return ""; } }
+    function normalizeHandle(v) { return String(v || "").trim().replace(/^@+/, "").toLowerCase(); }
 
     let groups = [];
     let supabaseClient = null;
@@ -136,6 +181,17 @@
     // All gifts from last fetch
     let allGifts = [];
     let allGiftTypes = [];
+    // All comments for the same group/date window, used to correlate with gifts
+    let allComments = [];
+    // gift_id -> note text, persisted server-side
+    let giftNotes = {};
+    let noteSaveTimers = {};
+    // "time-after" slider threshold, in epoch ms; null = no threshold applied
+    let timeAfterThresholdMs = null;
+    // Comment Find realtime state
+    let commentSearchChannel = null;
+    let commentSearchHasRun = false;
+    let commentSearchRefreshTimer = null;
     // Session state
     const SESSION_SEEN_KEY = "gifts_seen_ids";
     const SESSION_TYPES_KEY = "gifts_type_filter";
@@ -178,7 +234,7 @@
           else activeTypes.add(t);
           saveTypeFilter(activeTypes);
           chip.classList.toggle("active", activeTypes.has(t));
-          renderGiftsTable();
+          refreshGiftsView();
         });
         container.appendChild(chip);
       });
@@ -188,9 +244,105 @@
       return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
     }
 
-    function visibleGifts() {
+    function typeFilteredGifts() {
       if (activeTypes.size === 0) return allGifts;
       return allGifts.filter(g => activeTypes.has(g.gift_name));
+    }
+
+    function visibleGifts() {
+      const gifts = typeFilteredGifts();
+      if (timeAfterThresholdMs === null) return gifts;
+      return gifts.filter(g => {
+        const t = Date.parse(g.iso_ts);
+        return Number.isFinite(t) && t >= timeAfterThresholdMs;
+      });
+    }
+
+    function updateTimeSliderLabel() {
+      const label = document.getElementById("timeAfterLabel");
+      if (!label) return;
+      label.textContent = timeAfterThresholdMs === null
+        ? ""
+        : `Showing gifts from ${isoToMountainDateTime(new Date(timeAfterThresholdMs).toISOString())} onward`;
+    }
+
+    // Recomputes the slider's min/max from the type-filtered gift set ("the query"),
+    // per requirement: first thumb position = timestamp of the first matching gift,
+    // slider max = timestamp of the latest matching gift.
+    function updateTimeSliderBounds() {
+      const row = document.getElementById("timeSliderRow");
+      const slider = document.getElementById("timeAfterSlider");
+      if (!row || !slider) return;
+      const gifts = typeFilteredGifts();
+      const timestamps = gifts
+        .map(g => Date.parse(g.iso_ts))
+        .filter(t => Number.isFinite(t))
+        .sort((a, b) => a - b);
+      if (!timestamps.length) {
+        row.style.display = "none";
+        timeAfterThresholdMs = null;
+        return;
+      }
+      const minTs = timestamps[0];
+      const maxTs = timestamps[timestamps.length - 1];
+      row.style.display = "flex";
+      slider.min = String(minTs);
+      slider.max = String(maxTs);
+      slider.step = "1000";
+      if (timeAfterThresholdMs === null || timeAfterThresholdMs < minTs || timeAfterThresholdMs > maxTs) {
+        timeAfterThresholdMs = minTs;
+      }
+      slider.value = String(timeAfterThresholdMs);
+      updateTimeSliderLabel();
+    }
+
+    // Recomputes slider bounds (since the type/date filters it depends on may have
+    // changed) and then re-renders the table. Use this instead of calling
+    // renderGiftsTable() directly whenever the underlying gift set changes.
+    function refreshGiftsView() {
+      updateTimeSliderBounds();
+      renderGiftsTable();
+    }
+
+    function commentsForGift(gift) {
+      const giftTs = Date.parse(gift.iso_ts);
+      const handle = normalizeHandle(gift.from_username);
+      if (!Number.isFinite(giftTs) || !handle) return [];
+      const startMs = giftTs - 60 * 1000;
+      const endMs = giftTs + 10 * 60 * 1000;
+      return allComments
+        .filter(c => normalizeHandle(c.username) === handle)
+        .filter(c => {
+          const t = Date.parse(c.iso_ts);
+          return Number.isFinite(t) && t >= startMs && t <= endMs;
+        })
+        .sort((a, b) => Date.parse(a.iso_ts) - Date.parse(b.iso_ts));
+    }
+
+    function renderCommentsCell(gift) {
+      const matches = commentsForGift(gift);
+      if (!matches.length) return "";
+      return matches
+        .map(c => `<div>[${escHtml(isoToMountainTime(c.iso_ts))}] ${escHtml(c.comment_text)}</div>`)
+        .join("");
+    }
+
+    function scheduleNoteSave(giftId, note) {
+      if (!giftId) return;
+      if (noteSaveTimers[giftId]) clearTimeout(noteSaveTimers[giftId]);
+      noteSaveTimers[giftId] = setTimeout(() => {
+        delete noteSaveTimers[giftId];
+        api("/gifts/notes", { method: "POST", body: { gift_id: giftId, note } }).catch(() => {});
+      }, 500);
+    }
+
+    async function loadGiftNotes() {
+      try {
+        giftNotes = await api("/gifts/notes").then(r => r.json());
+        if (!giftNotes || typeof giftNotes !== "object") giftNotes = {};
+      } catch (e) {
+        giftNotes = {};
+      }
     }
 
     function renderGiftsTable() {
@@ -221,6 +373,8 @@
           <td class="num">${Number(g.diamonds).toLocaleString()}</td>
           <td class="num">$${Number(g.usd).toFixed(2)}</td>
           <td>${escHtml(isoToMountainTime(g.iso_ts))}</td>
+          <td class="comments-cell">${renderCommentsCell(g)}</td>
+          <td><input type="text" class="note-input" data-gift-id="${escHtml(g.id)}" value="${escHtml(giftNotes[g.id] || "")}" placeholder="Add note..."></td>
         `;
         tbody.appendChild(tr);
       });
@@ -232,6 +386,13 @@
           saveSeenIds(seenIds);
           const row = document.getElementById(`gift-row-${id}`);
           if (row) row.classList.toggle("seen", cb.checked);
+        });
+      });
+      tbody.querySelectorAll(".note-input").forEach(input => {
+        input.addEventListener("input", () => {
+          const giftId = input.dataset.giftId;
+          giftNotes[giftId] = input.value;
+          scheduleNoteSave(giftId, input.value);
         });
       });
     }
@@ -269,6 +430,16 @@
       renderGroupOptions();
     }
 
+    async function fetchCommentsForWindow(handle, date) {
+      try {
+        const qs = new URLSearchParams({ group_handle: handle, date_mt: date });
+        const payload = await api(`/comments/list?${qs}`).then(r => r.json());
+        return payload?.ok && Array.isArray(payload.comments) ? payload.comments : [];
+      } catch (e) {
+        return [];
+      }
+    }
+
     async function refreshGifts() {
       const handle = currentGroupHandle();
       const date = currentDate();
@@ -276,26 +447,31 @@
         setSummaryMeta("Select a group and date.");
         allGifts = [];
         allGiftTypes = [];
+        allComments = [];
         renderTypeChips([]);
-        renderGiftsTable();
+        refreshGiftsView();
         return;
       }
       setSummaryMeta("Loading...");
       try {
         const qs = new URLSearchParams({ group_handle: handle, date_mt: date });
-        const payload = await api(`/gifts/list?${qs}`).then(r => r.json());
+        const [payload, comments] = await Promise.all([
+          api(`/gifts/list?${qs}`).then(r => r.json()),
+          fetchCommentsForWindow(handle, date),
+        ]);
+        allComments = comments;
         if (!payload?.ok) {
           setSummaryMeta(payload?.error || "Failed to load data.");
           allGifts = [];
           allGiftTypes = [];
           renderTypeChips([]);
-          renderGiftsTable();
+          refreshGiftsView();
           return;
         }
         allGifts = Array.isArray(payload.gifts) ? payload.gifts : [];
         allGiftTypes = Array.isArray(payload.gift_types) ? payload.gift_types : [];
         renderTypeChips(allGiftTypes);
-        renderGiftsTable();
+        refreshGiftsView();
         const totalDiamonds = Number(payload.total_diamonds || 0);
         setSummaryMeta(
           `@${payload.group_handle} · ${payload.date_mt} MT · ${allGifts.length} gifts · ${totalDiamonds.toLocaleString()} diamonds · $${(totalDiamonds * 0.005).toFixed(2)}`
@@ -305,8 +481,9 @@
         setSummaryMeta("Failed to load data.");
         allGifts = [];
         allGiftTypes = [];
+        allComments = [];
         renderTypeChips([]);
-        renderGiftsTable();
+        refreshGiftsView();
       }
     }
 
@@ -366,6 +543,42 @@
         });
     }
 
+    function isCommentSearchInsertRelevant(row) {
+      if (!row || typeof row !== "object") return false;
+      const handle = currentGroupHandle();
+      if (!handle) return false;
+      const rowHandle = String(row.tiktok_username || "").trim().replace(/^@+/, "").toLowerCase();
+      return !!rowHandle && rowHandle === handle.toLowerCase();
+    }
+
+    function scheduleCommentSearchRefresh(delayMs = 150) {
+      // Only auto-refresh once the user has actually run a search — before that
+      // there are no filters/results to keep live.
+      if (!commentSearchHasRun) return;
+      if (commentSearchRefreshTimer) clearTimeout(commentSearchRefreshTimer);
+      commentSearchRefreshTimer = setTimeout(() => {
+        commentSearchRefreshTimer = null;
+        runCommentSearch();
+      }, Math.max(0, Number(delayMs) || 0));
+    }
+
+    async function connectCommentSearchRealtime() {
+      const client = await ensureSupabaseClient();
+      if (!client) return;
+      if (commentSearchChannel) {
+        try { await client.removeChannel(commentSearchChannel); } catch (e) {}
+        commentSearchChannel = null;
+      }
+      commentSearchChannel = client
+        .channel("comment-search-live")
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "comment_events" }, (payload) => {
+          const row = payload?.new || {};
+          if (!isCommentSearchInsertRelevant(row)) return;
+          scheduleCommentSearchRefresh();
+        })
+        .subscribe();
+    }
+
     function startFallbackPolling() {
       if (fallbackPollHandle) return;
       fallbackPollHandle = setInterval(() => {
@@ -389,13 +602,13 @@
         activeTypes.clear();
         saveTypeFilter(activeTypes);
         renderTypeChips(allGiftTypes);
-        renderGiftsTable();
+        refreshGiftsView();
       });
       if (selectAllBtn) selectAllBtn.addEventListener("click", () => {
         allGiftTypes.forEach(t => activeTypes.add(t));
         saveTypeFilter(activeTypes);
         renderTypeChips(allGiftTypes);
-        renderGiftsTable();
+        refreshGiftsView();
       });
       const clearSeenBtn = document.getElementById("clearSeenBtn");
       if (clearSeenBtn) clearSeenBtn.addEventListener("click", () => {
@@ -403,15 +616,83 @@
         saveSeenIds(seenIds);
         renderGiftsTable();
       });
+      const timeSlider = document.getElementById("timeAfterSlider");
+      if (timeSlider) timeSlider.addEventListener("input", () => {
+        timeAfterThresholdMs = Number(timeSlider.value);
+        updateTimeSliderLabel();
+        renderGiftsTable();
+      });
+      const commentSearchBtn = document.getElementById("commentSearchBtn");
+      if (commentSearchBtn) commentSearchBtn.addEventListener("click", () => runCommentSearch());
+    }
+
+    function initCommentSearchDefaults() {
+      const date = currentDate() || todayMountain();
+      const startInput = document.getElementById("commentStartInput");
+      const endInput = document.getElementById("commentEndInput");
+      if (startInput && !startInput.value) startInput.value = `${date}T00:00`;
+      if (endInput && !endInput.value) endInput.value = `${date}T23:59`;
+    }
+
+    async function runCommentSearch() {
+      const handle = currentGroupHandle();
+      const meta = document.getElementById("commentSearchMeta");
+      const tbody = document.getElementById("commentSearchBody");
+      const emptyEl = document.getElementById("commentSearchEmpty");
+      if (!tbody || !emptyEl) return;
+      if (!handle) {
+        if (meta) meta.textContent = "Select a group first.";
+        return;
+      }
+      commentSearchHasRun = true;
+      if (meta) meta.textContent = "Searching...";
+      const username = String(document.getElementById("commentUserInput")?.value || "").trim();
+      const keyword = String(document.getElementById("commentKeywordInput")?.value || "").trim();
+      const startVal = String(document.getElementById("commentStartInput")?.value || "").trim();
+      const endVal = String(document.getElementById("commentEndInput")?.value || "").trim();
+      const qs = new URLSearchParams({ group_handle: handle });
+      if (startVal) qs.set("start_mt", startVal);
+      if (endVal) qs.set("end_mt", endVal);
+      if (username) qs.set("username", username);
+      if (keyword) qs.set("keyword", keyword);
+      try {
+        const payload = await api(`/comments/list?${qs}`).then(r => r.json());
+        if (!payload?.ok) {
+          if (meta) meta.textContent = payload?.error || "Search failed.";
+          tbody.innerHTML = "";
+          emptyEl.style.display = "block";
+          return;
+        }
+        const comments = Array.isArray(payload.comments) ? payload.comments : [];
+        if (meta) meta.textContent = `${comments.length} comment${comments.length === 1 ? "" : "s"} found.`;
+        if (!comments.length) {
+          tbody.innerHTML = "";
+          emptyEl.style.display = "block";
+          return;
+        }
+        emptyEl.style.display = "none";
+        tbody.innerHTML = [...comments].reverse().map(c => `
+          <tr>
+            <td>${escHtml(isoToMountainDateTime(c.iso_ts))}</td>
+            <td>${escHtml(c.username)}${c.nickname ? " (" + escHtml(c.nickname) + ")" : ""}</td>
+            <td>${escHtml(c.comment_text)}</td>
+          </tr>
+        `).join("");
+      } catch (e) {
+        if (meta) meta.textContent = "Search failed.";
+      }
     }
 
     async function init() {
       const dateInput = document.getElementById("dateInput");
       if (dateInput && !dateInput.value) dateInput.value = todayMountain();
       bindEvents();
+      initCommentSearchDefaults();
+      await loadGiftNotes();
       await loadGroups();
       await refreshGifts();
       await connectGiftRealtime();
+      await connectCommentSearchRealtime();
       startFallbackPolling();
     }
 

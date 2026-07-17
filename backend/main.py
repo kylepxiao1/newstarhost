@@ -41,6 +41,7 @@ DIST_DIR = (BASE_DIR / ".." / "dist").resolve()
 MEDIA_DIR.mkdir(exist_ok=True)
 HOTKEYS_PATH = MEDIA_DIR / "hotkeys.json"
 RPD_QUERIES_PATH = MEDIA_DIR / "rpd_queries.json"
+GIFT_NOTES_PATH = MEDIA_DIR / "gift_notes.json"
 RAPIDAPI_KEY = _env("RAPIDAPI_KEY", "")
 RAPIDAPI_HOST = _env("RAPIDAPI_HOST", "")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID", "").strip()
@@ -126,6 +127,25 @@ def _save_rpd_queries(queries: list) -> None:
         RPD_QUERIES_PATH.write_text(json.dumps(queries, indent=2), encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to save rpd_queries.json: %s", exc)
+
+
+def _load_gift_notes() -> dict:
+    if not GIFT_NOTES_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(GIFT_NOTES_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return {}
+    except Exception:
+        return {}
+    return {str(k): str(v) for k, v in payload.items() if str(v or "").strip()}
+
+
+def _save_gift_notes(notes: dict) -> None:
+    try:
+        GIFT_NOTES_PATH.write_text(json.dumps(notes, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to save gift_notes.json: %s", exc)
 
 
 def _find_tiktok_id(data, handle: str) -> Optional[str]:
@@ -446,6 +466,11 @@ class DeleteRpdQueryRequest(BaseModel):
     id: str
 
 
+class GiftNoteRequest(BaseModel):
+    gift_id: str
+    note: str = ""
+
+
 @app.get("/settings/data")
 async def get_settings() -> JSONResponse:
     return JSONResponse(_load_hotkeys())
@@ -503,6 +528,26 @@ async def delete_rpd_query(body: DeleteRpdQueryRequest) -> JSONResponse:
     queries = [q for q in _load_rpd_queries() if q["id"] != body.id]
     _save_rpd_queries(queries)
     return JSONResponse(queries)
+
+
+@app.get("/gifts/notes")
+async def get_gift_notes() -> JSONResponse:
+    return JSONResponse(_load_gift_notes())
+
+
+@app.post("/gifts/notes")
+async def save_gift_note(body: GiftNoteRequest) -> JSONResponse:
+    gift_id = str(body.gift_id or "").strip()
+    if not gift_id:
+        return JSONResponse({"error": "gift_id is required"}, status_code=400)
+    notes = _load_gift_notes()
+    note_text = str(body.note or "").strip()
+    if note_text:
+        notes[gift_id] = note_text
+    else:
+        notes.pop(gift_id, None)
+    _save_gift_notes(notes)
+    return JSONResponse(notes)
 
 
 def _norm_filename(s: str) -> str:
@@ -823,6 +868,68 @@ async def _fetch_gift_rows_for_window(
                 pages += 1
                 if pages >= max_pages:
                     return [], "Exceeded gift_events pagination limit."
+    except Exception as exc:
+        return [], f"Supabase request failed: {exc}"
+    return out, None
+
+
+async def _fetch_comment_rows_for_window(
+    *,
+    tiktok_username: str,
+    start_utc: datetime,
+    end_utc: datetime,
+    username: str = "",
+    keyword: str = "",
+) -> tuple[list[dict], Optional[str]]:
+    headers = _supabase_headers()
+    if not headers:
+        return [], "Supabase credentials missing. Set SUPABASE_URL/SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY."
+    headers = dict(headers)
+    headers.pop("Prefer", None)
+    page_size = 1000
+    max_pages = 250
+    offset = 0
+    pages = 0
+    out: list[dict] = []
+    handle = str(tiktok_username or "").strip().lstrip("@")
+    if not handle:
+        return out, None
+    username_filter = str(username or "").strip().lstrip("@")
+    keyword_filter = str(keyword or "").strip()
+    try:
+        async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
+            while True:
+                query = [
+                    ("select", "id,iso_ts,username,nickname,comment_text,tiktok_username"),
+                    ("tiktok_username", f"eq.{handle}"),
+                    ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
+                    ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),
+                    ("order", "id.asc"),
+                ]
+                if username_filter:
+                    query.append(("username", f"ilike.*{username_filter}*"))
+                if keyword_filter:
+                    query.append(("comment_text", f"ilike.*{keyword_filter}*"))
+                range_headers = dict(headers)
+                range_headers["Range-Unit"] = "items"
+                range_headers["Range"] = f"{offset}-{offset + page_size - 1}"
+                resp = await client.get("/comment_events", params=query, headers=range_headers)
+                if not resp.is_success:
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = resp.text or ""
+                    return [], f"Supabase comment_events query failed (status={resp.status_code}): {payload}"
+                rows = resp.json()
+                if not isinstance(rows, list):
+                    return [], "Unexpected comment_events response format."
+                out.extend([row for row in rows if isinstance(row, dict)])
+                if len(rows) < page_size:
+                    break
+                offset += page_size
+                pages += 1
+                if pages >= max_pages:
+                    return [], "Exceeded comment_events pagination limit."
     except Exception as exc:
         return [], f"Supabase request failed: {exc}"
     return out, None
@@ -1850,6 +1957,90 @@ async def gifts_list(group_handle: str = "", date_mt: Optional[str] = None) -> J
         "total_diamonds": sum(g["diamonds"] for g in gifts),
         "gifts": gifts,
         "gift_types": gift_types,
+    })
+
+
+def _parse_mt_datetime_local(value: str, mt_tz) -> Optional[datetime]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(text, fmt).replace(tzinfo=mt_tz)
+        except Exception:
+            continue
+    return None
+
+
+@app.get("/comments/list")
+async def comments_list(
+    group_handle: str = "",
+    date_mt: Optional[str] = None,
+    start_mt: Optional[str] = None,
+    end_mt: Optional[str] = None,
+    username: str = "",
+    keyword: str = "",
+) -> JSONResponse:
+    handle = str(group_handle or "").strip().lstrip("@")
+    if not handle:
+        return JSONResponse({"ok": False, "error": "group_handle is required."}, status_code=400)
+    try:
+        mt_tz = ZoneInfo("America/Denver")
+    except Exception:
+        mt_tz = timezone.utc
+
+    start_local = _parse_mt_datetime_local(start_mt, mt_tz) if start_mt else None
+    if start_mt and start_local is None:
+        return JSONResponse({"ok": False, "error": "start_mt must be YYYY-MM-DDTHH:MM."}, status_code=400)
+    end_local = _parse_mt_datetime_local(end_mt, mt_tz) if end_mt else None
+    if end_mt and end_local is None:
+        return JSONResponse({"ok": False, "error": "end_mt must be YYYY-MM-DDTHH:MM."}, status_code=400)
+
+    if start_local is None or end_local is None:
+        if date_mt:
+            try:
+                day = datetime.strptime(str(date_mt).strip(), "%Y-%m-%d").date()
+            except Exception:
+                return JSONResponse({"ok": False, "error": "date_mt must be YYYY-MM-DD."}, status_code=400)
+        else:
+            day = datetime.now(mt_tz).date()
+        if start_local is None:
+            start_local = datetime.combine(day, datetime.min.time(), tzinfo=mt_tz)
+        if end_local is None:
+            end_local = start_local + timedelta(days=1)
+
+    if end_local <= start_local:
+        return JSONResponse({"ok": False, "error": "end must be after start."}, status_code=400)
+
+    rows, err = await _fetch_comment_rows_for_window(
+        tiktok_username=handle,
+        start_utc=start_local.astimezone(timezone.utc),
+        end_utc=end_local.astimezone(timezone.utc),
+        username=username,
+        keyword=keyword,
+    )
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=500)
+
+    comments = [
+        {
+            "id": str(row.get("id") or ""),
+            "iso_ts": str(row.get("iso_ts") or ""),
+            "username": str(row.get("username") or "").strip(),
+            "nickname": str(row.get("nickname") or "").strip(),
+            "comment_text": str(row.get("comment_text") or ""),
+        }
+        for row in rows
+    ]
+    comments.sort(key=lambda c: str(c.get("iso_ts") or ""))
+
+    return JSONResponse({
+        "ok": True,
+        "group_handle": handle,
+        "start_utc": start_local.astimezone(timezone.utc).isoformat(),
+        "end_utc": end_local.astimezone(timezone.utc).isoformat(),
+        "count": len(comments),
+        "comments": comments,
     })
 
 
