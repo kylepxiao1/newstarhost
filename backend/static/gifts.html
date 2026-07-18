@@ -25,16 +25,16 @@
     .chip.active { background: #1d4ed8; color: #fff; border-color: #2563eb; }
     .chip:hover:not(.active) { background: #273549; color: #e2e8f0; }
     .chip-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th, td { padding: 7px 6px; border-bottom: 1px solid #1f2937; text-align: left; }
-    th { color: #94a3b8; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; white-space: nowrap; }
+    table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 13px; }
+    th, td { padding: 7px 6px; border-bottom: 1px solid #1f2937; text-align: left; overflow-wrap: break-word; word-break: break-word; }
+    th { color: #94a3b8; text-transform: uppercase; font-size: 11px; letter-spacing: 0.05em; }
     td.num { font-variant-numeric: tabular-nums; }
     tr.seen td { opacity: 0.38; }
     tr.seen td.seen-cell { opacity: 1; }
     .empty { color: #94a3b8; font-weight: 600; padding: 12px 0; }
     .seen-cb { width: 16px; height: 16px; cursor: pointer; accent-color: #2563eb; }
-    .note-input { width: 100%; min-width: 140px; background: #0b1222; border: 1px solid #334155; border-radius: 4px; padding: 4px 6px; color: #e2e8f0; font-size: 12px; font: inherit; }
-    .comments-cell { min-width: 220px; max-width: 320px; font-size: 12px; color: #94a3b8; }
+    .note-input { width: 100%; box-sizing: border-box; background: #0b1222; border: 1px solid #334155; border-radius: 4px; padding: 4px 6px; color: #e2e8f0; font-size: 12px; font: inherit; }
+    .comments-cell { font-size: 12px; color: #94a3b8; }
     .comments-cell div { margin-bottom: 2px; }
     @media (max-width: 900px) {
       header { padding: 12px 12px 8px; }
@@ -43,7 +43,6 @@
       main { padding: 12px; }
       section { padding: 12px; }
       .row > * { flex: 1 1 200px; min-width: 0; }
-      table { display: block; overflow-x: auto; }
     }
   </style>
 </head>
@@ -94,8 +93,20 @@
         <input id="timeAfterSlider" type="range" style="flex:2;min-width:200px;">
         <span id="timeAfterLabel" class="meta"></span>
       </div>
-      <div style="overflow-x:auto;">
+      <div>
         <table id="giftsTable">
+          <colgroup>
+            <col style="width:4%">
+            <col style="width:9%">
+            <col style="width:9%">
+            <col style="width:9%">
+            <col style="width:8%">
+            <col style="width:7%">
+            <col style="width:6%">
+            <col style="width:9%">
+            <col style="width:24%">
+            <col style="width:15%">
+          </colgroup>
           <thead>
             <tr>
               <th>Seen</th>
