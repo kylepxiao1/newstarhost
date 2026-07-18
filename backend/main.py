@@ -655,6 +655,29 @@ async def _insert_supabase_row(table: str, row: dict) -> Optional[str]:
     return f"Supabase insert failed (status={resp.status_code}): {payload}"
 
 
+async def _update_supabase_row(table: str, row_id: str, updates: dict) -> Optional[str]:
+    headers = _supabase_headers()
+    if not headers:
+        return "Supabase credentials missing. Set SUPABASE_URL/SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY."
+    try:
+        async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=10.0) as client:
+            resp = await client.patch(
+                f"/{table}",
+                params={"id": f"eq.{row_id}"},
+                json=updates,
+                headers=headers,
+            )
+    except Exception as exc:
+        return f"Supabase request failed: {exc}"
+    if resp.is_success:
+        return None
+    try:
+        payload = resp.json()
+    except Exception:
+        payload = resp.text or ""
+    return f"Supabase update failed (status={resp.status_code}): {payload}"
+
+
 def _resolve_group_handle_from_state(state: dict) -> str:
     group_name = str(state.get("group_name") or "").strip()
     return _resolve_group_handle_by_name(state, group_name)
@@ -1615,6 +1638,10 @@ class StreamNoteRequest(BaseModel):
     additional_notes: str = ""
 
 
+class StreamNoteUpdateRequest(StreamNoteRequest):
+    id: str
+
+
 @app.post("/analytics/points")
 async def add_points(req: PointsRequest) -> JSONResponse:
     # if url not provided, use current song
@@ -1751,22 +1778,18 @@ async def top_gifters_summary(group_handle: str = "", date_mt: Optional[str] = N
     )
 
 
-@app.post("/notes/stream")
-async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
-    now_dt = datetime.now(timezone.utc)
-    iso_ts = now_dt.isoformat()
-    unix_ts = int(now_dt.timestamp())
+def _build_stream_note_row(body: StreamNoteRequest, *, default_date) -> tuple[Optional[dict], Optional[str]]:
     stream_date_raw = (body.stream_date or "").strip()
     if stream_date_raw:
         try:
             stream_date_value = datetime.strptime(stream_date_raw, "%Y-%m-%d").date().isoformat()
         except Exception:
-            return JSONResponse({"ok": False, "error": "stream_date must be in YYYY-MM-DD format."}, status_code=400)
+            return None, "stream_date must be in YYYY-MM-DD format."
     else:
-        stream_date_value = now_dt.date().isoformat()
+        stream_date_value = default_date.isoformat()
     stream_format_rows, stream_format_err = _parse_stream_format_jsonl(body.stream_format)
     if stream_format_err:
-        return JSONResponse({"ok": False, "error": stream_format_err}, status_code=400)
+        return None, stream_format_err
 
     members = []
     for item in body.members_present or []:
@@ -1778,8 +1801,6 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
         members.append(name)
 
     row = {
-        "iso_ts": iso_ts,
-        "unix_ts": unix_ts,
         "stream_date": stream_date_value,
         "host": (body.host or "").strip(),
         "group_name": (body.group or "").strip(),
@@ -1789,10 +1810,36 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
         "stream_format": stream_format_rows,
         "additional_notes": (body.additional_notes or "").strip(),
     }
-    err = await _insert_supabase_row("stream_notes", row)
+    return row, None
+
+
+@app.post("/notes/stream")
+async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
+    now_dt = datetime.now(timezone.utc)
+    row, err = _build_stream_note_row(body, default_date=now_dt.date())
     if err:
-        logger.warning("Stream note insert failed: %s", err)
-        return JSONResponse({"ok": False, "error": err}, status_code=500)
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    row["iso_ts"] = now_dt.isoformat()
+    row["unix_ts"] = int(now_dt.timestamp())
+    insert_err = await _insert_supabase_row("stream_notes", row)
+    if insert_err:
+        logger.warning("Stream note insert failed: %s", insert_err)
+        return JSONResponse({"ok": False, "error": insert_err}, status_code=500)
+    return JSONResponse({"ok": True, "row": row})
+
+
+@app.post("/notes/stream/update")
+async def update_stream_note(body: StreamNoteUpdateRequest) -> JSONResponse:
+    note_id = str(body.id or "").strip()
+    if not note_id:
+        return JSONResponse({"ok": False, "error": "id is required."}, status_code=400)
+    row, err = _build_stream_note_row(body, default_date=datetime.now(timezone.utc).date())
+    if err:
+        return JSONResponse({"ok": False, "error": err}, status_code=400)
+    update_err = await _update_supabase_row("stream_notes", note_id, row)
+    if update_err:
+        logger.warning("Stream note update failed: %s", update_err)
+        return JSONResponse({"ok": False, "error": update_err}, status_code=500)
     return JSONResponse({"ok": True, "row": row})
 
 
@@ -1814,7 +1861,7 @@ async def stream_notes_history(limit: int = 10, offset: int = 0) -> JSONResponse
     params = [
         (
             "select",
-            "iso_ts,unix_ts,stream_date,host,group_name,outfit_theme,mvp,members_present,stream_format,additional_notes",
+            "id,iso_ts,unix_ts,stream_date,host,group_name,outfit_theme,mvp,members_present,stream_format,additional_notes",
         ),
         ("order", "unix_ts.desc,iso_ts.desc"),
         ("limit", str(page_size + 1)),

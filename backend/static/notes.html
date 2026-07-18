@@ -267,6 +267,7 @@
         </div>
 
         <button id="submitBtn" type="submit">Submit</button>
+        <button id="cancelEditBtn" class="secondary" type="button" style="display:none;">Cancel Edit</button>
         <div id="formStatus" class="status-text"></div>
 
         <div class="past-notes-wrap">
@@ -302,6 +303,7 @@
     let pastNotesOffset = 0;
     let pastNotesHasMore = true;
     let pastNotesItems = [];
+    let editingNoteId = null;
     const HOST_COOKIE_KEY = "notes_host";
     const STREAM_FORMAT_COOKIE_KEY = "notes_stream_format";
     const DEFAULT_STREAM_SEGMENTS = [
@@ -336,17 +338,21 @@
       return "";
     }
 
+    function todayYmd() {
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, "0");
+      const day = String(now.getDate()).padStart(2, "0");
+      return `${year}-${month}-${day}`;
+    }
+
     function restorePersistedDefaults() {
       const host = getCookie(HOST_COOKIE_KEY);
       const streamFormat = getCookie(STREAM_FORMAT_COOKIE_KEY);
       if (host) document.getElementById("hostInput").value = host;
       const streamDateInput = document.getElementById("streamDateInput");
       if (streamDateInput && !streamDateInput.value) {
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = String(now.getMonth() + 1).padStart(2, "0");
-        const day = String(now.getDate()).padStart(2, "0");
-        streamDateInput.value = `${year}-${month}-${day}`;
+        streamDateInput.value = todayYmd();
       }
       loadStreamSegmentsFromCookie(streamFormat);
       renderStreamSegments();
@@ -762,10 +768,22 @@
       card.className = "past-note-card";
 
       const group = String(note?.group_name || "").trim();
+      const header = document.createElement("div");
+      header.style.cssText = "display:flex;align-items:center;justify-content:space-between;gap:8px;";
       const title = document.createElement("div");
       title.className = "past-note-title";
       title.textContent = group ? `${formatPastNoteDate(note)} - ${group}` : formatPastNoteDate(note);
-      card.appendChild(title);
+      header.appendChild(title);
+      const noteId = String(note?.id ?? "").trim();
+      if (noteId) {
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "secondary";
+        editBtn.textContent = "Edit";
+        editBtn.addEventListener("click", () => beginEditNote(note));
+        header.appendChild(editBtn);
+      }
+      card.appendChild(header);
 
       appendPastNoteField(card, "Host", note?.host);
       appendPastNoteField(card, "Group", note?.group_name);
@@ -913,11 +931,86 @@
       renderPastNotes();
     }
 
+    function populateStreamSegmentsFromNote(note) {
+      const rows = normalizeStreamFormatRows(note?.stream_format);
+      if (rows.length) {
+        streamSegments = rows.map((row) => ({
+          id: nextSegmentId++,
+          segment: row.segment || "",
+          duration: row.duration_min != null ? String(row.duration_min) : "",
+        }));
+      } else {
+        loadStreamSegmentsFromCookie("");
+      }
+      renderStreamSegments();
+    }
+
+    function beginEditNote(note) {
+      const noteId = String(note?.id ?? "").trim();
+      if (!noteId) return;
+      editingNoteId = noteId;
+
+      document.getElementById("hostInput").value = String(note?.host || "");
+      document.getElementById("streamDateInput").value = String(note?.stream_date || "");
+      document.getElementById("outfitThemeInput").value = String(note?.outfit_theme || "");
+      document.getElementById("additionalNotesInput").value = String(note?.additional_notes || "");
+
+      const members = Array.isArray(note?.members_present)
+        ? note.members_present.map((v) => String(v || "").trim()).filter(Boolean)
+        : [];
+      selectedMemberSet = new Set(members);
+      renderDancers();
+
+      // Set these after renderDancers(), which rebuilds both <select> option lists
+      // and would otherwise clobber the values assigned here.
+      const groupSelect = document.getElementById("groupSelect");
+      const groupName = String(note?.group_name || "");
+      if (groupSelect) {
+        groupSelect.value = Array.from(groupSelect.options).some((opt) => opt.value === groupName) ? groupName : "";
+      }
+
+      const mvpSelect = document.getElementById("mvpSelect");
+      const mvpName = String(note?.mvp || "");
+      if (mvpSelect) {
+        mvpSelect.value = Array.from(mvpSelect.options).some((opt) => opt.value === mvpName) ? mvpName : "";
+      }
+
+      populateStreamSegmentsFromNote(note);
+
+      const submitBtn = document.getElementById("submitBtn");
+      const cancelBtn = document.getElementById("cancelEditBtn");
+      if (submitBtn) submitBtn.textContent = "Update Note";
+      if (cancelBtn) cancelBtn.style.display = "";
+      setFormStatus(`Editing note from ${formatPastNoteDate(note)}.`);
+
+      document.getElementById("notesForm").scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+
+    function cancelEditNote() {
+      editingNoteId = null;
+      const submitBtn = document.getElementById("submitBtn");
+      const cancelBtn = document.getElementById("cancelEditBtn");
+      if (submitBtn) submitBtn.textContent = "Submit";
+      if (cancelBtn) cancelBtn.style.display = "none";
+      setFormStatus("");
+
+      document.getElementById("streamDateInput").value = todayYmd();
+      document.getElementById("groupSelect").value = "";
+      document.getElementById("outfitThemeInput").value = "";
+      document.getElementById("mvpSelect").value = "";
+      document.getElementById("additionalNotesInput").value = "";
+      selectedMemberSet = new Set();
+      renderDancers();
+      loadStreamSegmentsFromCookie(getCookie(STREAM_FORMAT_COOKIE_KEY));
+      renderStreamSegments();
+    }
+
     async function submitForm(evt) {
       evt.preventDefault();
       const submitBtn = document.getElementById("submitBtn");
       submitBtn.disabled = true;
-      setFormStatus("Submitting...");
+      const isEditing = !!editingNoteId;
+      setFormStatus(isEditing ? "Updating..." : "Submitting...");
       const streamFormat = streamFormatJsonlValue();
       if (!streamFormat.ok) {
         setFormStatus(streamFormat.error || "Invalid stream format.", "error");
@@ -934,10 +1027,12 @@
         stream_format: streamFormat.text,
         additional_notes: document.getElementById("additionalNotesInput").value.trim(),
       };
+      if (isEditing) body.id = editingNoteId;
       setCookie(HOST_COOKIE_KEY, body.host);
       persistStreamSegmentsCookie();
       try {
-        const res = await api("/notes/stream", {method: "POST", body});
+        const endpoint = isEditing ? "/notes/stream/update" : "/notes/stream";
+        const res = await api(endpoint, {method: "POST", body});
         let payload = {};
         try { payload = await res.json(); } catch (e) {}
         if (!res.ok || payload.ok === false) {
@@ -945,7 +1040,8 @@
           setFormStatus(err, "error");
           return;
         }
-        setFormStatus("Saved stream note.", "success");
+        if (isEditing) cancelEditNote();
+        setFormStatus(isEditing ? "Updated stream note." : "Saved stream note.", "success");
         if (pastNotesVisible) {
           await loadPastNotes(true);
         }
@@ -973,6 +1069,7 @@
     }
 
     document.getElementById("notesForm").addEventListener("submit", submitForm);
+    document.getElementById("cancelEditBtn").addEventListener("click", cancelEditNote);
     restorePersistedDefaults();
     wirePersistedDefaults();
     wirePastNotes();
