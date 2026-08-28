@@ -605,6 +605,10 @@
       return selectedDancers().some((dancer) => getRelationMatches(song, dancer).length > 0);
     }
 
+    function isRpdPoolSong(song) {
+      return !!song?.url && !song.camera_dance;
+    }
+
     function analyzeSongForSelection(song) {
       const matched = [];
       const matchedKeySet = new Set();
@@ -834,7 +838,7 @@
       const search = normalizeName(document.getElementById("songSearch")?.value || "");
       const entries = [];
       for (const song of Object.values(library || {})) {
-        if (!song || !song.url) continue;
+        if (!isRpdPoolSong(song)) continue;
         if (!isSongEligible(song)) continue;
         if (search) {
           const haystack = normalizeName((song.name || "") + " " + (song.artist || ""));
