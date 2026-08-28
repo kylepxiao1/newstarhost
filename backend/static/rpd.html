@@ -298,7 +298,7 @@
           <div class="stat">
             <div class="stat-label">Unplayed Pool</div>
             <div class="stat-value" id="unplayedCount">0</div>
-            <div class="stat-note">Suggestions prefer this pool first</div>
+            <div class="stat-note">Suggestions rotate dancers, then favor longest-idle songs</div>
           </div>
           <div class="stat">
             <div class="stat-label">Session Spins</div>
@@ -392,6 +392,8 @@
     let sessionHistory = loadSessionHistory();
     let currentSongUrl = "";
     let backgroundStarted = false;
+    let remainingSuggestedDancerKeys = [];
+    let suggestedDancerPoolSignature = "";
 
     function normalizeName(value) {
       return String(value || "").trim().toLowerCase();
@@ -594,6 +596,15 @@
         return dancers.filter((dancer) => keys.has(dancerKey(dancer)));
       }
       return selectedDancers();
+    }
+
+    function suggestionDancersForMode() {
+      const relevant = relevantDancersForMode();
+      if (relevant.length) return relevant;
+      if (activeFilterTab !== "logic") return [];
+      const validation = currentLogicValidation();
+      if (validation.valid && !validation.ast) return dancers.slice();
+      return [];
     }
 
     function isSongEligible(song) {
@@ -858,64 +869,77 @@
       return counts;
     }
 
-    function countSelectedDancerExposure() {
-      const counts = Object.create(null);
-      for (const dancer of relevantDancersForMode()) {
-        counts[dancerKey(dancer)] = 0;
-      }
+    function getLastPlayedAtByUrl() {
+      const lastPlayed = Object.create(null);
       for (const entry of sessionHistory) {
-        const keys = Array.isArray(entry.matched_dancer_keys) ? entry.matched_dancer_keys : [];
-        for (const key of keys) {
-          if (key in counts) counts[key] += 1;
-        }
+        if (!entry?.url) continue;
+        const ts = Number(entry.ts || 0);
+        if (!Number.isFinite(ts) || ts <= 0) continue;
+        lastPlayed[entry.url] = Math.max(Number(lastPlayed[entry.url] || 0), ts);
       }
-      return counts;
+      return lastPlayed;
     }
 
-    function chooseWeighted(entries) {
-      if (!entries.length) return null;
-      const total = entries.reduce((sum, entry) => sum + Math.max(0, Number(entry.weight) || 0), 0);
-      if (!total) return entries[Math.floor(Math.random() * entries.length)] || null;
-      let cursor = Math.random() * total;
-      for (const entry of entries) {
-        cursor -= Math.max(0, Number(entry.weight) || 0);
-        if (cursor <= 0) return entry;
+    function getEligibleSuggestionDancers(entries) {
+      const pool = suggestionDancersForMode();
+      if (!pool.length || !entries.length) return [];
+      return pool.filter((dancer) => entries.some((entry) => getRelationMatches(entry.song, dancer).length > 0));
+    }
+
+    function refreshSuggestedDancerPool(eligibleDancers) {
+      const keys = eligibleDancers
+        .map((dancer) => dancerKey(dancer))
+        .filter(Boolean)
+        .sort((a, b) => a.localeCompare(b));
+      const signature = keys.join("|");
+      if (signature !== suggestedDancerPoolSignature) {
+        suggestedDancerPoolSignature = signature;
+        remainingSuggestedDancerKeys = keys.slice();
+        return;
       }
-      return entries[entries.length - 1] || null;
+      const validKeys = new Set(keys);
+      remainingSuggestedDancerKeys = remainingSuggestedDancerKeys.filter((key) => validKeys.has(key));
+      if (!remainingSuggestedDancerKeys.length) {
+        remainingSuggestedDancerKeys = keys.slice();
+      }
+    }
+
+    function pickSuggestedDancer(entries) {
+      const eligibleDancers = getEligibleSuggestionDancers(entries);
+      if (!eligibleDancers.length) return null;
+      refreshSuggestedDancerPool(eligibleDancers);
+      if (!remainingSuggestedDancerKeys.length) return null;
+      const index = Math.floor(Math.random() * remainingSuggestedDancerKeys.length);
+      const [pickedKey] = remainingSuggestedDancerKeys.splice(index, 1);
+      if (!remainingSuggestedDancerKeys.length) {
+        remainingSuggestedDancerKeys = eligibleDancers
+          .map((dancer) => dancerKey(dancer))
+          .filter(Boolean)
+          .sort((a, b) => a.localeCompare(b));
+      }
+      return eligibleDancers.find((dancer) => dancerKey(dancer) === pickedKey) || null;
+    }
+
+    function compareSuggestedEntries(a, b, lastPlayedAtByUrl) {
+      const aLast = Number(lastPlayedAtByUrl[a.song.url] || 0);
+      const bLast = Number(lastPlayedAtByUrl[b.song.url] || 0);
+      if (aLast !== bLast) return aLast - bLast;
+      const aCount = Number(state?.play_counts?.[a.song.url] || 0);
+      const bCount = Number(state?.play_counts?.[b.song.url] || 0);
+      if (aCount !== bCount) return aCount - bCount;
+      return String(a.song.name || "").localeCompare(String(b.song.name || ""));
     }
 
     function getSuggestedEntry() {
       const entries = getCandidateEntries();
       if (!entries.length) return null;
-
-      const sessionCounts = countSessionPlaysByUrl();
-      const unplayed = entries.filter((entry) => !sessionCounts[entry.song.url]);
-      const pool = unplayed.length ? unplayed : entries;
-      const dancerExposure = countSelectedDancerExposure();
-      const exposureValues = Object.values(dancerExposure);
-      const maxExposure = exposureValues.length ? Math.max(...exposureValues) : 0;
-      const recentUrls = new Set(sessionHistory.slice(-5).map((entry) => entry.url));
-
-      const weightedPool = pool.map((entry) => {
-        const globalPlayCount = Number(state?.play_counts?.[entry.song.url] || 0);
-        const sessionPlays = Number(sessionCounts[entry.song.url] || 0);
-        const fairnessScores = entry.matchedKeys.map((key) => (maxExposure - Number(dancerExposure[key] || 0)) + 1);
-        const fairness = fairnessScores.length
-          ? fairnessScores.reduce((sum, value) => sum + value, 0) / fairnessScores.length
-          : 1;
-        const breadthBoost = 1 + Math.min(0.8, (entry.matchedKeys.length - 1) * 0.18);
-        const relationBoost = 0.85 + Math.min(0.6, entry.relationWeight / Math.max(1, entry.matchedKeys.length) / 2.5);
-        const repeatPenalty = sessionPlays > 0 ? 1 / (1 + sessionPlays * 4) : 1;
-        const globalPenalty = 1 / (1 + Math.log1p(Math.max(0, globalPlayCount)));
-        const recentPenalty = recentUrls.has(entry.song.url) && !unplayed.length ? 0.18 : 1;
-        return {
-          entry,
-          weight: fairness * breadthBoost * relationBoost * repeatPenalty * globalPenalty * recentPenalty,
-        };
-      });
-
-      const choice = chooseWeighted(weightedPool);
-      return choice ? choice.entry : null;
+      const dancer = pickSuggestedDancer(entries);
+      if (!dancer) return null;
+      const dancerEntries = entries.filter((entry) => getRelationMatches(entry.song, dancer).length > 0);
+      if (!dancerEntries.length) return null;
+      const lastPlayedAtByUrl = getLastPlayedAtByUrl();
+      dancerEntries.sort((a, b) => compareSuggestedEntries(a, b, lastPlayedAtByUrl));
+      return dancerEntries[0] || null;
     }
 
     function updateSummary(entries) {
@@ -1175,6 +1199,8 @@
 
     function resetHistory() {
       sessionHistory = [];
+      remainingSuggestedDancerKeys = [];
+      suggestedDancerPoolSignature = "";
       saveSessionHistory();
       renderAll();
     }
