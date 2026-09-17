@@ -963,6 +963,8 @@
         onWake: () => { refreshState(); },
         onState: (payload) => {
           state = payload;
+          songsState = payload?.songs || songsState;
+          library = payload?.songs?.library || library;
           renderState();
           renderFormationEnabled();
           const cur = payload?.songs?.current || null;

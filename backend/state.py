@@ -336,6 +336,8 @@ class BattleStateManager:
                 if duration:
                     lib[song_id]["duration_sec"] = int(duration)
             self._state.songs["library"] = lib
+            if "background" in {_normalize_role(role) for role in roles_list}:
+                self._sync_background_song()
             self._persist_library(lib)
             return self._state.copy()
 
@@ -433,6 +435,8 @@ class BattleStateManager:
                 else:
                     lib[song_id].setdefault("battle_disabled", False)
                 self._state.songs["library"] = lib
+                if roles is not None:
+                    self._sync_background_song()
                 self._persist_library(lib)
             return self._state.copy()
 
@@ -667,6 +671,17 @@ class BattleStateManager:
                 meta["roles"] = kept
                 lib[sid] = meta
         return lib
+
+    def _sync_background_song(self) -> None:
+        """Keep the playback fallback aligned with the unique background role."""
+        library = self._state.songs.get("library", {}) or {}
+        background_url = ""
+        for meta in library.values():
+            roles = meta.get("roles", []) or []
+            if any(_normalize_role(role) == "background" for role in roles):
+                background_url = str(meta.get("url") or "")
+                break
+        self._state.songs["background"] = background_url
 
     def _persist_dancers(self, dancers: List[Dict[str, str]]) -> None:
         if not self._dancers_path:

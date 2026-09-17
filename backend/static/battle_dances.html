@@ -1664,7 +1664,7 @@
             runPracticeRepeatCues(url);
             return;
           }
-          const bg = state.songs?.background;
+          const bg = getRoleUrl("background");
           if (bg) {
             startAudio(bg, {loop:true});
           }
@@ -1707,17 +1707,7 @@
 
     function ensureBackground() {
       const lib = state.songs?.library || {};
-      const bgExplicit = state.songs?.background;
-      let bg = bgExplicit;
-      if (!bg) {
-        bg = getRoleUrl("background");
-        if (bg) {
-          api("/songs/play", {method:"POST", body:{target:"background", url:bg, context: "battle"}});
-          state.songs = state.songs || {};
-          state.songs.background = bg;
-          state.songs.current = state.songs.current || bg;
-        }
-      }
+      const bg = getRoleUrl("background");
       if (bg) {
         startAudio(bg, {loop:true});
       }

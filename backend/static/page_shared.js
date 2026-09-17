@@ -62,14 +62,30 @@
     }
   }
 
+  function forgetAudioBlobUrl(absUrl) {
+    var blobUrl = _audioBlobUrlBySource[absUrl];
+    if (!blobUrl) return;
+    delete _audioBlobUrlBySource[absUrl];
+    _audioBlobUrlOrder = _audioBlobUrlOrder.filter(function (key) { return key !== absUrl; });
+    if (typeof URL !== "undefined" && typeof URL.revokeObjectURL === "function") {
+      try { URL.revokeObjectURL(blobUrl); } catch (e) {}
+    }
+  }
+
   async function resolveAudioUrlFromCache(url) {
     var absUrl = toAbsoluteUrl(url);
     if (!isCacheableAudioUrl(absUrl)) return String(url || "");
-    var remembered = _audioBlobUrlBySource[absUrl];
-    if (remembered) return remembered;
     try {
       var cache = await caches.open(AUDIO_CACHE_NAME);
-      var resp = await cache.match(absUrl);
+      // Media files can be replaced in place. Revalidate before playback so a cached
+      // blob never outlives the file currently served at this URL.
+      var resp = await fetch(absUrl, { credentials: "same-origin", cache: "no-store" });
+      if (resp && resp.ok) {
+        await cache.put(absUrl, resp.clone());
+        forgetAudioBlobUrl(absUrl);
+      } else {
+        resp = await cache.match(absUrl);
+      }
       if (!resp || !resp.ok) return absUrl;
       var blob = await resp.blob();
       if (!blob || !blob.size) return absUrl;

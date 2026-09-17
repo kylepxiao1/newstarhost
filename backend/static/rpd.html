@@ -93,6 +93,26 @@
       padding: 8px;
       font: inherit;
     }
+    .toggle-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .toggle-opt {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: #cbd5e1;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .toggle-opt input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: #2563eb;
+    }
     .chips {
       display: flex;
       flex-wrap: wrap;
@@ -347,6 +367,16 @@
           </div>
           <input id="songSearch" class="search" placeholder="Search songs or artists" style="max-width:320px;">
         </div>
+        <div class="toggle-row">
+          <label class="toggle-opt">
+            <input id="includeGroupDances" type="checkbox">
+            Include group dances
+          </label>
+          <label class="toggle-opt">
+            <input id="includeMvpDances" type="checkbox">
+            Include MVP dances
+          </label>
+        </div>
         <div id="songGrid" class="song-grid"></div>
       </div>
     </section>
@@ -557,6 +587,31 @@
       return normalizeName(dancer?.name || getDancerHandle(dancer));
     }
 
+    function isGroupEntityName(name) {
+      const low = normalizeName(name);
+      return low.includes("boys") || low.includes("girls");
+    }
+
+    function songHasGroupDance(song) {
+      const fields = [
+        ...(Array.isArray(song?.dancers) ? song.dancers : []),
+        ...(Array.isArray(song?.front_dancers) ? song.front_dancers : []),
+        ...(Array.isArray(song?.knows_song) ? song.knows_song : []),
+        ...(Array.isArray(song?.mvp_dancers) ? song.mvp_dancers : []),
+        ...(Array.isArray(song?.special_dance_for) ? song.special_dance_for : []),
+      ];
+      if (fields.some((name) => isGroupEntityName(name))) return true;
+      return isGroupEntityName(song?.exclusive_mvp_for);
+    }
+
+    function includeGroupDancesEnabled() {
+      return document.getElementById("includeGroupDances")?.checked === true;
+    }
+
+    function includeMvpDancesEnabled() {
+      return document.getElementById("includeMvpDances")?.checked === true;
+    }
+
     function selectedDancers() {
       return dancers.filter((dancer) => selectedKeys.has(dancerKey(dancer)));
     }
@@ -617,7 +672,10 @@
     }
 
     function isRpdPoolSong(song) {
-      return !!song?.url && !song.camera_dance;
+      if (!song?.url || song.camera_dance) return false;
+      if (!includeGroupDancesEnabled() && songHasGroupDance(song)) return false;
+      if (!includeMvpDancesEnabled() && !!song.exclusive_mvp_for) return false;
+      return true;
     }
 
     function analyzeSongForSelection(song) {
@@ -1212,6 +1270,8 @@
       document.getElementById("resetHistoryBtn").addEventListener("click", resetHistory);
       document.getElementById("dancerSearch").addEventListener("input", renderDancers);
       document.getElementById("songSearch").addEventListener("input", renderAll);
+      document.getElementById("includeGroupDances").addEventListener("change", renderAll);
+      document.getElementById("includeMvpDances").addEventListener("change", renderAll);
       document.getElementById("logicExpressionInput").addEventListener("input", renderAll);
       document.getElementById("saveLogicQueryBtn").addEventListener("click", saveCurrentQuery);
       document.querySelectorAll("[data-filter-tab]").forEach((button) => {
