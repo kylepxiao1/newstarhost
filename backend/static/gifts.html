@@ -99,7 +99,8 @@
             <col style="width:4%">
             <col style="width:9%">
             <col style="width:9%">
-            <col style="width:9%">
+            <col style="width:7%">
+            <col style="width:5%">
             <col style="width:8%">
             <col style="width:7%">
             <col style="width:6%">
@@ -113,6 +114,7 @@
               <th>Gifter</th>
               <th>Nickname</th>
               <th>Gift</th>
+              <th>Count</th>
               <th>Recipient</th>
               <th>Diamonds</th>
               <th>USD</th>
@@ -380,6 +382,7 @@
           <td>${escHtml(g.from_username)}</td>
           <td>${escHtml(g.from_nickname)}</td>
           <td>${escHtml(g.gift_name)}</td>
+          <td class="num">x${Number(g.combo_count || 1).toLocaleString()}</td>
           <td>${escHtml(recipient)}</td>
           <td class="num">${Number(g.diamonds).toLocaleString()}</td>
           <td class="num">$${Number(g.usd).toFixed(2)}</td>

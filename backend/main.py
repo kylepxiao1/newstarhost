@@ -1977,6 +1977,10 @@ async def gifts_list(group_handle: str = "", date_mt: Optional[str] = None) -> J
             diamonds = max(0, diamond_count * repeat_count)
         else:
             diamonds = _gift_row_diamond_amount(row)
+            repeat_count = max(
+                1,
+                _tg_to_int(row.get("repeat_count")) or _tg_to_int(row.get("combo_count")) or 1,
+            )
         if diamonds <= 0:
             continue
         recipient = str(row.get("to_member_nickname") or "").strip()
@@ -1989,6 +1993,7 @@ async def gifts_list(group_handle: str = "", date_mt: Optional[str] = None) -> J
             "from_username": str(row.get("from_username") or "").strip(),
             "from_nickname": str(row.get("from_nickname") or "").strip(),
             "gift_name": gift_name,
+            "combo_count": repeat_count,
             "diamonds": diamonds,
             "usd": round(diamonds * 0.005, 2),
             "recipient": recipient,
