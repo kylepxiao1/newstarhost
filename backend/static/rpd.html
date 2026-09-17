@@ -369,12 +369,12 @@
         </div>
         <div class="toggle-row">
           <label class="toggle-opt">
-            <input id="includeGroupDances" type="checkbox">
+            <input id="includeGroupDances" type="checkbox" checked>
             Include group dances
           </label>
           <label class="toggle-opt">
-            <input id="includeMvpDances" type="checkbox">
-            Include MVP dances
+            <input id="includeDuoDances" type="checkbox" checked>
+            Include duo dances
           </label>
         </div>
         <div id="songGrid" class="song-grid"></div>
@@ -608,8 +608,8 @@
       return document.getElementById("includeGroupDances")?.checked === true;
     }
 
-    function includeMvpDancesEnabled() {
-      return document.getElementById("includeMvpDances")?.checked === true;
+    function includeDuoDancesEnabled() {
+      return document.getElementById("includeDuoDances")?.checked === true;
     }
 
     function selectedDancers() {
@@ -674,7 +674,8 @@
     function isRpdPoolSong(song) {
       if (!song?.url || song.camera_dance) return false;
       if (!includeGroupDancesEnabled() && songHasGroupDance(song)) return false;
-      if (!includeMvpDancesEnabled() && !!song.exclusive_mvp_for) return false;
+      if (!includeDuoDancesEnabled() && song.duo_dance) return false;
+      if (song.exclusive_mvp_for) return false;
       return true;
     }
 
@@ -1271,7 +1272,7 @@
       document.getElementById("dancerSearch").addEventListener("input", renderDancers);
       document.getElementById("songSearch").addEventListener("input", renderAll);
       document.getElementById("includeGroupDances").addEventListener("change", renderAll);
-      document.getElementById("includeMvpDances").addEventListener("change", renderAll);
+      document.getElementById("includeDuoDances").addEventListener("change", renderAll);
       document.getElementById("logicExpressionInput").addEventListener("input", renderAll);
       document.getElementById("saveLogicQueryBtn").addEventListener("click", saveCurrentQuery);
       document.querySelectorAll("[data-filter-tab]").forEach((button) => {
