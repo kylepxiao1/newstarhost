@@ -30,6 +30,7 @@ from backend.obs_controller import OBSController
 from backend.state import BattleStateManager
 from backend.websocket_manager import WebsocketManager
 from scripts.utils import _env
+from scripts.sync_song_sheet import sync_song_sheet, SongSheetError
 
 logging.basicConfig(level=getattr(logging, config.LOG_LEVEL.upper(), logging.INFO))
 logger = logging.getLogger(__name__)
@@ -504,6 +505,18 @@ async def update_settings(body: SettingsRequest) -> JSONResponse:
         data["hotkeys"] = cleaned
     _save_hotkeys(data)
     return JSONResponse(data)
+
+
+@app.post("/settings/song-sheet/sync")
+async def sync_song_sheet_endpoint() -> JSONResponse:
+    try:
+        result = await asyncio.to_thread(sync_song_sheet)
+    except SongSheetError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.exception("song sheet sync failed")
+        return JSONResponse({"error": f"Sync failed: {exc}"}, status_code=500)
+    return JSONResponse(result)
 
 
 @app.get("/rpd/queries")

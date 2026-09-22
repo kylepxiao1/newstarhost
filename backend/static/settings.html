@@ -156,6 +156,17 @@
       </div>
     </section>
 
+    <section>
+      <h2>Song Sheet</h2>
+      <div class="row">
+        <button id="syncSongSheetBtn">Sync &amp; Open Song Sheet</button>
+        <span id="songSheetStatusText" class="status"></span>
+      </div>
+      <div class="row">
+        <span class="status">Pushes the current song library to the Google Sheet, then opens it.</span>
+      </div>
+    </section>
+
     <div class="row">
       <span id="saveStatusText" class="status">Auto-save enabled</span>
     </div>
@@ -339,6 +350,25 @@
         }
       }
     }
+
+    async function syncSongSheet() {
+      const btn = document.getElementById("syncSongSheetBtn");
+      const status = document.getElementById("songSheetStatusText");
+      if (btn) btn.disabled = true;
+      if (status) status.textContent = "Syncing...";
+      try {
+        const res = await api("/settings/song-sheet/sync", {method: "POST"});
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || "Sync failed");
+        if (status) status.textContent = `Synced ${data.rows} songs`;
+        if (data.url) window.open(data.url, "_blank", "noopener");
+      } catch (e) {
+        if (status) status.textContent = "Sync failed";
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+    document.getElementById("syncSongSheetBtn")?.addEventListener("click", syncSongSheet);
 
     window.PageShared?.connectWsStatus?.({
       connectedText: "Live",
