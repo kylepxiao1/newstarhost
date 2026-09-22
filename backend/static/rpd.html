@@ -220,6 +220,11 @@
       color: #dcfce7;
       border-color: #166534;
     }
+    .pill.cold {
+      background: #0c2f45;
+      color: #bae6fd;
+      border-color: #0ea5e9;
+    }
     .match-list {
       margin: 0;
       padding: 0;
@@ -920,6 +925,20 @@
       return entries;
     }
 
+    // Songs with the fewest recorded plays among the currently displayed cards.
+    // Capped so flagged cards never exceed 50% of the displayed group.
+    function getLowPlaySet(entries, limit = 3) {
+      const cap = Math.min(limit, Math.floor(entries.length / 2));
+      if (cap <= 0) return new Set();
+      return new Set(
+        entries
+          .map(e => ({ url: e.song.url, count: Number(state?.play_counts?.[e.song.url] || 0) }))
+          .sort((a, b) => a.count - b.count)
+          .slice(0, cap)
+          .map(e => e.url)
+      );
+    }
+
     function countSessionPlaysByUrl() {
       const counts = Object.create(null);
       for (const entry of sessionHistory) {
@@ -1085,6 +1104,7 @@
       }
 
       const sessionCounts = countSessionPlaysByUrl();
+      const lowPlaySet = getLowPlaySet(entries);
       grid.innerHTML = entries.map((entry) => {
         const song = entry.song;
         const artist = song.artist ? '<div class="song-artist">' + escapeHtml(song.artist) + "</div>" : "";
@@ -1093,6 +1113,7 @@
         pills.push('<span class="pill good">' + selectedMatchCount + " dancer" + (selectedMatchCount === 1 ? "" : "s") + " know this</span>");
         if (sessionCounts[song.url]) pills.push('<span class="pill warn">Played ' + sessionCounts[song.url] + "x this session</span>");
         if (song.battle_disabled) pills.push('<span class="pill warn">Battle disabled</span>');
+        if (lowPlaySet.has(song.url)) pills.push('<span class="pill cold">❄ Not played recently</span>');
         const matchRows = entry.matched.map((item) => {
           return "<li><span class=\"match-name\">" + escapeHtml(item.dancer.name || "Unknown") +
             "</span><span class=\"match-reason\">" +

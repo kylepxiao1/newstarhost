@@ -40,13 +40,14 @@
     .nav-bar a.active { font-weight:700; }
     .songs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
     .card { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
-    .card h3 { margin: 0 0 6px 0; font-size: 14px; word-break: break-word; }
+    .card h3 { margin: 0 0 6px 0; padding-right: 58px; font-size: 14px; word-break: break-word; }
     .card .duration { color: #94a3b8; font-weight: 600; }
     .card div { word-break: break-word; }
     .card button { margin-top: auto; }
-    .corner-flags { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; align-items: center; }
+    .corner-flags { position: absolute; top: 8px; right: 8px; width: 56px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; align-items: center; }
     .corner-flag { width: 18px; height: 18px; opacity: 0.92; object-fit: contain; }
     .corner-flag-ttu { display: inline-flex; align-items: center; justify-content: center; height: 18px; padding: 0 4px; border-radius: 4px; font-size: 9px; font-weight: 800; line-height: 1; background: #f97316; color: #0f172a; }
+    .corner-flag-cold { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 4px; font-size: 11px; font-weight: 800; line-height: 1; background: #0ea5e9; color: #0f172a; }
     .songs-empty { color: #94a3b8; font-style: italic; margin-top: 8px; }
     @media (max-width: 900px) {
       header { padding: 12px 12px 0px; flex-direction: column; align-items: flex-start; gap: 8px; }
@@ -1347,6 +1348,20 @@
       renderSongs();
     }
 
+    // Songs with the fewest recorded plays among the currently displayed cards.
+    // Capped so flagged cards never exceed 50% of the displayed group.
+    function getLowPlaySet(songs, limit = 3) {
+      const cap = Math.min(limit, Math.floor(songs.length / 2));
+      if (cap <= 0) return new Set();
+      return new Set(
+        songs
+          .map(s => ({ url: s.url, count: Number(state?.play_counts?.[s.url] || 0) }))
+          .sort((a, b) => a.count - b.count)
+          .slice(0, cap)
+          .map(s => s.url)
+      );
+    }
+
     function renderSongs() {
       const songs = state.songs || {};
       const lib = songs.library || {};
@@ -1390,9 +1405,9 @@
           empty.textContent = "No songs found for this selection.";
         }
 
-        list
-          .sort((a,b)=> (a.name||"").localeCompare(b.name||""))
-          .forEach(song => {
+        list.sort((a,b)=> (a.name||"").localeCompare(b.name||""));
+        const lowPlaySet = getLowPlaySet(list);
+        list.forEach(song => {
             const card = document.createElement("div");
             card.className = "card";
             const rawDiff = String(song.difficulty || "").toLowerCase();
@@ -1456,6 +1471,13 @@
               ttu.title = "TTU";
               ttu.className = "corner-flag-ttu";
               flags.appendChild(ttu);
+            }
+            if (lowPlaySet.has(song.url)) {
+              const cold = document.createElement("span");
+              cold.textContent = "❄";
+              cold.title = "Not played recently (fewest plays)";
+              cold.className = "corner-flag-cold";
+              flags.appendChild(cold);
             }
             card.appendChild(flags);
             const playBtn = document.createElement("button");
