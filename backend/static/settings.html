@@ -23,9 +23,9 @@
     #hotkeyRows td:nth-child(1), thead th:nth-child(1) { width: 48px; }
     #hotkeyRows td:nth-child(2), thead th:nth-child(2) { width: 220px; }
     #hotkeyRows td:nth-child(3), thead th:nth-child(3) { width: 84px; }
-    #roleSongRows td:nth-child(1) { width: 110px; }
+    #roleSongTable th:nth-child(1), #roleSongTable td:nth-child(1) { width: 130px; }
+    #roleSongTable th:nth-child(2), #roleSongTable td:nth-child(2) { width: auto; }
     #roleSongRows select { width: 280px; max-width: 100%; }
-    #roleSongRows td:nth-child(2) { max-width: 60vw; }
     .status { font-weight: 600; color: #94a3b8; }
     .switch { position: relative; display: inline-block; width: 48px; height: 26px; }
     .switch input {
@@ -80,7 +80,8 @@
       }
       #hotkeyRows select { padding: 6px 6px; font-size: 13px; }
       #hotkeyRows button { padding: 6px 8px; font-size: 13px; }
-      #roleSongRows td:nth-child(1) { width: 80px; font-size: 13px; }
+      #roleSongTable th:nth-child(1), #roleSongTable td:nth-child(1) { width: 96px; font-size: 13px; overflow-wrap: anywhere; }
+      #roleSongTable th:nth-child(3), #roleSongTable td:nth-child(3) { width: 76px; }
       #roleSongRows select, #roleSongRows button { width: 100%; box-sizing: border-box; font-size: 13px; padding: 6px; }
       #rolePresetSelect, #rolePresetName { flex: 1 1 140px; min-width: 0; }
     }
@@ -168,7 +169,7 @@
         <span class="status">Quickly bind a song to each role. Changes apply immediately.</span>
       </div>
       <div class="table-wrap">
-        <table>
+        <table id="roleSongTable">
           <thead>
             <tr><th>Role</th><th>Song</th><th>Preview</th></tr>
           </thead>

@@ -711,6 +711,22 @@
     window.PageShared?.connectWsStatus?.({
       connectedText: "Live",
       disconnectedText: "Disconnected",
+      onState: (payload) => {
+        // Pick up role changes made elsewhere (e.g. Settings quickbind) so a later save
+        // here doesn't send stale roles and steal a unique role back.
+        const lib = payload?.songs?.library;
+        if (!lib) return;
+        Object.entries(lib).forEach(([id, s]) => {
+          if (songs[id]) songs[id].roles = [...(s.roles || [])];
+        });
+        const current = currentSongId && lib[currentSongId];
+        if (!current) return;
+        const next = [...(current.roles || [])];
+        if (next.slice().sort().join() !== rolesAssigned.slice().sort().join()) {
+          rolesAssigned = next;
+          renderRoles();
+        }
+      },
     });
     window.PageShared.initPracticeModeHeader({apiFn: api});
     loadDancers();
