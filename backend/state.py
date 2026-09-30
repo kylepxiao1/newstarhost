@@ -24,6 +24,8 @@ _UNIQUE_SONG_ROLES = {
     "background",
     "win",
     "closing",
+    "custom",
+    "ttu",
 }
 
 
@@ -438,6 +440,40 @@ class BattleStateManager:
                 if roles is not None:
                     self._sync_background_song()
                 self._persist_library(lib)
+            return self._state.copy()
+
+    def get_role_assignments(self) -> Dict[str, str]:
+        """Return {role: song_id} for each unique role currently bound to a song."""
+        with self._lock:
+            out: Dict[str, str] = {}
+            for sid, meta in (self._state.songs.get("library", {}) or {}).items():
+                for role in meta.get("roles", []) or []:
+                    norm = _normalize_role(role)
+                    if norm in _UNIQUE_SONG_ROLES and norm not in out:
+                        out[norm] = sid
+            return out
+
+    def set_role_assignments(self, assignments: Dict[str, str]) -> Dict:
+        """Bind each given unique role to a song id ("" unbinds). Unknown song ids unbind the role."""
+        with self._lock:
+            lib = self._state.songs.get("library", {}) or {}
+            targets = {
+                _normalize_role(role): str(sid or "")
+                for role, sid in (assignments or {}).items()
+                if _normalize_role(role) in _UNIQUE_SONG_ROLES
+            }
+            if not targets:
+                return self._state.copy()
+            for sid, meta in lib.items():
+                existing = list(meta.get("roles", []) or [])
+                kept = [r for r in existing if _normalize_role(r) not in targets]
+                kept.extend(role for role, target in targets.items() if target == sid)
+                if kept != existing:
+                    meta["roles"] = kept
+                    lib[sid] = meta
+            self._state.songs["library"] = lib
+            self._sync_background_song()
+            self._persist_library(lib)
             return self._state.copy()
 
     def rename_song(self, song_id: str, name: str, artist: Optional[str] = None) -> Dict:

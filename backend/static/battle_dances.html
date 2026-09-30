@@ -167,7 +167,7 @@
     let lastSeenSongUrl = null;
     let routine = { active:false, live:false, timers:[], endTime:0, warnTime:0, startTime:0, dancers:[], firstSongPlayed:false, warned:false, pointsInterval:null, switchInterval:null, currentSongOwner:"", currentSongUrl:"", playedSongs:new Set(), logged:false, startedLive:false, competitionId:"", isSpoofBattle:false, slotOneIds:new Set(), slotTwoIds:new Set() };
     let timerInterval = null;
-    const SPECIAL_ROLES = ["bell","duo_sfx","applause","attention","background","win","closing"];
+    const SPECIAL_ROLES = ["bell","duo_sfx","applause","attention","background","win","closing","custom"];
     const PRACTICE_SONG_ROLE = "practice_song";
     let playCounts = loadPlayCounts();
     let lastSongUrl = loadLastSong();

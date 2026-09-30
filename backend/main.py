@@ -13,7 +13,7 @@ from pathlib import Path
 import unicodedata
 import uuid
 import shutil
-from typing import Optional, List, Tuple
+from typing import Dict, Optional, List, Tuple
 from zoneinfo import ZoneInfo
 
 import uvicorn
@@ -43,6 +43,7 @@ MEDIA_DIR.mkdir(exist_ok=True)
 HOTKEYS_PATH = MEDIA_DIR / "hotkeys.json"
 RPD_QUERIES_PATH = MEDIA_DIR / "rpd_queries.json"
 GIFT_NOTES_PATH = MEDIA_DIR / "gift_notes.json"
+ROLE_PRESETS_PATH = MEDIA_DIR / "role_presets.json"
 RAPIDAPI_KEY = _env("RAPIDAPI_KEY", "")
 RAPIDAPI_HOST = _env("RAPIDAPI_HOST", "")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID", "").strip()
@@ -54,7 +55,9 @@ if not SUPABASE_URL and SUPABASE_PROJECT_ID:
 SUPABASE_CLIENT_KEY = SUPABASE_PUBLISHABLE_KEY
 SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1" if SUPABASE_URL else ""
 
-ROLE_OPTIONS = {"bell", "duo_sfx", "applause", "mvp", "attention", "background", "win", "closing"}
+ROLE_OPTIONS = {"bell", "duo_sfx", "applause", "mvp", "attention", "background", "win", "closing", "custom"}
+# Unique roles that can be quickbound and saved in role presets (TTU is a dance song, not a hotkey SFX).
+QUICKBIND_ROLES = ROLE_OPTIONS | {"ttu"}
 
 
 def _load_hotkeys() -> dict:
@@ -128,6 +131,43 @@ def _save_rpd_queries(queries: list) -> None:
         RPD_QUERIES_PATH.write_text(json.dumps(queries, indent=2), encoding="utf-8")
     except Exception as exc:
         logger.warning("Failed to save rpd_queries.json: %s", exc)
+
+
+def _load_role_presets() -> list:
+    if not ROLE_PRESETS_PATH.exists():
+        return []
+    try:
+        payload = json.loads(ROLE_PRESETS_PATH.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            return []
+    except Exception:
+        return []
+    out = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        pid = str(item.get("id") or "").strip()
+        name = str(item.get("name") or "").strip()
+        assignments = item.get("assignments")
+        if not pid or not name or not isinstance(assignments, dict):
+            continue
+        cleaned = {}
+        for role, entry in assignments.items():
+            if role not in QUICKBIND_ROLES or not isinstance(entry, dict):
+                continue
+            cleaned[role] = {
+                "song_id": str(entry.get("song_id") or ""),
+                "name": str(entry.get("name") or ""),
+            }
+        out.append({"id": pid, "name": name, "assignments": cleaned})
+    return out
+
+
+def _save_role_presets(presets: list) -> None:
+    try:
+        ROLE_PRESETS_PATH.write_text(json.dumps(presets, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to save role_presets.json: %s", exc)
 
 
 def _load_gift_notes() -> dict:
@@ -458,6 +498,18 @@ class SettingsRequest(BaseModel):
     hotkeys: Optional[dict] = None
 
 
+class RoleAssignmentsRequest(BaseModel):
+    assignments: Dict[str, str]
+
+
+class SaveRolePresetRequest(BaseModel):
+    name: str
+
+
+class RolePresetIdRequest(BaseModel):
+    id: str
+
+
 class SaveRpdQueryRequest(BaseModel):
     name: Optional[str] = None
     expression: str
@@ -517,6 +569,70 @@ async def sync_song_sheet_endpoint() -> JSONResponse:
         logger.exception("song sheet sync failed")
         return JSONResponse({"error": f"Sync failed: {exc}"}, status_code=500)
     return JSONResponse(result)
+
+
+@app.post("/settings/role-assignments")
+async def update_role_assignments(body: RoleAssignmentsRequest) -> JSONResponse:
+    assignments = {role: sid for role, sid in body.assignments.items() if role in QUICKBIND_ROLES}
+    state = state_manager.set_role_assignments(assignments)
+    _broadcast_state(state)
+    return JSONResponse({"assignments": state_manager.get_role_assignments()})
+
+
+@app.get("/settings/role-presets")
+async def get_role_presets() -> JSONResponse:
+    return JSONResponse(_load_role_presets())
+
+
+@app.post("/settings/role-presets")
+async def save_role_preset(body: SaveRolePresetRequest) -> JSONResponse:
+    name = body.name.strip()
+    if not name:
+        return JSONResponse({"error": "name is required"}, status_code=400)
+    library = state_manager.get_state().get("songs", {}).get("library", {}) or {}
+    current = state_manager.get_role_assignments()
+    assignments = {
+        role: {"song_id": current.get(role, ""), "name": str(library.get(current.get(role, ""), {}).get("name") or "")}
+        for role in sorted(QUICKBIND_ROLES)
+    }
+    presets = _load_role_presets()
+    existing = next((p for p in presets if p["name"].lower() == name.lower()), None)
+    if existing:
+        existing["name"] = name
+        existing["assignments"] = assignments
+    else:
+        presets.append({"id": str(uuid.uuid4()), "name": name, "assignments": assignments})
+    _save_role_presets(presets)
+    return JSONResponse(presets)
+
+
+@app.post("/settings/role-presets/delete")
+async def delete_role_preset(body: RolePresetIdRequest) -> JSONResponse:
+    presets = [p for p in _load_role_presets() if p["id"] != body.id]
+    _save_role_presets(presets)
+    return JSONResponse(presets)
+
+
+@app.post("/settings/role-presets/apply")
+async def apply_role_preset(body: RolePresetIdRequest) -> JSONResponse:
+    preset = next((p for p in _load_role_presets() if p["id"] == body.id), None)
+    if not preset:
+        return JSONResponse({"error": "preset not found"}, status_code=404)
+    library = state_manager.get_state().get("songs", {}).get("library", {}) or {}
+    assignments = {}
+    missing = []
+    for role, entry in preset["assignments"].items():
+        sid = entry.get("song_id", "")
+        if sid and sid not in library:
+            # Song id may have changed (re-registered); fall back to matching by name.
+            name = entry.get("name", "")
+            sid = next((k for k, v in library.items() if name and v.get("name") == name), "")
+            if not sid:
+                missing.append({"role": role, "name": name})
+        assignments[role] = sid
+    state = state_manager.set_role_assignments(assignments)
+    _broadcast_state(state)
+    return JSONResponse({"assignments": state_manager.get_role_assignments(), "missing": missing})
 
 
 @app.get("/rpd/queries")

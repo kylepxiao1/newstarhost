@@ -23,6 +23,9 @@
     #hotkeyRows td:nth-child(1), thead th:nth-child(1) { width: 48px; }
     #hotkeyRows td:nth-child(2), thead th:nth-child(2) { width: 220px; }
     #hotkeyRows td:nth-child(3), thead th:nth-child(3) { width: 84px; }
+    #roleSongRows td:nth-child(1) { width: 110px; }
+    #roleSongRows select { width: 280px; max-width: 100%; }
+    #roleSongRows td:nth-child(2) { max-width: 60vw; }
     .status { font-weight: 600; color: #94a3b8; }
     .switch { position: relative; display: inline-block; width: 48px; height: 26px; }
     .switch input {
@@ -77,6 +80,9 @@
       }
       #hotkeyRows select { padding: 6px 6px; font-size: 13px; }
       #hotkeyRows button { padding: 6px 8px; font-size: 13px; }
+      #roleSongRows td:nth-child(1) { width: 80px; font-size: 13px; }
+      #roleSongRows select, #roleSongRows button { width: 100%; box-sizing: border-box; font-size: 13px; padding: 6px; }
+      #rolePresetSelect, #rolePresetName { flex: 1 1 140px; min-width: 0; }
     }
   </style>
 </head>
@@ -157,6 +163,34 @@
     </section>
 
     <section>
+      <h2>Role Songs</h2>
+      <div class="row" style="margin-bottom:12px;">
+        <span class="status">Quickly bind a song to each role. Changes apply immediately.</span>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr><th>Role</th><th>Song</th><th>Preview</th></tr>
+          </thead>
+          <tbody id="roleSongRows"></tbody>
+        </table>
+      </div>
+      <h2 style="margin-top:16px;">Role Presets</h2>
+      <div class="row">
+        <select id="rolePresetSelect"><option value="">(no saved presets)</option></select>
+        <button id="loadRolePresetBtn">Load</button>
+        <button id="deleteRolePresetBtn" style="background:#b91c1c;">Delete</button>
+      </div>
+      <div class="row">
+        <input id="rolePresetName" type="text" placeholder="Preset name">
+        <button id="saveRolePresetBtn">Save Current</button>
+      </div>
+      <div class="row">
+        <span id="rolePresetStatus" class="status">Saving with an existing name overwrites that preset.</span>
+      </div>
+    </section>
+
+    <section>
       <h2>Song Sheet</h2>
       <div class="row">
         <button id="syncSongSheetBtn">Sync &amp; Open Song Sheet</button>
@@ -176,7 +210,7 @@
   <script src="/static/page_shared.js"></script>
   <script>
     const api = window.PageShared.api;
-    const ROLE_OPTIONS = ["", "bell", "duo_sfx", "applause", "attention", "background", "win", "mvp", "closing"];
+    const ROLE_OPTIONS = ["", "bell", "duo_sfx", "applause", "attention", "background", "win", "mvp", "closing", "custom"];
     const DIGITS = ["1","2","3","4","5","6","7","8","9","0"];
     let settings = { fade_in: true, fade_out: true, loop_same_song_after_finish: false, display_background_timer: false, enable_duo_dance: false, hotkeys: {} };
     let hotkeyMap = {};
@@ -256,6 +290,170 @@
         tbody.appendChild(tr);
       });
     }
+
+    const QUICKBIND_ROLES = [...ROLE_OPTIONS.filter(Boolean), "ttu"];
+    const ROLE_LABELS = { duo_sfx: "duo sfx", mvp: "mvp ceremony", custom: "custom sound", ttu: "TTU" };
+    let rolePresets = [];
+
+    function getRoleSongId(role) {
+      const entry = Object.entries(songsLibrary || {}).find(([, s]) => (s.roles || []).includes(role));
+      return entry ? entry[0] : "";
+    }
+
+    function setRolePresetStatus(text) {
+      const el = document.getElementById("rolePresetStatus");
+      if (el) el.textContent = text;
+    }
+
+    function renderRoleSongs() {
+      const tbody = document.getElementById("roleSongRows");
+      if (!tbody) return;
+      const songs = Object.entries(songsLibrary || {})
+        .map(([id, s]) => ({id, label: s.artist ? `${s.name} — ${s.artist}` : (s.name || id)}))
+        .sort((a, b) => a.label.localeCompare(b.label));
+      tbody.innerHTML = "";
+      QUICKBIND_ROLES.forEach(role => {
+        const tr = document.createElement("tr");
+        const tdRole = document.createElement("td");
+        tdRole.textContent = ROLE_LABELS[role] || role;
+        const tdSelect = document.createElement("td");
+        const sel = document.createElement("select");
+        sel.dataset.role = role;
+        const none = document.createElement("option");
+        none.value = "";
+        none.textContent = "(none)";
+        sel.appendChild(none);
+        songs.forEach(song => {
+          const opt = document.createElement("option");
+          opt.value = song.id;
+          opt.textContent = song.label;
+          sel.appendChild(opt);
+        });
+        sel.value = getRoleSongId(role);
+        sel.onchange = () => assignRoles({[role]: sel.value});
+        tdSelect.appendChild(sel);
+        const tdPreview = document.createElement("td");
+        const btn = document.createElement("button");
+        btn.textContent = "Preview";
+        btn.onclick = () => playRole(role);
+        tdPreview.appendChild(btn);
+        tr.appendChild(tdRole);
+        tr.appendChild(tdSelect);
+        tr.appendChild(tdPreview);
+        tbody.appendChild(tr);
+      });
+    }
+
+    async function assignRoles(assignments) {
+      setRolePresetStatus("Saving role...");
+      try {
+        const res = await api("/settings/role-assignments", {method: "POST", body: {assignments}});
+        if (!res.ok) throw new Error("save failed");
+        await loadLibrary();
+        renderRoleSongs();
+        setRolePresetStatus("Role saved");
+      } catch (e) {
+        setRolePresetStatus("Role save failed");
+        renderRoleSongs();
+      }
+    }
+
+    function renderRolePresets(selectedId) {
+      const sel = document.getElementById("rolePresetSelect");
+      if (!sel) return;
+      const prev = selectedId ?? sel.value;
+      sel.innerHTML = "";
+      if (!rolePresets.length) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "(no saved presets)";
+        sel.appendChild(opt);
+        return;
+      }
+      rolePresets.forEach(p => {
+        const opt = document.createElement("option");
+        opt.value = p.id;
+        opt.textContent = p.name;
+        opt.title = QUICKBIND_ROLES
+          .map(role => `${ROLE_LABELS[role] || role}: ${p.assignments?.[role]?.name || "(none)"}`)
+          .join("\n");
+        sel.appendChild(opt);
+      });
+      if (rolePresets.some(p => p.id === prev)) sel.value = prev;
+    }
+
+    async function loadRolePresets() {
+      try {
+        const res = await api("/settings/role-presets");
+        const data = await res.json();
+        rolePresets = Array.isArray(data) ? data : [];
+      } catch (e) {
+        rolePresets = [];
+      }
+      renderRolePresets();
+    }
+
+    async function saveRolePreset() {
+      const input = document.getElementById("rolePresetName");
+      const name = (input?.value || "").trim();
+      if (!name) {
+        setRolePresetStatus("Enter a preset name");
+        return;
+      }
+      try {
+        const res = await api("/settings/role-presets", {method: "POST", body: {name}});
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || "save failed");
+        rolePresets = data;
+        const saved = rolePresets.find(p => p.name.toLowerCase() === name.toLowerCase());
+        renderRolePresets(saved?.id);
+        if (input) input.value = "";
+        setRolePresetStatus(`Saved preset "${name}"`);
+      } catch (e) {
+        setRolePresetStatus("Preset save failed");
+      }
+    }
+
+    async function applyRolePreset() {
+      const id = document.getElementById("rolePresetSelect")?.value;
+      const preset = rolePresets.find(p => p.id === id);
+      if (!preset) return;
+      try {
+        const res = await api("/settings/role-presets/apply", {method: "POST", body: {id}});
+        const data = await res.json();
+        if (!res.ok || data.error) throw new Error(data.error || "load failed");
+        await loadLibrary();
+        renderRoleSongs();
+        const missing = (data.missing || []).map(m => `${m.role} (${m.name || "?"})`);
+        setRolePresetStatus(missing.length
+          ? `Loaded "${preset.name}" — missing songs left unbound: ${missing.join(", ")}`
+          : `Loaded "${preset.name}"`);
+      } catch (e) {
+        setRolePresetStatus("Preset load failed");
+      }
+    }
+
+    async function deleteRolePreset() {
+      const id = document.getElementById("rolePresetSelect")?.value;
+      const preset = rolePresets.find(p => p.id === id);
+      if (!preset) return;
+      if (!confirm(`Delete role preset "${preset.name}"?`)) return;
+      try {
+        const res = await api("/settings/role-presets/delete", {method: "POST", body: {id}});
+        rolePresets = await res.json();
+        renderRolePresets();
+        setRolePresetStatus(`Deleted preset "${preset.name}"`);
+      } catch (e) {
+        setRolePresetStatus("Preset delete failed");
+      }
+    }
+
+    document.getElementById("saveRolePresetBtn")?.addEventListener("click", saveRolePreset);
+    document.getElementById("loadRolePresetBtn")?.addEventListener("click", applyRolePreset);
+    document.getElementById("deleteRolePresetBtn")?.addEventListener("click", deleteRolePreset);
+    document.getElementById("rolePresetName")?.addEventListener("keydown", evt => {
+      if (evt.key === "Enter") saveRolePreset();
+    });
 
     async function loadSettings() {
       settings = await window.PageShared.fetchAppSettings(api);
@@ -373,9 +571,17 @@
     window.PageShared?.connectWsStatus?.({
       connectedText: "Live",
       disconnectedText: "Disconnected",
+      onState: (payload) => {
+        const lib = payload?.songs?.library;
+        if (!lib) return;
+        songsLibrary = lib;
+        // Don't yank an open dropdown out from under the user.
+        if (!document.activeElement?.closest?.("#roleSongRows")) renderRoleSongs();
+      },
     });
     window.PageShared.initPracticeModeHeader({apiFn: api});
-    loadLibrary();
+    loadLibrary().then(renderRoleSongs);
+    loadRolePresets();
     loadSettings();
     document.addEventListener("keydown", handleHotkey);
   </script>
