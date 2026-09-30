@@ -24,7 +24,9 @@ _UNIQUE_SONG_ROLES = {
     "background",
     "win",
     "closing",
-    "custom",
+    "custom_sound_1",
+    "custom_sound_2",
+    "custom_sound_3",
     "ttu",
 }
 

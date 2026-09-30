@@ -210,7 +210,7 @@
   <script src="/static/page_shared.js"></script>
   <script>
     const api = window.PageShared.api;
-    const ROLE_OPTIONS = ["", "bell", "duo_sfx", "applause", "attention", "background", "win", "mvp", "closing", "custom"];
+    const ROLE_OPTIONS = ["", "bell", "duo_sfx", "applause", "attention", "background", "win", "mvp", "closing", "custom_sound_1", "custom_sound_2", "custom_sound_3"];
     const DIGITS = ["1","2","3","4","5","6","7","8","9","0"];
     let settings = { fade_in: true, fade_out: true, loop_same_song_after_finish: false, display_background_timer: false, enable_duo_dance: false, hotkeys: {} };
     let hotkeyMap = {};
@@ -292,7 +292,7 @@
     }
 
     const QUICKBIND_ROLES = [...ROLE_OPTIONS.filter(Boolean), "ttu"];
-    const ROLE_LABELS = { duo_sfx: "duo sfx", mvp: "mvp ceremony", custom: "custom sound", ttu: "TTU" };
+    const ROLE_LABELS = { duo_sfx: "duo sfx", mvp: "mvp ceremony", custom_sound_1: "custom sound 1", custom_sound_2: "custom sound 2", custom_sound_3: "custom sound 3", ttu: "TTU" };
     let rolePresets = [];
 
     function getRoleSongId(role) {

@@ -55,7 +55,7 @@ if not SUPABASE_URL and SUPABASE_PROJECT_ID:
 SUPABASE_CLIENT_KEY = SUPABASE_PUBLISHABLE_KEY
 SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1" if SUPABASE_URL else ""
 
-ROLE_OPTIONS = {"bell", "duo_sfx", "applause", "mvp", "attention", "background", "win", "closing", "custom"}
+ROLE_OPTIONS = {"bell", "duo_sfx", "applause", "mvp", "attention", "background", "win", "closing", "custom_sound_1", "custom_sound_2", "custom_sound_3"}
 # Unique roles that can be quickbound and saved in role presets (TTU is a dance song, not a hotkey SFX).
 QUICKBIND_ROLES = ROLE_OPTIONS | {"ttu"}
 
