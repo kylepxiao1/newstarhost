@@ -411,6 +411,7 @@
       { key: "mvp_dancers", label: "MVP", short: "MVP", weight: 1.15 },
       { key: "special_dance_for", label: "Special", short: "Special", weight: 1.05 },
       { key: "exclusive_mvp_for", label: "Exclusive MVP", short: "Exclusive", weight: 1.15, scalar: true },
+      { key: "exclusive_tournament_mvp_for", label: "Exclusive Tournament MVP", short: "Tournament", weight: 1.15, scalar: true },
     ];
 
     let library = {};
@@ -606,7 +607,8 @@
         ...(Array.isArray(song?.special_dance_for) ? song.special_dance_for : []),
       ];
       if (fields.some((name) => isGroupEntityName(name))) return true;
-      return isGroupEntityName(song?.exclusive_mvp_for);
+      if (isGroupEntityName(song?.exclusive_mvp_for)) return true;
+      return isGroupEntityName(song?.exclusive_tournament_mvp_for);
     }
 
     function includeGroupDancesEnabled() {
@@ -681,6 +683,7 @@
       if (!includeGroupDancesEnabled() && songHasGroupDance(song)) return false;
       if (!includeDuoDancesEnabled() && song.duo_dance) return false;
       if (song.exclusive_mvp_for) return false;
+      if (song.exclusive_tournament_mvp_for) return false;
       return true;
     }
 

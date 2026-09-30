@@ -120,6 +120,13 @@
     </div>
 
     <div class="row" style="margin-top:10px;">
+      <label style="width:100%;">Exclusive Tournament MVP for (one dancer max)</label>
+    </div>
+    <div class="row">
+      <select id="exclusiveTournamentMvpSelect" style="flex:1;" onchange="exclusiveTournamentMvpFor=this.value; save();"></select>
+    </div>
+
+    <div class="row" style="margin-top:10px;">
       <label style="width:100%;">Difficulty</label>
     </div>
     <div class="row">
@@ -160,6 +167,7 @@
   let knowsAssigned = [];
   let specialDanceFor = [];
   let exclusiveMvpFor = "";
+  let exclusiveTournamentMvpFor = "";
   let tagsAssigned = [];
   let battleDisabled = false;
   let cameraDance = false;
@@ -232,6 +240,7 @@
       rolesAssigned = [];
       knowsAssigned = [];
       exclusiveMvpFor = "";
+      exclusiveTournamentMvpFor = "";
       tagsAssigned = [];
       battleDisabled = false;
       cameraDance = false;
@@ -261,6 +270,7 @@
       knowsAssigned = [...(song.knows_song || [])];
       specialDanceFor = [...(song.special_dance_for || [])];
       exclusiveMvpFor = song.exclusive_mvp_for || "";
+      exclusiveTournamentMvpFor = song.exclusive_tournament_mvp_for || "";
       tagsAssigned = [...(song.tags || [])];
       battleDisabled = !!song.battle_disabled;
       cameraDance = !!song.camera_dance;
@@ -274,6 +284,8 @@
       setVolumeUi(volumeValue);
       const exSel = document.getElementById("exclusiveMvpSelect");
       if (exSel) exSel.value = exclusiveMvpFor || "";
+      const exTourneySel = document.getElementById("exclusiveTournamentMvpSelect");
+      if (exTourneySel) exTourneySel.value = exclusiveTournamentMvpFor || "";
       const diffSel = document.getElementById("difficultySelect");
       if (diffSel) diffSel.value = difficultyValue;
       const cameraToggle = document.getElementById("cameraDanceToggle");
@@ -317,7 +329,7 @@
           if (state && state.library) {
             songs = state.library;
           }
-          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, special_dance_for: specialDanceFor, exclusive_mvp_for: exclusiveMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance, tags: tagsAssigned, battle_disabled: battleDisabled}});
+          return api("/songs/update_dancers", {method:"POST", body:{song_id: currentSongId, dancers: dancersAssigned, front_dancers: frontsAssigned, mvp_dancers: mvpsAssigned, roles: rolesAssigned, knows_song: knowsAssigned, special_dance_for: specialDanceFor, exclusive_mvp_for: exclusiveMvpFor, exclusive_tournament_mvp_for: exclusiveTournamentMvpFor, volume, difficulty, camera_dance: cameraDance, duo_dance: duoDance, tags: tagsAssigned, battle_disabled: battleDisabled}});
         })
         .then(()=>loadSongs())
         .finally(()=>btns.forEach(b=>b.disabled=false));
@@ -472,6 +484,7 @@
       roles: rolesAssigned,
       knows_song: knowsAssigned,
       exclusive_mvp_for: exclusiveMvpFor,
+      exclusive_tournament_mvp_for: exclusiveTournamentMvpFor,
       difficulty: difficultyValue || "medium",
       volume,
       camera_dance: cameraDance,
@@ -677,19 +690,35 @@
 
     function renderExclusive() {
       const sel = document.getElementById("exclusiveMvpSelect");
-      if (!sel) return;
-      sel.innerHTML = "";
-      const blank = document.createElement("option");
-      blank.value = "";
-      blank.textContent = "(none)";
-      sel.appendChild(blank);
-      dancers.forEach(d => {
-        const opt = document.createElement("option");
-        opt.value = d.name;
-        opt.textContent = d.name;
-        sel.appendChild(opt);
-      });
-      sel.value = exclusiveMvpFor || "";
+      if (sel) {
+        sel.innerHTML = "";
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "(none)";
+        sel.appendChild(blank);
+        dancers.forEach(d => {
+          const opt = document.createElement("option");
+          opt.value = d.name;
+          opt.textContent = d.name;
+          sel.appendChild(opt);
+        });
+        sel.value = exclusiveMvpFor || "";
+      }
+      const tourneySel = document.getElementById("exclusiveTournamentMvpSelect");
+      if (tourneySel) {
+        tourneySel.innerHTML = "";
+        const blank = document.createElement("option");
+        blank.value = "";
+        blank.textContent = "(none)";
+        tourneySel.appendChild(blank);
+        dancers.forEach(d => {
+          const opt = document.createElement("option");
+          opt.value = d.name;
+          opt.textContent = d.name;
+          tourneySel.appendChild(opt);
+        });
+        tourneySel.value = exclusiveTournamentMvpFor || "";
+      }
     }
 
     function highlightNav() {

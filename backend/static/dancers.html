@@ -56,7 +56,7 @@
     <h2>Registered Dancers</h2>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Handle</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Handle</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Tournament MVP Song</th><th>Actions</th></tr></thead>
         <tbody id="dancerTable"></tbody>
       </table>
     </div>
@@ -79,17 +79,20 @@
         const knowsOnly = [];
         const fronts = [];
         const mvps = [];
+        const tournamentMvps = [];
         Object.values(songsLib).forEach(song => {
           const sname = song.name || "";
           const dancerList = (song.dancers || []).map(x => (x || "").toLowerCase());
           const knowsList = (song.knows_song || []).map(x => (x || "").toLowerCase());
           const frontsList = (song.front_dancers || []).map(x => (x || "").toLowerCase());
           const mvpFor = (song.exclusive_mvp_for || "").toLowerCase();
+          const tournamentMvpFor = (song.exclusive_tournament_mvp_for || "").toLowerCase();
           const target = name.toLowerCase();
           if (dancerList.includes(target)) knows.push(sname);
           if (knowsList.includes(target)) knowsOnly.push(sname);
           if (frontsList.includes(target)) fronts.push(sname);
           if (mvpFor && mvpFor === target) mvps.push(sname);
+          if (tournamentMvpFor && tournamentMvpFor === target) tournamentMvps.push(sname);
         });
         const tr = document.createElement("tr");
         const actions = document.createElement("td");
@@ -112,7 +115,7 @@
         btnDel.onclick = () => deleteDancer(name);
         actions.appendChild(selKnow); actions.appendChild(btnAddKnow); actions.appendChild(btnRemKnow); actions.appendChild(btnDel);
 
-        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${knows.join(", ")}</td><td>${knowsOnly.join(", ")}</td><td>${fronts.join(", ")}</td><td>${mvps.join(", ")}</td>`;
+        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${knows.join(", ")}</td><td>${knowsOnly.join(", ")}</td><td>${fronts.join(", ")}</td><td>${mvps.join(", ")}</td><td>${tournamentMvps.join(", ")}</td>`;
         tr.appendChild(actions);
         tbody.appendChild(tr);
       });

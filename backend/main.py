@@ -407,6 +407,7 @@ class RegisterSongRequest(BaseModel):
     special_dance_for: Optional[List[str]] = None
     roles: Optional[List[str]] = None
     exclusive_mvp_for: Optional[str] = None
+    exclusive_tournament_mvp_for: Optional[str] = None
     volume: Optional[float] = None
     difficulty: Optional[str] = None
     camera_dance: Optional[bool] = None
@@ -427,6 +428,7 @@ class UpdateSongDancersRequest(BaseModel):
     special_dance_for: Optional[List[str]] = None
     roles: Optional[List[str]] = None
     exclusive_mvp_for: Optional[str] = None
+    exclusive_tournament_mvp_for: Optional[str] = None
     volume: Optional[float] = None
     difficulty: Optional[str] = None
     camera_dance: Optional[bool] = None
@@ -1643,6 +1645,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
         knows_song=body.knows_song,
         special_dance_for=body.special_dance_for,
         exclusive_mvp_for=body.exclusive_mvp_for,
+        exclusive_tournament_mvp_for=body.exclusive_tournament_mvp_for,
         volume=body.volume,
         difficulty=body.difficulty,
         camera_dance=body.camera_dance,
@@ -1722,6 +1725,7 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
         body.duo_dance,
         body.tags,
         body.battle_disabled,
+        exclusive_tournament_mvp_for=body.exclusive_tournament_mvp_for,
     )
     _broadcast_state(state)
     return JSONResponse(state)

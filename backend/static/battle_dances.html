@@ -1415,13 +1415,16 @@
             const badge = song.exclusive_mvp_for
               ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">MVP: ${song.exclusive_mvp_for}</span>`
               : "";
+            const tournamentBadge = song.exclusive_tournament_mvp_for
+              ? `<span style="margin-left:8px;padding:2px 6px;border-radius:6px;background:#f59e0b;color:#0f172a;font-weight:700;">Tournament MVP: ${song.exclusive_tournament_mvp_for}</span>`
+              : "";
             const frontList = (song.front_dancers || []).filter(Boolean);
             const dancerList = (song.dancers || []).filter(Boolean);
             const frontLine = frontList.length ? `Front: ${frontList[0]}` : "";
             const dancerLine = dancerList.length ? `Dancers: ${dancerList.join(", ")}` : "";
             const artistLine = song.artist ? `<div style="color:#94a3b8;font-size:12px;margin-bottom:4px;">${song.artist}</div>` : "";
             const details = [frontLine, dancerLine].filter(Boolean).join("<br>");
-            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}</h3>${artistLine}${details ? `<div>${details}</div>` : ""}`;
+            card.innerHTML = `<h3>${song.name||"Unnamed"}${durationLabel(song)} ${badge}${tournamentBadge}</h3>${artistLine}${details ? `<div>${details}</div>` : ""}`;
             const songTags = (song.tags || []).filter(t => t && t.text);
             if (songTags.length) {
               const tagsDiv = document.createElement("div");
@@ -1615,11 +1618,11 @@
       const played = routine.playedSongs || new Set();
       const both = intersectSongsFor(slotOne, slotTwo)
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
-        .filter(s => !s.camera_dance && !s.exclusive_mvp_for && !s.battle_disabled)
+        .filter(s => !s.camera_dance && !s.exclusive_mvp_for && !s.exclusive_tournament_mvp_for && !s.battle_disabled)
         .filter(s => !played.has(s.url) && s.url !== currentUrl);
       const groups = groupSongs()
         .filter(s => !(s.roles||[]).some(r=>SPECIAL_ROLES.includes(r)))
-        .filter(s => !s.camera_dance && !s.exclusive_mvp_for && !s.battle_disabled)
+        .filter(s => !s.camera_dance && !s.exclusive_mvp_for && !s.exclusive_tournament_mvp_for && !s.battle_disabled)
         .filter(s => !played.has(s.url) && s.url !== currentUrl);
       const combined = new Set([...both, ...groups]);
       let url = "";
