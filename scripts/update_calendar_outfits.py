@@ -53,6 +53,29 @@ JULY_2026_OUTFITS = {
     30: "Pirates",
     31: "Shark fits",
 }
+OCTOBER_2026_OUTFITS = {
+    1: "Office Sirens",
+    2: "Jerseys",
+    6: "Kens",
+    7: "Cowboys",
+    8: "Hyperpop",
+    9: "Office Sirens",
+    12: "Cowboys",
+    13: "Angels",
+    14: "Office Sirens",
+    15: "Techwear",
+    16: "Fave Kpop Idol (Cardin's B-day)",
+    19: "Office Sirens",
+    20: "Devils",
+    21: "Techwear",
+    22: "Cowboys",
+    23: "Butlers",
+    26: "Angels vs Devils",
+    27: "Office Sirens",
+    28: "Suits",
+    29: "Werewolves",
+    30: "Vampires",
+}
 
 
 @dataclass(frozen=True)
@@ -147,6 +170,8 @@ def _month_outfits(year: int, month: int) -> dict[date, str]:
         return {date(year, month, day): outfit for day, outfit in JUNE_2026_OUTFITS.items()}
     if year == 2026 and month == 7:
         return {date(year, month, day): outfit for day, outfit in JULY_2026_OUTFITS.items()}
+    if year == 2026 and month == 10:
+        return {date(year, month, day): outfit for day, outfit in OCTOBER_2026_OUTFITS.items()}
     raise SystemExit(f"No built-in outfit transcription is available for {year:04d}-{month:02d}.")
 
 
