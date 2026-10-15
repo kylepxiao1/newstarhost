@@ -1,0 +1,9 @@
+priority,username,roster_status,evidence_level,utah_overlap,evidence_url,notes
+1,cloudstarmedia168,outside,official site,Full window currently advertised,https://cloudstarlive.com/,TikTok live lookup 2026-10-15 returned UserNotFoundError; excluded from pilot pending handle confirmation; boy-group dance singing king battle; 17:30-20:30 PDT converts to 18:30-21:30 MDT; recheck schedule after DST
+2,kstar_kone,outside,agency casting post,Conditional on 09:30 meaning KST; 18:30 MDT previous day,https://www.filmmakers.co.kr/pr/31575662?page=2,Post lists K-ONE 9:30; timezone not explicitly stated; Seoul agency; no verified end time
+3,legend.co.ltd,outside,TikTok event partner government site,Unknown,https://thacca.go.th/news/2025-07-14-08-02-24/,Hip-hop TikTok LIVE creator; current stream schedule and PK format unverified
+4,kstar_kiss,outside,agency casting post,Listed 19:00 likely KST is 04:00 MDT; poor overlap,https://www.filmmakers.co.kr/pr/31575662?page=2,Relevant group performance audience; validate late or additional shows
+5,kstar_kick,outside,agency casting post,Listed 19:00 likely KST is 04:00 MDT; poor overlap,https://www.filmmakers.co.kr/pr/31575662?page=2,Relevant group performance audience; validate late or additional shows
+6,kstar.see,outside,agency recruiting listing,Unknown,https://castik.co.kr/en/auditions/9c2478cf-1dfe-11f1-a101-0af7c1837823,Listed among boy/girl group accounts; verify current lineup and format
+7,ubgenesix,outside,secondary video index only,Unknown,https://www.suyuechuanmei.com/radar/tiktok?filter=watchlist,Index links to @ubgenesix boygroup/tiktoklive videos; TikTok page could not be independently read; discovery lead only
+8,ubflash.x,outside,secondary video index only,Unknown,https://www.suyuechuanmei.com/radar/tiktok?filter=watchlist,Index links to @ubflash.x live-dance boygroup videos; TikTok page could not be independently read; discovery lead only

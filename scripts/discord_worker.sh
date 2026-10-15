@@ -31,6 +31,9 @@ REMINDER_CMD="${WILDCARDZ_REMINDER_CMD:-python /app/scripts/reminder_bot.py}"
 REMINDER_ENABLED="${WILDCARDZ_REMINDER_ENABLED:-1}"
 TOPGIFTER_CMD="${WILDCARDZ_TOPGIFTER_CMD:-python /app/scripts/top_gifters_bot.py}"
 TOPGIFTER_ENABLED="${WILDCARDZ_TOPGIFTER_ENABLED:-1}"
+GIFTER_SUMMARY_ENABLED="${GIFTER_SUMMARY_ENABLED:-1}"
+GIFTER_SUMMARY_RESTART_SECONDS="${GIFTER_SUMMARY_RESTART_SECONDS:-60}"
+worker_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log() {
   printf '%s [discord] %s\n' "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" "$*"
@@ -94,14 +97,41 @@ trendbot_loop() {
   done
 }
 
+# Keep summary failures isolated from the Discord bots and trendbot.
+gifter_summary_loop() {
+  local child_pid=""
+  trap 'if [ -n "$child_pid" ]; then kill "$child_pid" 2>/dev/null || true; wait "$child_pid" || true; fi; exit 0' SIGINT SIGTERM
+  while true; do
+    log "Starting summary-only TikTok listener"
+    if [ -n "${GIFTER_SUMMARY_CMD:-}" ]; then
+      bash -lc "exec ${GIFTER_SUMMARY_CMD}" &
+    else
+      bash "${worker_script_dir}/gifter_summary.sh" &
+    fi
+    child_pid=$!
+    local child_status=0
+    wait "$child_pid" || child_status=$?
+    child_pid=""
+    log "Summary listener exited (status=${child_status}); restarting in ${GIFTER_SUMMARY_RESTART_SECONDS}s"
+    sleep "${GIFTER_SUMMARY_RESTART_SECONDS}" &
+    child_pid=$!
+    wait "$child_pid" || true
+    child_pid=""
+  done
+}
+
 trendbot_pid=""
 verify_pid=""
 watchdog_pid=""
 reminder_pid=""
 topgifter_pid=""
+gifter_summary_pid=""
 
 shutdown_children() {
   log "Shutting down discord worker children"
+  if [ -n "${gifter_summary_pid}" ] && kill -0 "${gifter_summary_pid}" 2>/dev/null; then
+    kill "${gifter_summary_pid}" 2>/dev/null || true
+  fi
   if [ -n "${trendbot_pid}" ] && kill -0 "${trendbot_pid}" 2>/dev/null; then
     kill "${trendbot_pid}" 2>/dev/null || true
   fi
@@ -164,7 +194,17 @@ else
   log "Wildcardz top-gifters bot disabled (WILDCARDZ_TOPGIFTER_ENABLED=${TOPGIFTER_ENABLED})"
 fi
 
+if [ "${GIFTER_SUMMARY_ENABLED}" = "1" ] || [ "${GIFTER_SUMMARY_ENABLED}" = "true" ]; then
+  gifter_summary_loop &
+  gifter_summary_pid=$!
+else
+  log "Summary-only TikTok listener disabled (GIFTER_SUMMARY_ENABLED=${GIFTER_SUMMARY_ENABLED})"
+fi
+
 pids=("${trendbot_pid}" "${verify_pid}")
+if [ -n "${gifter_summary_pid}" ]; then
+  pids+=("${gifter_summary_pid}")
+fi
 if [ -n "${watchdog_pid}" ]; then
   pids+=("${watchdog_pid}")
 fi

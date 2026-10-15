@@ -468,6 +468,22 @@ def _prune_state(state: dict[str, Any], now_utc: datetime) -> dict[str, Any]:
     return state
 
 
+def _daily_report_already_sent(state: dict[str, Any], target_date: date, tz: ZoneInfo) -> bool:
+    """An old empty 7:15 check must not suppress a later completed stream."""
+    if state.get("last_daily_run_local_date") != target_date.isoformat():
+        return False
+    sent = state.get("sent_events")
+    if not isinstance(sent, dict):
+        return False
+    for meta in sent.values():
+        if not isinstance(meta, dict):
+            continue
+        start = _parse_event_datetime({"dateTime": meta.get("event_start_utc")})
+        if start is not None and start.astimezone(tz).date() == target_date:
+            return True
+    return False
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     logger = logging.getLogger("wildcardz-top-gifters")
@@ -582,7 +598,7 @@ async def run() -> None:
             if now_local < scheduled_local:
                 await asyncio.sleep(cfg.poll_seconds)
                 continue
-            if last_daily_run_local_date == target_local_date.isoformat():
+            if _daily_report_already_sent(state, target_local_date, tz):
                 await asyncio.sleep(cfg.poll_seconds)
                 continue
 
@@ -609,7 +625,9 @@ async def run() -> None:
                 target_local_date=target_local_date,
                 local_tz=tz,
             )
-            daily_check_completed = True
+            # Keep polling until a stream actually completes. In particular,
+            # a 6:30-9:30 PM stream is still running at the 7:15 PM check.
+            daily_check_completed = latest is not None
             if latest is not None:
                 event, start_dt, end_dt = latest
                 key = _event_key(event, start_dt, end_dt)

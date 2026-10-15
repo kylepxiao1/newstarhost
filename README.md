@@ -264,7 +264,8 @@ flyctl ssh sftp put -a newstarhost -g app ~/local/file.ext /path/on/machine/file
     This worker runs:
     an internal trendbot loop, `scripts/discord_verify_bot.py`,
     `scripts/reminder_bot.py` (daily Wildcardz calendar reminder),
-    and `scripts/top_gifters_bot.py` (top gifters report after livestreams).
+    `scripts/top_gifters_bot.py` (top gifters report after livestreams),
+    and a supervised summary-only TikTok listener via `scripts/gifter_summary.sh`.
 - The `/app/media` Fly volume is scoped to `app` machines only.
 - Trendbot defaults (inside `scripts/discord_worker.sh`):
   - `TRENDBOT_INTERVAL=21600` (6 hours)
@@ -293,7 +294,7 @@ flyctl ssh sftp put -a newstarhost -g app ~/local/file.ext /path/on/machine/file
   - Event name match (case/whitespace-insensitive): `WILDCARDZ_TOPGIFTER_EVENT_NAME=Wildcardz Live`
   - TikTok account filter: `WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME=wildcard_ns`
   - Webhook: `WILDCARDZ_TOPGIFTER_WEBHOOK`
-  - Report behavior: at 7:15 PM local timezone each day, checks for the latest completed matching livestream on that calendar day, excludes members whose nickname contains `the host`, and sends per-member ranked blocks (`#`, `gifter`, `diamonds`, `usd`).
+  - Report behavior: starting at 7:15 PM local timezone each day, polls until a matching livestream has completed on that calendar day (so 6:30–9:30 PM streams report after 9:30 PM), excludes members whose nickname contains `the host`, and sends per-member ranked blocks (`#`, `gifter`, `diamonds`, `usd`).
   - Optional toggles: `WILDCARDZ_TOPGIFTER_ENABLED=1`, `WILDCARDZ_TOPGIFTER_SEND_EMPTY=1`
   - Debug trigger: `WILDCARDZ_TOPGIFTER_DEBUG=1` sends immediately on startup for the latest completed matching livestream in the last `WILDCARDZ_TOPGIFTER_LOOKBACK_DAYS` (default `2`)
 - Scale process groups explicitly:
@@ -344,3 +345,146 @@ Jupyter notebooks are in `analytics/notebooks`
 .venv/bin/python -m pip install -r analytics/requirements.txt
 .venv/bin/python -m jupyter lab analytics/notebooks
 ```
+
+## Summary-only gifter research listener
+
+`bash scripts/gifter_summary.sh` is a separate instance from `listener_multi.sh`.
+It listens only for gifts (plus connection lifecycle), aggregates in memory, and
+upserts **one row per room observation** to
+`public.tiktok_gifter_summaries`. Each row contains a top-20 JSON list and room
+summary totals. Every flush replaces that list in place; falling out of the top
+20 does not leave extra gifter rows behind. There are no raw-event or per-gift
+writes, no chat/like/join collection, no stdout file, and no backend actions.
+The existing full-event listeners keep their current configuration.
+
+### Create the table in Supabase's web UI
+
+1. Open the existing Supabase project in the dashboard.
+2. Choose **SQL Editor → New query**.
+3. Paste the full contents of
+   [`supabase/migrations/20261015_gifter_summaries.sql`](supabase/migrations/20261015_gifter_summaries.sql)
+   and click **Run**.
+4. In **Table Editor**, refresh and check for `public.tiktok_gifter_summaries`.
+   RLS deliberately permits no browser/anonymous access; the listener uses the
+   existing `SUPABASE_SECRET_KEY` from `app.env`.
+5. Verify access and then launch:
+
+```bash
+bash scripts/gifter_summary.sh --check
+bash scripts/gifter_summary.sh
+```
+
+Default hours are **18:30–21:30 America/Denver**, including Utah daylight saving
+changes. Outside those hours it waits without connecting. To research other
+schedules, run `bash scripts/gifter_summary.sh --all-day`; each summary still
+separately counts gifting within your Utah window. Change the dedicated roster
+in [`config/gifter_summary.env`](config/gifter_summary.env), or override it:
+
+```bash
+GIFTER_SUMMARY_USERNAMES="cloudstarmedia168,kstar_kone,legend.co.ltd" \
+  bash scripts/gifter_summary.sh --top 20 --flush-seconds 60
+```
+
+The pilot includes K-ONE and LEGEND.Co as outside leads plus the existing `play.zr4`,
+`vfm.aero`, and `primalkings_officialjwm` accounts as benchmarks. It does not
+silently inherit every existing listener account. Existing accounts can be added
+to the same table by adding their handles to this dedicated roster. Running both
+listeners on the same account creates a second TikTok connection and leaves the
+original listener's full-event storage in place; this addition alone does not
+reduce the original tables' growth.
+
+The summary listener runs as a supervised background subroutine inside the
+existing **Discord worker**, sharing its machine with the existing bots. There
+is no new Fly process group. If the listener exits, its supervisor restarts it
+after `GIFTER_SUMMARY_RESTART_SECONDS` (default 60), without restarting the other
+Discord tasks. Worker shutdown signals the listener and allows its final flush.
+Set `GIFTER_SUMMARY_ENABLED=0` in `app.env` to disable it. An optional
+`GIFTER_SUMMARY_CONFIG` selects a different roster env file.
+
+After checking table access, deploy only the Discord group:
+
+```bash
+flyctl deploy -a newstarhost --process-groups discord
+```
+
+This builds the updated image and targets only the existing Discord group;
+its bots restart together as part of that deployment. The app and full-event
+listener groups keep running. `fly.toml` is unchanged and remains the normal
+configuration. Check `flyctl machines list -a newstarhost`, then view the Discord
+machine's logs with `flyctl logs -a newstarhost --machine <DISCORD_MACHINE_ID>`.
+Expect `[discord] Starting summary-only TikTok listener`, followed by connections
+when the Utah collection window is open and the configured accounts are live.
+The container uses the existing `app.env` credentials. These changes have not
+been deployed yet.
+
+### Outside leads found October 15, 2026
+
+Prioritize **@cloudstarmedia168**. Its [official site](https://cloudstarlive.com/)
+advertises an Asian boy-group dance/singing/king-battle stream daily at
+17:30–20:30 PDT, currently 18:30–21:30 MDT: a full match to your window. It also
+lists a later show. Recheck its schedule after daylight saving changes.
+**Live lookup on October 15 returned `UserNotFoundError` for this handle.**
+It is excluded from the active pilot until its current handle is confirmed;
+the published schedule is a discovery lead, not a verified connection.
+
+**@kstar_kone** is the next schedule lead. An
+[August agency casting post](https://www.filmmakers.co.kr/pr/31575662?page=2)
+lists K-ONE at 09:30. If this means Seoul local time, it starts at 18:30 MDT the
+previous day (17:30 MST in winter). The post does not explicitly state timezone
+or end time, so overlap is a hypothesis to validate. The same post lists
+**@kstar_kiss** and **@kstar_kick** at 19:00; assuming KST, those are morning Utah
+streams and lower priority for your evening window.
+
+**@legend.co.ltd** is a credible dance LIVE lead: the
+[Thai creative culture agency's TikTok event announcement](https://thacca.go.th/news/2025-07-14-08-02-24/)
+identifies it as a hip-hop TikTok LIVE creator. Its current schedule, PK format,
+and evening-Utah overlap are unverified.
+
+[`research/dance_pk_outside_leads.csv`](research/dance_pk_outside_leads.csv)
+contains eight outside leads, including @kstar.see and lower-confidence
+@ubgenesix / @ubflash.x discovery leads. The latter two came from a secondary
+video index; their TikTok pages could not be independently read. These are
+ranked research prospects, not a verified ranking of high-gifting audiences.
+No outside account's gifter totals have been measured yet.
+
+For benchmarks, a read-only scan of existing gift rows from the preceding 14
+days found the most observed Utah-window gift units on `play.zr4` (2,523,456),
+`vfm.aero` (460,181), and `primalkings_officialjwm` (267,737). The saved
+[`research/dance_pk_historical_summary.json`](research/dance_pk_historical_summary.json)
+contains aggregate results and top gifters. These estimates deduplicate message
+IDs and take maximum cumulative count per room/sender/combo group. They depend
+on existing ingestion coverage and are not complete TikTok earnings or proof
+that every observed gift occurred during a PK battle. Zero observed rows means
+no evidence in this dataset, not no gifting.
+
+### Reading results and storage limits
+
+Run the queries in
+[`research/gifter_summary_queries.sql`](research/gifter_summary_queries.sql)
+in SQL Editor to rank streams and find repeat top gifters across dates/accounts.
+`gift_units` means reported gift catalog `diamond_count × quantity`, not USD
+spent, coin purchase cost, creator payout, or a viewer's wealth. Combo updates
+use positive deltas and message deduplication. Missing-price gifts are counted
+in `unknown_price_events` and excluded from amounts. No currency conversion is
+invented.
+
+A continuous room observation creates one compact row, regardless of the number
+of gift events. A process restart creates a new observation; a new room or a new
+local day on reconnection also starts a new observation. An uninterrupted
+`--all-day` observation stays assigned to its starting date. Upserts are idempotent
+per observation. Run one summary instance per account to avoid double counting.
+Only retained top-N contributions can be analyzed later; cross-session gifter
+amounts are lower bounds. Room totals include all observed priced gifts.
+
+Failed writes retain compact snapshots in memory for retry, including on room
+changes. A forced process crash can lose changes since the last successful
+flush; an interrupted combo without a stable group ID can be undercounted. This
+process has no durable per-event queue, intentionally limiting storage. Stored
+summaries accumulate across sessions; the query file includes optional manual
+90-day retention cleanup. No advertising messages are sent by this listener.
+
+Validation: `.venv/bin/python -m unittest discover -s tests -v` covers the
+installed TikTok event format, streak counting/deduplication, top-N replacement,
+Utah daylight saving boundaries, missing prices, retrying writes exclusively
+to the new summary table, reconnects, final-save handling after disconnect
+errors, and waiting outside the collection window. Live writes require the web-UI schema setup above.
