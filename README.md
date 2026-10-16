@@ -288,13 +288,15 @@ flyctl ssh sftp put -a newstarhost -g app ~/local/file.ext /path/on/machine/file
   - Uses `WILDCARDZ_CALENDAR_ID` and defaults to `WILDCARDZ_REMINDER_EVENT_NAME=Wildcardz Live`
   - Dry run: `.venv/bin/python scripts/update_calendar_outfits.py --dry-run`
   - Write June 2026 outfits: `.venv/bin/python scripts/update_calendar_outfits.py`
+- Reminder restart behavior: elapsed daily reminders and notes follow-ups are skipped at startup to prevent replay after redeployment, even when `/tmp` state is lost. Future reminders still run normally. Missed reminders during downtime are not backfilled. Keep `WILDCARDZ_REMINDER_TEST_FIRE_NOW=0` for normal operation.
 - Wildcardz top gifters env:
   - Uses same calendar keys: `WILDCARDZ_CALENDAR_ID`, `WILDCARDZ_CALENDAR_API_KEY`
   - Defaults: `WILDCARDZ_TOPGIFTER_TIMEZONE=America/Denver`, `WILDCARDZ_TOPGIFTER_POLL_SECONDS=60`
   - Event name match (case/whitespace-insensitive): `WILDCARDZ_TOPGIFTER_EVENT_NAME=Wildcardz Live`
   - TikTok account filter: `WILDCARDZ_TOPGIFTER_TIKTOK_USERNAME=wildcard_ns`
   - Webhook: `WILDCARDZ_TOPGIFTER_WEBHOOK`
-  - Report behavior: starting at 7:15 PM local timezone each day, polls until a matching livestream has completed on that calendar day (so 6:30–9:30 PM streams report after 9:30 PM), excludes members whose nickname contains `the host`, and sends per-member ranked blocks (`#`, `gifter`, `diamonds`, `usd`).
+  - Report behavior: starting at 7:15 PM local timezone each day, polls until a matching livestream has completed on that calendar day (plus the end buffer, so 6:30–9:30 PM streams report after 9:35 PM by default), excludes members whose nickname contains `the host`, and sends per-member ranked blocks (`#`, `gifter`, `diamonds`, `usd`).
+  - End buffer: `WILDCARDZ_TOPGIFTER_END_BUFFER_SECONDS=300` (five minutes). Waits until the calendar end plus this buffer and includes gifts through that buffered end.
   - Optional toggles: `WILDCARDZ_TOPGIFTER_ENABLED=1`, `WILDCARDZ_TOPGIFTER_SEND_EMPTY=1`
   - Debug trigger: `WILDCARDZ_TOPGIFTER_DEBUG=1` sends immediately on startup for the latest completed matching livestream in the last `WILDCARDZ_TOPGIFTER_LOOKBACK_DAYS` (default `2`)
 - Scale process groups explicitly:

@@ -26,7 +26,8 @@ class TopGiftersTests(unittest.IsolatedAsyncioTestCase):
                 Path(directory)/'state.json', 'https://example.test/webhook',
                 'https://example.test', 'fixture', 'wildcard_ns', 2, True, False)
             times = [datetime(2026, 10, 15, 19, 15, tzinfo=TZ),
-                     datetime(2026, 10, 15, 21, 31, tzinfo=TZ)]
+                     datetime(2026, 10, 15, 21, 34, tzinfo=TZ),
+                     datetime(2026, 10, 15, 21, 36, tzinfo=TZ)]
             state = {'sent_events': {}}
             if stale_daily_flag:
                 state['last_daily_run_local_date'] = DAY.isoformat()
@@ -34,15 +35,15 @@ class TopGiftersTests(unittest.IsolatedAsyncioTestCase):
             class Clock:
                 @classmethod
                 def now(cls, tz=None):
-                    return times[min(sleeps[0], 1)].astimezone(tz or timezone.utc)
+                    return times[min(sleeps[0], 2)].astimezone(tz or timezone.utc)
 
             sender = AsyncMock(side_effect=[RuntimeError('temporary delivery error'), None] if fail_first_send else None)
             async def advance(seconds):
-                if sleeps[0] == 0:
+                if sleeps[0] < 2:
                     self.assertNotIn('test|', str(state.get('sent_events')))
                     self.assertEqual(sender.await_count, 0)
                 sleeps[0] += 1
-                if sleeps[0] >= (3 if fail_first_send else 2):
+                if sleeps[0] >= (4 if fail_first_send else 3):
                     raise asyncio.CancelledError()
 
             with patch.object(bot, '_load_config', return_value=cfg), \
@@ -61,7 +62,7 @@ class TopGiftersTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(state['sent_events']), 1)
             self.assertTrue(cfg.state_file.exists())
 
-    async def test_waits_until_930_stream_finishes(self):
+    async def test_waits_until_stream_and_five_minute_buffer_finish(self):
         await self.check_evening_schedule()
 
     async def test_recovers_old_empty_daily_check_state(self):
@@ -69,6 +70,14 @@ class TopGiftersTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_delivery_is_retried(self):
         await self.check_evening_schedule(fail_first_send=True)
+
+    async def test_exact_buffer_boundary(self):
+        for minute, should_complete in [(34, False), (35, True)]:
+            found = bot._latest_completed_matching_event(events=[EVENT],
+                event_name='Wildcardz Live',
+                now_utc=datetime(2026, 10, 15, 21, minute, tzinfo=TZ),
+                end_buffer_seconds=300)
+            self.assertEqual(found is not None, should_complete)
 
     async def test_successful_report_suppresses_duplicate_daily_send(self):
         state = {'last_daily_run_local_date': DAY.isoformat(), 'sent_events': {
@@ -100,7 +109,9 @@ class TopGiftersTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[0].url.path, '/rest/v1/gift_events')
         self.assertEqual(requests[0].url.params['tiktok_username'], 'eq.wildcard_ns')
         self.assertEqual(len(requests[0].url.params.get_list('iso_ts')), 2)
+        self.assertIn('lt.2026-10-16T03:35:00+00:00', requests[0].url.params.get_list('iso_ts'))
         self.assertEqual(len(posts), 1)
+        self.assertIn('9:35 PM', posts[0])
         self.assertIn('Kyle', posts[0])
         self.assertIn('150', posts[0])
         self.assertNotIn('the host', posts[0])

@@ -542,6 +542,7 @@ async def _run_notes_followups(
     tz: ZoneInfo,
     logger: logging.Logger,
     state: dict[str, Any],
+    startup_utc: datetime | None = None,
 ) -> bool:
     now_utc = datetime.now(timezone.utc)
     state = _prune_notes_followup_state(state, now_utc)
@@ -579,6 +580,12 @@ async def _run_notes_followups(
             changed_state = True
         checked_at = _normalize_space(str(meta.get("checked_at_utc") or ""))
         if checked_at:
+            continue
+        if startup_utc is not None and due_utc <= startup_utc:
+            # /tmp state can disappear on deploy. Do not replay old reminders.
+            meta["checked_at_utc"] = now_utc.isoformat()
+            meta["skipped_reason"] = "due_before_worker_start"
+            changed_state = True
             continue
         if now_utc < due_utc:
             continue
@@ -684,6 +691,17 @@ async def _run_for_day(
     return True
 
 
+def _skip_elapsed_startup_reminder(state: dict[str, Any], cfg: Config, now_local: datetime) -> bool:
+    """Skip catch-up on restart, since ephemeral state cannot prove prior delivery."""
+    today_key = now_local.date().isoformat()
+    run_at = datetime.combine(now_local.date(), time(hour=cfg.run_hour, minute=cfg.run_minute), tzinfo=now_local.tzinfo)
+    if now_local >= run_at and state.get("last_sent_day") != today_key:
+        state["last_sent_day"] = today_key
+        state["startup_skip_day"] = today_key
+        return True
+    return False
+
+
 async def run() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
     logger = logging.getLogger("wildcardz-live-reminder")
@@ -705,8 +723,12 @@ async def run() -> None:
     except Exception as exc:
         raise SystemExit(f"Invalid WILDCARDZ_REMINDER_TIMEZONE '{cfg.timezone_name}': {exc}") from exc
 
+    startup_utc = datetime.now(timezone.utc)
     state = _load_state(cfg.state_file)
     state = _prune_notes_followup_state(state, datetime.now(timezone.utc))
+    if _skip_elapsed_startup_reminder(state, cfg, startup_utc.astimezone(tz)):
+        logger.info("Skipping elapsed daily reminder on startup to avoid reposting after redeployment")
+        _save_state(cfg.state_file, state)
     last_sent_day = _normalize_space(str(state.get("last_sent_day") or ""))
     logger.info(
         "Starting Wildcardz reminder (tz=%s run_at=%02d:%02d poll=%ss event='%s' test_fire_now=%s notes_followup=+1h)",
@@ -720,7 +742,7 @@ async def run() -> None:
 
     timeout = httpx.Timeout(connect=10.0, read=25.0, write=20.0, pool=10.0)
     async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-        if cfg.test_fire_now:
+        if cfg.test_fire_now and last_sent_day != startup_utc.astimezone(tz).date().isoformat():
             now_local = datetime.now(timezone.utc).astimezone(tz)
             today = now_local.date()
             today_key = today.isoformat()
@@ -744,6 +766,7 @@ async def run() -> None:
                     tz=tz,
                     logger=logger,
                     state=state,
+                    startup_utc=startup_utc,
                 )
             except Exception as exc:
                 logger.warning("Notes follow-up check failed: %s", _exc_text(exc))

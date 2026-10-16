@@ -216,6 +216,7 @@ class Config:
     lookback_days: int
     send_empty: bool
     debug_enabled: bool
+    end_buffer_seconds: int = 300
 
 
 def _load_config() -> Config:
@@ -241,6 +242,7 @@ def _load_config() -> Config:
         lookback_days=max(1, _env_int("WILDCARDZ_TOPGIFTER_LOOKBACK_DAYS", 2)),
         send_empty=_env_bool("WILDCARDZ_TOPGIFTER_SEND_EMPTY", True),
         debug_enabled=_env_bool("WILDCARDZ_TOPGIFTER_DEBUG", False),
+        end_buffer_seconds=max(0, _env_int("WILDCARDZ_TOPGIFTER_END_BUFFER_SECONDS", 300)),
     )
 
 
@@ -251,6 +253,7 @@ def _latest_completed_matching_event(
     now_utc: datetime,
     target_local_date: date | None = None,
     local_tz: ZoneInfo | None = None,
+    end_buffer_seconds: int = 0,
 ) -> tuple[dict[str, Any], datetime, datetime] | None:
     latest: tuple[datetime, dict[str, Any], datetime, datetime] | None = None
     tz_for_filter = local_tz or timezone.utc
@@ -270,7 +273,7 @@ def _latest_completed_matching_event(
             if start_dt.astimezone(tz_for_filter).date() != target_local_date:
                 continue
         end_utc = end_dt.astimezone(timezone.utc)
-        if end_utc > now_utc:
+        if end_utc + timedelta(seconds=end_buffer_seconds) > now_utc:
             continue
         if latest is None or end_utc > latest[0]:
             latest = (end_utc, event, start_dt, end_dt)
@@ -398,7 +401,7 @@ async def _send_report_for_event(
     logger: logging.Logger,
 ) -> None:
     start_utc = start_dt.astimezone(timezone.utc)
-    end_utc = end_dt.astimezone(timezone.utc)
+    end_utc = end_dt.astimezone(timezone.utc) + timedelta(seconds=cfg.end_buffer_seconds)
     rows = await _fetch_gift_rows_for_window(
         client=supabase_client,
         tiktok_username=cfg.tiktok_username,
@@ -414,6 +417,8 @@ async def _send_report_for_event(
         f"Wildcardz Top Gifters\n"
         f"Window: {start_local.strftime('%a %b %d')} {_format_clock(start_local)} - {_format_clock(end_local)} {tz.key}"
     )
+    if cfg.end_buffer_seconds:
+        header += f"\nIncludes {cfg.end_buffer_seconds // 60:g}m {cfg.end_buffer_seconds % 60:g}s after the calendar end."
 
     if not ranked:
         if not cfg.send_empty:
@@ -508,12 +513,13 @@ async def run() -> None:
         raise SystemExit(f"Invalid WILDCARDZ_TOPGIFTER_TIMEZONE '{cfg.timezone_name}': {exc}") from exc
 
     logger.info(
-        "Starting top-gifters bot (event='%s' poll=%ss tz=%s daily_check=7:15PM local account=@%s debug=%s)",
+        "Starting top-gifters bot (event='%s' poll=%ss tz=%s daily_check=7:15PM local account=@%s debug=%s end_buffer=%ss)",
         cfg.event_name,
         cfg.poll_seconds,
         cfg.timezone_name,
         cfg.tiktok_username,
         cfg.debug_enabled,
+        cfg.end_buffer_seconds,
     )
 
     state = _load_state(cfg.state_file)
@@ -549,6 +555,7 @@ async def run() -> None:
                     events=debug_events,
                     event_name=cfg.event_name,
                     now_utc=now_utc,
+                    end_buffer_seconds=cfg.end_buffer_seconds,
                 )
                 if latest is None:
                     logger.warning(
@@ -624,6 +631,7 @@ async def run() -> None:
                 now_utc=now_utc,
                 target_local_date=target_local_date,
                 local_tz=tz,
+                end_buffer_seconds=cfg.end_buffer_seconds,
             )
             # Keep polling until a stream actually completes. In particular,
             # a 6:30-9:30 PM stream is still running at the 7:15 PM check.
