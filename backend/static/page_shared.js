@@ -330,6 +330,57 @@
       });
   }
 
+  function isRelayLoopActive(opts) {
+    var relay = opts && opts.relayLoop;
+    if (!relay) return false;
+    return typeof relay.isActive === "function" ? !!relay.isActive() : true;
+  }
+
+  // Relay loop: restart the track from the top just before it ends, with a short volume
+  // dip (fade out over the last fadeSec, fade back in over the first fadeSec) instead of
+  // letting it end and continue the sequence. Turning relay off lets the current pass end normally.
+  function runRelayLoop(player, loadToken, targetVolume, opts) {
+    var fadeSec = Number(opts.relayLoop.fadeSec) > 0 ? Number(opts.relayLoop.fadeSec) : 0.6;
+    var endLeadSec = 0.05;
+    var looped = false;
+    var touched = false;
+    var lastTime = 0;
+    var timer = setInterval(function () {
+      // Any jump back toward the start (incl. the onended fallback) fades back in.
+      if (player.currentTime < lastTime - 1) looped = true;
+      lastTime = player.currentTime;
+      if (player.dataset.audioLoadToken !== loadToken) {
+        clearInterval(timer);
+        return;
+      }
+      if (!isRelayLoopActive(opts)) {
+        if (touched) player.volume = targetVolume;
+        touched = false;
+        looped = false;
+        return;
+      }
+      var duration = player.duration;
+      if (player.paused || !isFinite(duration) || duration <= fadeSec * 4) return;
+      var rate = player.playbackRate || 1;
+      var remaining = (duration - player.currentTime) / rate - endLeadSec;
+      if (remaining <= 0) {
+        looped = true;
+        touched = true;
+        player.volume = 0;
+        player.currentTime = 0;
+        lastTime = 0;
+        return;
+      }
+      var gain = Math.min(1, remaining / fadeSec);
+      if (looped) gain = Math.min(gain, (player.currentTime / rate) / fadeSec);
+      if (gain < 1 || looped) {
+        touched = true;
+        player.volume = Math.max(0, Math.min(1, targetVolume * gain));
+      }
+      if (looped && gain >= 1) looped = false;
+    }, 20);
+  }
+
   function startAudio(cfg) {
     if (!cfg || !cfg.url) return null;
     var player = cfg.player || getGlobalAudioPlayer();
@@ -358,6 +409,13 @@
           try { player.pause(); } catch (e) {}
           player.loop = !!opts.loop;
           player.onended = function () {
+            if (isRelayLoopActive(opts) && player.dataset.audioLoadToken === loadToken) {
+              // Fallback if the relay timer was throttled and missed the end: restart immediately.
+              player.currentTime = 0;
+              var p0 = player.play();
+              if (p0 && typeof p0.catch === "function") p0.catch(function () {});
+              return;
+            }
             if (typeof opts.onEnd === "function") {
               opts.onEnd();
               return;
@@ -390,6 +448,9 @@
             player.volume = targetVolume;
             var p2 = player.play();
             if (p2 && typeof p2.catch === "function") p2.catch(function () {});
+          }
+          if (opts.relayLoop) {
+            runRelayLoop(player, loadToken, targetVolume, opts);
           }
         })
         .catch(function () {})

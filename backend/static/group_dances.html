@@ -16,8 +16,8 @@
     select, input { padding: 8px; border-radius: 6px; border: 1px solid #334155; background: #0b1222; color: #e2e8f0; flex: 1; width: 100%; box-sizing: border-box; }
     .filter-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-bottom: 10px; width: 100%; }
     .filter-pair .field { min-width: 0; }
-    .songs { display: flex; gap: 8px; flex-wrap: wrap; }
-    .card { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; width: 220px; min-height: 90px; display: flex; flex-direction: column; }
+    .songs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(220px, 100%), 1fr)); gap: 8px; }
+    .card { position: relative; background: #0b1222; border: 1px solid #1f2937; border-radius: 8px; padding: 10px; box-sizing: border-box; min-width: 0; min-height: 90px; display: flex; flex-direction: column; }
     .corner-flags { position: absolute; top: 8px; right: 8px; width: 56px; display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; align-items: center; }
     .corner-flag { width: 18px; height: 18px; opacity: 0.92; object-fit: contain; }
     .corner-flag-ttu { display: inline-flex; align-items: center; justify-content: center; height: 18px; padding: 0 4px; border-radius: 4px; font-size: 9px; font-weight: 800; line-height: 1; background: #f97316; color: #0f172a; }
@@ -59,7 +59,6 @@
       .row { flex-wrap: wrap; }
       .row > * { flex: 1 1 220px; }
       .filter-pair { grid-template-columns: 1fr; }
-      .card { width: 100%; }
       .formation-wrap { grid-template-columns: 1fr; }
       #formationCanvas { width: 100%; max-width: 360px; height: auto; }
       .bg-timer-box { left: 12px; bottom: 12px; }
@@ -100,6 +99,7 @@
     <div class="row">
       <input id="songSearch" placeholder="Search song or artist" oninput="renderSongs()">
       <button id="speedToggleBtn" onclick="toggleSpeed()" style="flex:0 0 auto;">2x Speed</button>
+      <button id="relayLoopBtn" onclick="toggleRelayLoop()" style="flex:0 0 auto;" title="Bell once, then loop the song with short fades and no applause">Relay Loop</button>
     </div>
     <div id="songsContainer" class="songs"></div>
   </section>
@@ -179,6 +179,40 @@
       applySpeedToPlayer(currentUrl);
     }
 
+    const RELAY_LOOP_STORAGE_KEY = "relay_loop_group";
+    const RELAY_LOOP_FADE_SEC = 0.6;
+    let relayLoop = loadRelayLoop();
+    let relaySongUrl = "";
+
+    function loadRelayLoop() {
+      try { return localStorage.getItem(RELAY_LOOP_STORAGE_KEY) === "1"; } catch (e) { return false; }
+    }
+
+    function renderRelayLoopBtn() {
+      const btn = document.getElementById("relayLoopBtn");
+      if (!btn) return;
+      btn.style.background = relayLoop ? "#dc2626" : "";
+    }
+
+    function isRelaySongPlaying() {
+      const player = getAudioPlayer();
+      if (!player || player.paused || !relaySongUrl) return false;
+      const src = player.dataset?.originalSrc || player.currentSrc || player.src || "";
+      return normalizeAudioUrl(src) === normalizeAudioUrl(relaySongUrl);
+    }
+
+    function toggleRelayLoop() {
+      const wasLooping = relayLoop && isRelaySongPlaying();
+      relayLoop = !relayLoop;
+      try { localStorage.setItem(RELAY_LOOP_STORAGE_KEY, relayLoop ? "1" : "0"); } catch (e) {}
+      renderRelayLoopBtn();
+      if (wasLooping) {
+        // End the relay right away: applause, then the background loop.
+        relaySongUrl = "";
+        playSequence(["applause_role", "background_role"]);
+      }
+    }
+
     function normalizeRoleToken(role) {
       return String(role || "").trim().toLowerCase().replace(/\s+/g, "_");
     }
@@ -199,6 +233,7 @@
       settingsDisplayBackgroundTimer = data.display_background_timer === true;
       hotkeyMap = data.hotkeys || {};
       window.PageShared.setPracticeModeHeader(settingsLoopSameSongAfterFinish);
+      renderRelayLoopBtn();
       renderSongs();
       updateBackgroundTimerOverlay();
     }
@@ -929,7 +964,14 @@
       }
       // normal audio
       setCurrent(url);
-      startAudio(url, {loop:false, fade:true, fadeOut:false, skipFadeOut:true, isRole, onEnd: () => playSequence(rest, onDone)});
+      const opts = {loop:false, fade:true, fadeOut:false, skipFadeOut:true, isRole, onEnd: () => playSequence(rest, onDone)};
+      if (!isRole && url === songsState.current) {
+        // Relay loop is checked live, so toggling it on mid-song takes effect on this play-through.
+        relaySongUrl = url;
+        opts.relayLoop = {isActive: () => relayLoop, fadeSec: RELAY_LOOP_FADE_SEC};
+        opts.onEnd = () => { relaySongUrl = ""; playSequence(rest, onDone); };
+      }
+      startAudio(url, opts);
     }
 
     function ensureBackground() {
