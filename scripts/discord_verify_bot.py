@@ -553,7 +553,7 @@ class FanVerifyBot(commands.Bot):
         self.verify_channel_id = _env_int("DISCORD_VERIFY_CHANNEL_ID")
         self.admin_channel_name = _env("DISCORD_ADMIN_CHANNEL", "admin").strip() or "admin"
         self.admin_channel_id = _env_int("DISCORD_ADMIN_CHANNEL_ID")
-        self.livestream_channel_name = _env("DISCORD_LIVESTREAMS_CHANNEL", "livestreams").strip() or "livestreams"
+        self.livestream_channel_name = _env("DISCORD_LIVESTREAMS_CHANNEL", "announcements").strip() or "announcements"
         self.livestream_channel_id = _env_int("DISCORD_LIVESTREAMS_CHANNEL_ID")
         self.verified_role_name = _env("DISCORD_VERIFIED_ROLE", "verified").strip() or "verified"
         self.verified_role_id = _env_int("DISCORD_VERIFIED_ROLE_ID")
