@@ -930,7 +930,10 @@ def _rank_top_gifters(rows: list[dict]) -> dict[str, list[dict]]:
         else:
             singles.append(row)
 
+    # Group by member ID so a nickname change mid-stream doesn't split a member;
+    # label each member with the latest nickname seen.
     totals: dict[str, dict[str, dict[str, object]]] = {}
+    labels: dict[str, tuple[str, str]] = {}
     for row in singles + list(combo_best.values()):
         member = str(row.get("to_member_nickname") or "").strip()
         gifter = str(row.get("from_username") or "").strip()
@@ -950,19 +953,23 @@ def _rank_top_gifters(rows: list[dict]) -> dict[str, list[dict]]:
             diamonds = _gift_row_diamond_amount(row)
         if diamonds <= 0:
             continue
-        member_bucket = totals.setdefault(member, {})
+        member_key = str(row.get("to_member_id_int") or "").strip() or member
+        iso_ts = str(row.get("iso_ts") or "")
+        if member_key not in labels or iso_ts >= labels[member_key][0]:
+            labels[member_key] = (iso_ts, member)
+        member_bucket = totals.setdefault(member_key, {})
         gifter_entry = member_bucket.setdefault(gifter, {"diamonds": 0, "from_nickname": ""})
         gifter_entry["diamonds"] = int(gifter_entry.get("diamonds") or 0) + diamonds
         if nickname:
             gifter_entry["from_nickname"] = nickname
 
     ranked: dict[str, list[dict]] = {}
-    for member, donor_map in totals.items():
+    for member_key, donor_map in totals.items():
         top_items = sorted(
             donor_map.items(),
             key=lambda item: (-int(item[1].get("diamonds") or 0), item[0].lower()),
         )[:5]
-        ranked[member] = [
+        ranked[labels[member_key][1]] = [
             {
                 "from_username": username,
                 "from_nickname": str(payload.get("from_nickname") or "").strip(),
@@ -996,7 +1003,7 @@ async def _fetch_gift_rows_for_window(
         async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
             while True:
                 query = [
-                    ("select", "id,iso_ts,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,group_id,tiktok_username,gift_name"),
+                    ("select", "id,iso_ts,to_member_id_int,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,group_id,tiktok_username,gift_name"),
                     ("tiktok_username", f"eq.{handle}"),
                     ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
                     ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),

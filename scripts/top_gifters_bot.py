@@ -332,7 +332,7 @@ async def _fetch_gift_rows_for_window(
         # Keep each filter as separate key in query string.
         # httpx supports repeated keys by list of tuples.
         query = [
-            ("select", "id,iso_ts,to_member_nickname,from_username,amount_value,diamond_count,repeat_count,combo_count"),
+            ("select", "id,iso_ts,to_member_id_int,to_member_nickname,from_username,amount_value,diamond_count,repeat_count,combo_count"),
             ("tiktok_username", f"eq.{tiktok_username}"),
             ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
             ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),
@@ -359,7 +359,10 @@ async def _fetch_gift_rows_for_window(
 
 
 def _rank_top_gifters(rows: list[dict[str, Any]]) -> dict[str, list[tuple[str, int]]]:
+    # Group by member ID so a nickname change mid-stream doesn't split a member;
+    # label each member with the latest nickname seen (rows are in id order).
     totals: dict[str, dict[str, int]] = {}
+    labels: dict[str, str] = {}
     for row in rows:
         member = _normalize_space(row.get("to_member_nickname") or "")
         gifter = _normalize_space(row.get("from_username") or "")
@@ -372,13 +375,15 @@ def _rank_top_gifters(rows: list[dict[str, Any]]) -> dict[str, list[tuple[str, i
         diamonds = _gift_row_diamond_amount(row)
         if diamonds <= 0:
             continue
-        member_bucket = totals.setdefault(member, {})
+        member_key = _normalize_space(str(row.get("to_member_id_int") or "")) or member
+        labels[member_key] = member
+        member_bucket = totals.setdefault(member_key, {})
         member_bucket[gifter] = member_bucket.get(gifter, 0) + diamonds
 
     ranked: dict[str, list[tuple[str, int]]] = {}
-    for member, donor_map in totals.items():
+    for member_key, donor_map in totals.items():
         top = sorted(donor_map.items(), key=lambda item: (-item[1], item[0].lower()))[:5]
-        ranked[member] = top
+        ranked[labels[member_key]] = top
     return ranked
 
 
