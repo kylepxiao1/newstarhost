@@ -684,6 +684,11 @@ class FanVerifyBot(commands.Bot):
         for channel in guild.text_channels:
             if channel.name.lower() == wanted:
                 return channel
+        # Fall back to ignoring decorations like "🔔〕announcements".
+        wanted_core = re.sub(r"[^a-z0-9_-]", "", wanted)
+        for channel in guild.text_channels:
+            if wanted_core and re.sub(r"[^a-z0-9_-]", "", channel.name.lower()) == wanted_core:
+                return channel
         return None
 
     async def _is_handle_live(self, handle: str) -> bool:

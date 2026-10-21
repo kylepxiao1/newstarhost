@@ -534,6 +534,45 @@ class BattleStateManager:
             self._persist_dancers(dancers)
             return self._state.copy()
 
+    def rename_dancer(self, old_name: str, new_name: str) -> Dict:
+        """Rename a dancer everywhere their name is used (dancer list, song tags, battle state)."""
+        old_l = (old_name or "").strip().lower()
+        new_name = (new_name or "").strip()
+        if not old_l or not new_name:
+            raise ValueError("Both old and new names are required")
+        with self._lock:
+            dancers = self._state.dancers or []
+            if not any((d.get("name") or "").strip().lower() == old_l for d in dancers):
+                raise KeyError(f"No dancer named {old_name!r}")
+            if any((d.get("name") or "").strip().lower() == new_name.lower() for d in dancers):
+                raise ValueError(f"A dancer named {new_name!r} already exists")
+
+            def swap(value):
+                if isinstance(value, str) and value.strip().lower() == old_l:
+                    return new_name
+                if isinstance(value, list):
+                    return [swap(v) for v in value]
+                return value
+
+            for d in dancers:
+                d["name"] = swap(d.get("name"))
+            self._state.dancers = dancers
+            self._state.enabled_dancers = swap(self._state.enabled_dancers or [])
+            for attr in ("slot_one", "slot_two", "last_winner", "group_name"):
+                setattr(self._state, attr, swap(getattr(self._state, attr)))
+            wins = self._state.win_counts or {}
+            for key in [k for k in wins if k.strip().lower() == old_l]:
+                wins[new_name] = wins.pop(key)
+            lib = self._state.songs.get("library", {})
+            for song in lib.values():
+                for key, value in list(song.items()):
+                    if key in ("url", "name", "artist"):
+                        continue
+                    song[key] = swap(value)
+            self._persist_dancers(dancers)
+            self._persist_library(lib)
+            return self._state.copy()
+
     def delete_dancer(self, name: str) -> Dict:
         with self._lock:
             target = (name or "").lower()

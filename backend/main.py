@@ -447,6 +447,11 @@ class DeleteSongRequest(BaseModel):
     song_id: str
 
 
+class RenameDancerRequest(BaseModel):
+    old_name: str
+    new_name: str
+
+
 class DancerRequest(BaseModel):
     name: str
     handle: str
@@ -1702,6 +1707,18 @@ async def refresh_dancer_ids() -> JSONResponse:
     state = state_manager.update_dancer_ids(updates)
     _broadcast_state(state)
     return JSONResponse(state)
+
+@app.post("/dancers/rename")
+async def rename_dancer(body: RenameDancerRequest) -> JSONResponse:
+    try:
+        state = state_manager.rename_dancer(body.old_name, body.new_name)
+    except KeyError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
+    except ValueError as exc:
+        return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    _broadcast_state(state)
+    return JSONResponse(state)
+
 
 @app.post("/dancers/delete")
 async def delete_dancer(body: DeleteDancerRequest) -> JSONResponse:
