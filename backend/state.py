@@ -105,6 +105,8 @@ class BattleStateManager:
         )
         self._state.songs["library"] = library
         self._state.dancers = dancers
+        if self._canonicalize_song_dancers(library.values()):
+            self._persist_library(library)
         self._state.play_counts = plays
         self._state.points_counts = points
         if not self._state.enabled_dancers:
@@ -341,11 +343,45 @@ class BattleStateManager:
                 duration = self._get_duration_for_url(url, self._library_path.parent)
                 if duration:
                     lib[song_id]["duration_sec"] = int(duration)
+            self._canonicalize_song_dancers([lib[song_id]])
             self._state.songs["library"] = lib
             if "background" in {_normalize_role(role) for role in roles_list}:
                 self._sync_background_song()
             self._persist_library(lib)
             return self._state.copy()
+
+    _SONG_DANCER_LIST_FIELDS = ("dancers", "front_dancers", "mvp_dancers", "knows_song", "special_dance_for")
+    _SONG_DANCER_STR_FIELDS = ("exclusive_mvp_for", "exclusive_tournament_mvp_for")
+
+    def _canonicalize_song_dancers(self, songs) -> bool:
+        """Match dancer names in song fields to the dancer list's spelling (e.g. "kai" -> "Kai")."""
+        canonical = {}
+        for d in self._state.dancers or []:
+            name = (d.get("name") or "").strip()
+            if name:
+                canonical.setdefault(name.lower(), name)
+        changed = False
+        for song in songs:
+            for key in self._SONG_DANCER_LIST_FIELDS:
+                values = song.get(key)
+                if not isinstance(values, list):
+                    continue
+                fixed = []
+                for v in values:
+                    v = canonical.get(v.strip().lower(), v) if isinstance(v, str) else v
+                    if v not in fixed:
+                        fixed.append(v)
+                if fixed != values:
+                    song[key] = fixed
+                    changed = True
+            for key in self._SONG_DANCER_STR_FIELDS:
+                value = song.get(key)
+                if isinstance(value, str) and value.strip():
+                    fixed_value = canonical.get(value.strip().lower(), value)
+                    if fixed_value != value:
+                        song[key] = fixed_value
+                        changed = True
+        return changed
 
     def tag_song(self, url: str, dancer: str) -> Dict:
         with self._lock:
@@ -355,6 +391,7 @@ class BattleStateManager:
                     dancers = set(val.get("dancers", []))
                     dancers.add(dancer)
                     val["dancers"] = list(dancers)
+                    self._canonicalize_song_dancers([val])
                     lib[key] = val
             self._state.songs["library"] = lib
             self._persist_library(lib)
@@ -444,6 +481,7 @@ class BattleStateManager:
                     lib[song_id]["battle_disabled"] = bool(battle_disabled)
                 else:
                     lib[song_id].setdefault("battle_disabled", False)
+                self._canonicalize_song_dancers([lib[song_id]])
                 self._state.songs["library"] = lib
                 if roles is not None:
                     self._sync_background_song()
