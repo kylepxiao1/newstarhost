@@ -13,6 +13,7 @@ from pathlib import Path
 import unicodedata
 import uuid
 import shutil
+import tempfile
 from typing import Dict, Optional, List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -576,6 +577,57 @@ async def sync_song_sheet_endpoint() -> JSONResponse:
         logger.exception("song sheet sync failed")
         return JSONResponse({"error": f"Sync failed: {exc}"}, status_code=500)
     return JSONResponse(result)
+
+
+# Offline bundle: built in the background (it packs ~all media), then downloaded.
+OFFLINE_BUNDLE_DIR = Path(tempfile.gettempdir()) / "newstarhost-offline"
+OFFLINE_BUNDLE_ZIP = OFFLINE_BUNDLE_DIR / "NewStarHost-offline.zip"
+_offline_bundle: Dict[str, object] = {"state": "idle", "step": "", "progress": 0.0, "error": "", "built_at": "", "songs": 0, "bytes": 0}
+
+
+def _build_offline_bundle() -> None:
+    def on_progress(step: str, frac: float) -> None:
+        _offline_bundle.update(step=step, progress=round(frac, 3))
+
+    try:
+        from scripts.build_offline_bundle import build_bundle
+    except ImportError:
+        _offline_bundle.update(state="error", error="The offline bundle can only be built from the live app.")
+        return
+    try:
+        OFFLINE_BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
+        info = build_bundle(OFFLINE_BUNDLE_ZIP, MEDIA_DIR, OFFLINE_BUNDLE_DIR / "cache", progress=on_progress)
+    except Exception as exc:
+        logger.exception("offline bundle build failed")
+        _offline_bundle.update(state="error", error=f"Build failed: {exc}")
+        return
+    _offline_bundle.update(
+        state="ready",
+        built_at=datetime.now(timezone.utc).isoformat(),
+        songs=info["songs"],
+        bytes=info["bytes"],
+        error="" if not info["missing_audio"] else f"{info['missing_audio']} song(s) had no audio file and were skipped.",
+    )
+
+
+@app.post("/offline-bundle")
+async def start_offline_bundle() -> JSONResponse:
+    if _offline_bundle["state"] != "building":
+        _offline_bundle.update(state="building", step="Starting", progress=0.0, error="")
+        asyncio.get_running_loop().run_in_executor(None, _build_offline_bundle)
+    return JSONResponse(_offline_bundle)
+
+
+@app.get("/offline-bundle/status")
+async def offline_bundle_status() -> JSONResponse:
+    return JSONResponse(_offline_bundle)
+
+
+@app.get("/offline-bundle/download")
+async def download_offline_bundle():
+    if _offline_bundle["state"] != "ready" or not OFFLINE_BUNDLE_ZIP.exists():
+        return JSONResponse({"error": "No offline bundle has been built yet."}, status_code=404)
+    return FileResponse(OFFLINE_BUNDLE_ZIP, media_type="application/zip", filename="NewStarHost-offline.zip")
 
 
 @app.post("/settings/role-assignments")

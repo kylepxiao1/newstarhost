@@ -202,6 +202,17 @@
       </div>
     </section>
 
+    <section>
+      <h2>Offline Bundle</h2>
+      <div class="row">
+        <button id="offlineBundleBtn">Download Offline Bundle</button>
+        <span id="offlineBundleStatus" class="status"></span>
+      </div>
+      <div class="row">
+        <span class="status">A Windows zip of the app with every song and the current dancers and settings. Unzip it and double-click "Start NewStarHost.bat"; it runs with no internet. Building takes a minute or two.</span>
+      </div>
+    </section>
+
     <div class="row">
       <span id="saveStatusText" class="status">Auto-save enabled</span>
     </div>
@@ -568,6 +579,67 @@
       }
     }
     document.getElementById("syncSongSheetBtn")?.addEventListener("click", syncSongSheet);
+
+    let offlineBundlePoll = null;
+
+    function formatBundleSize(bytes) {
+      return `${Math.round((Number(bytes) || 0) / 1e6)} MB`;
+    }
+
+    function downloadOfflineBundle() {
+      const link = document.createElement("a");
+      link.href = "/offline-bundle/download";
+      link.download = "NewStarHost-offline.zip";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+
+    function renderOfflineBundle(data, autoDownload) {
+      const btn = document.getElementById("offlineBundleBtn");
+      const status = document.getElementById("offlineBundleStatus");
+      const building = data.state === "building";
+      if (btn) btn.disabled = building;
+      if (!status) return;
+      if (building) {
+        status.textContent = `${data.step || "Building"}... ${Math.round((data.progress || 0) * 100)}%`;
+      } else if (data.state === "ready") {
+        status.textContent = `Ready: ${data.songs} songs, ${formatBundleSize(data.bytes)}${data.error ? ` (${data.error})` : ""}`;
+        if (autoDownload) downloadOfflineBundle();
+      } else if (data.state === "error") {
+        status.textContent = data.error || "Build failed";
+      } else {
+        status.textContent = "";
+      }
+    }
+
+    async function pollOfflineBundle() {
+      try {
+        const data = await (await api("/offline-bundle/status")).json();
+        if (data.state !== "building") {
+          clearInterval(offlineBundlePoll);
+          offlineBundlePoll = null;
+        }
+        renderOfflineBundle(data, data.state !== "building");
+      } catch (e) {}
+    }
+
+    async function startOfflineBundle() {
+      try {
+        const data = await (await api("/offline-bundle", {method: "POST"})).json();
+        renderOfflineBundle(data, false);
+        if (!offlineBundlePoll) offlineBundlePoll = setInterval(pollOfflineBundle, 1000);
+      } catch (e) {
+        const status = document.getElementById("offlineBundleStatus");
+        if (status) status.textContent = "Couldn't start the build";
+      }
+    }
+    document.getElementById("offlineBundleBtn")?.addEventListener("click", startOfflineBundle);
+    // Show progress if a build is already running (e.g. started from another tab).
+    api("/offline-bundle/status").then((r) => r.json()).then((data) => {
+      renderOfflineBundle(data, false);
+      if (data.state === "building" && !offlineBundlePoll) offlineBundlePoll = setInterval(pollOfflineBundle, 1000);
+    }).catch(() => {});
 
     window.PageShared?.connectWsStatus?.({
       connectedText: "Live",

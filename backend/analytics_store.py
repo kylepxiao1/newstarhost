@@ -26,10 +26,11 @@ class AnalyticsStore:
         self._init_client()
 
     def _init_client(self) -> None:
+        url = _env("SUPABASE_URL", "").strip()
         project_id = _env("SUPABASE_PROJECT_ID", "").strip()
-        if project_id:
+        if not url and project_id:
             url = f"https://{project_id}.supabase.co"
-        key = _env("SUPABASE_SECRET_KEY").strip()
+        key = _env("SUPABASE_SECRET_KEY", "").strip()
         if not url or not key:
             logger.warning(
                 "Supabase credentials missing. Set SUPABASE_URL or SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY."
