@@ -57,6 +57,7 @@ APP_FILES = [
     "backend/obs_controller.py",
     "backend/analytics_store.py",
     "backend/websocket_manager.py",
+    "backend/access_log.py",
     "scripts/utils.py",
     "scripts/sync_song_sheet.py",
 ]

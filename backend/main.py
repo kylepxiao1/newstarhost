@@ -20,9 +20,9 @@ from zoneinfo import ZoneInfo
 import uvicorn
 import httpx
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -30,6 +30,7 @@ import backend.config as config
 from backend.obs_controller import OBSController
 from backend.state import BattleStateManager
 from backend.websocket_manager import WebsocketManager
+from backend.access_log import AccessLogger, SKIP_PREFIXES, VISITOR_COOKIE, request_fields
 from scripts.utils import _env
 from scripts.sync_song_sheet import sync_song_sheet, SongSheetError
 
@@ -55,6 +56,7 @@ if not SUPABASE_URL and SUPABASE_PROJECT_ID:
     SUPABASE_URL = f"https://{SUPABASE_PROJECT_ID}.supabase.co"
 SUPABASE_CLIENT_KEY = SUPABASE_PUBLISHABLE_KEY
 SUPABASE_REST_URL = f"{SUPABASE_URL}/rest/v1" if SUPABASE_URL else ""
+access_logger = AccessLogger(SUPABASE_REST_URL, SUPABASE_SECRET_KEY)
 
 ROLE_OPTIONS = {"bell", "duo_sfx", "applause", "mvp", "attention", "background", "win", "closing", "custom_sound_1", "custom_sound_2", "custom_sound_3"}
 # Unique roles that can be quickbound and saved in role presets (TTU is a dance song, not a hotkey SFX).
@@ -287,7 +289,9 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         logger.warning("Song duration scan failed: %s", exc)
     _cleanup_unregistered_media(state_manager)
+    access_logger.start()
     yield
+    await access_logger.stop()
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -305,6 +309,61 @@ app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json"
 app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
 app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 app.mount("/dist", StaticFiles(directory=str(DIST_DIR), check_dir=False), name="dist")
+
+
+@app.middleware("http")
+async def access_log_middleware(request: Request, call_next):
+    started = time.perf_counter()
+    visitor_id = request.cookies.get(VISITOR_COOKIE)
+    new_visitor = not visitor_id
+    if new_visitor:
+        visitor_id = uuid.uuid4().hex
+    status = 500
+    try:
+        response = await call_next(request)
+        status = response.status_code
+    finally:
+        path = request.url.path
+        if not path.startswith(SKIP_PREFIXES):
+            access_logger.log({
+                "kind": "request",
+                "visitor_id": visitor_id,
+                "method": request.method,
+                "path": path[:1000],
+                "query": request.url.query[:1000] or None,
+                "status": status,
+                "duration_ms": int((time.perf_counter() - started) * 1000),
+                **request_fields(request.headers, request.client.host if request.client else None),
+            })
+    if new_visitor:
+        # Anonymous per-browser ID so requests from the same visitor can be grouped.
+        response.set_cookie(
+            VISITOR_COOKIE, visitor_id, max_age=2 * 365 * 24 * 3600, httponly=True, samesite="lax",
+            secure=request.headers.get("x-forwarded-proto") == "https",
+        )
+    return response
+
+
+@app.post("/access-log/client")
+async def access_log_client(request: Request) -> Response:
+    """Browser details reported by /static/access_beacon.js (screen, timezone, language...)."""
+    try:
+        body = json.loads((await request.body())[:8000] or b"{}")
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    access_logger.log({
+        "kind": "client",
+        "visitor_id": request.cookies.get(VISITOR_COOKIE),
+        "session_id": str(body.get("session_id") or "")[:100] or None,
+        "path": str(body.get("page") or "")[:1000] or None,
+        "client": body,
+        **request_fields(request.headers, request.client.host if request.client else None),
+    })
+    return Response(status_code=204)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -2351,6 +2410,12 @@ async def get_state() -> JSONResponse:
 
 @app.websocket(config.WEBSOCKET_PATH)
 async def websocket_endpoint(websocket: WebSocket) -> None:
+    access_logger.log({
+        "kind": "websocket",
+        "visitor_id": websocket.cookies.get(VISITOR_COOKIE),
+        "path": websocket.url.path,
+        **request_fields(websocket.headers, websocket.client.host if websocket.client else None),
+    })
     await ws_manager.connect(websocket)
     try:
         await websocket.send_json({"type": "state", "payload": state_manager.get_state()})
