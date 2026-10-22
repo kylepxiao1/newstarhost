@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 import time
 import json
@@ -973,6 +974,11 @@ class BattleStateManager:
                 old_path = media_dir / old_file
                 new_path = media_dir / desired
                 if old_path == new_path and new_path.exists():
+                    continue
+                # Already a unique variant of its own name (e.g. "Fever_2.mp3" when another
+                # song owns "Fever.mp3"): keep it. Renaming it again flipped _2/_3 on every
+                # restart, which changed URLs and raced the media backup.
+                if old_path.exists() and re.fullmatch(re.escape(norm_filename(name)) + r"_\d+\.mp3", old_file):
                     continue
                 if not old_path.exists() and new_path.exists():
                     # file already named correctly; just update url if needed

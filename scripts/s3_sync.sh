@@ -53,6 +53,13 @@ export AWS_RESPONSE_CHECKSUM_VALIDATION=when_required
 
 log "Starting sync loop (src=$SRC_DIR dest=$DEST endpoint=$SUPABASE_S3_ENDPOINT interval=${INTERVAL}s)"
 
+# The app renames/cleans media files during startup. Syncing at the same moment
+# uploads a half-renamed folder (and --delete then drops the renamed files from
+# the backup), so let startup finish first.
+INITIAL_DELAY="${S3_SYNC_INITIAL_DELAY:-180}"
+log "Waiting ${INITIAL_DELAY}s for app startup before the first run"
+sleep "$INITIAL_DELAY"
+
 run_id=0
 while true; do
   run_id=$((run_id + 1))
