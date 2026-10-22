@@ -33,6 +33,9 @@ TOPGIFTER_CMD="${WILDCARDZ_TOPGIFTER_CMD:-python /app/scripts/top_gifters_bot.py
 TOPGIFTER_ENABLED="${WILDCARDZ_TOPGIFTER_ENABLED:-1}"
 GIFTER_SUMMARY_ENABLED="${GIFTER_SUMMARY_ENABLED:-1}"
 GIFTER_SUMMARY_RESTART_SECONDS="${GIFTER_SUMMARY_RESTART_SECONDS:-60}"
+NETWORK_WATCHDOG_ENABLED="${NETWORK_WATCHDOG_ENABLED:-1}"
+NETWORK_WATCHDOG_INTERVAL_SECONDS="${NETWORK_WATCHDOG_INTERVAL_SECONDS:-60}"
+NETWORK_WATCHDOG_MAX_FAILURES="${NETWORK_WATCHDOG_MAX_FAILURES:-10}"
 worker_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 log() {
@@ -120,6 +123,33 @@ gifter_summary_loop() {
   done
 }
 
+# This machine has lost outbound networking (every request times out) while the
+# processes keep running, so the reminder silently never posts. A machine restart
+# fixes it: exit when nothing is reachable for a while, and Fly's "always" restart
+# policy restarts the machine.
+network_watchdog_loop() {
+  local failures=0
+  sleep 120
+  while true; do
+    if curl -sS -o /dev/null --max-time 15 https://www.googleapis.com/ 2>/dev/null \
+      || curl -sS -o /dev/null --max-time 15 https://discord.com/api/v10/gateway 2>/dev/null; then
+      if [ "${failures}" -gt 0 ]; then
+        log "Network watchdog: outbound network recovered after ${failures} failed check(s)"
+      fi
+      failures=0
+    else
+      failures=$((failures + 1))
+      log "Network watchdog: outbound check failed (${failures}/${NETWORK_WATCHDOG_MAX_FAILURES})"
+      if [ "${failures}" -ge "${NETWORK_WATCHDOG_MAX_FAILURES}" ]; then
+        log "Network watchdog: no outbound network; exiting so the machine restarts"
+        exit 1
+      fi
+    fi
+    sleep "${NETWORK_WATCHDOG_INTERVAL_SECONDS}"
+  done
+}
+
+network_watchdog_pid=""
 trendbot_pid=""
 verify_pid=""
 watchdog_pid=""
@@ -129,6 +159,9 @@ gifter_summary_pid=""
 
 shutdown_children() {
   log "Shutting down discord worker children"
+  if [ -n "${network_watchdog_pid}" ] && kill -0 "${network_watchdog_pid}" 2>/dev/null; then
+    kill "${network_watchdog_pid}" 2>/dev/null || true
+  fi
   if [ -n "${gifter_summary_pid}" ] && kill -0 "${gifter_summary_pid}" 2>/dev/null; then
     kill "${gifter_summary_pid}" 2>/dev/null || true
   fi
@@ -201,7 +234,16 @@ else
   log "Summary-only TikTok listener disabled (GIFTER_SUMMARY_ENABLED=${GIFTER_SUMMARY_ENABLED})"
 fi
 
+if [ "${NETWORK_WATCHDOG_ENABLED}" = "1" ] || [ "${NETWORK_WATCHDOG_ENABLED}" = "true" ]; then
+  log "Starting network watchdog (every ${NETWORK_WATCHDOG_INTERVAL_SECONDS}s, restart after ${NETWORK_WATCHDOG_MAX_FAILURES} failures)"
+  network_watchdog_loop &
+  network_watchdog_pid=$!
+fi
+
 pids=("${trendbot_pid}" "${verify_pid}")
+if [ -n "${network_watchdog_pid}" ]; then
+  pids+=("${network_watchdog_pid}")
+fi
 if [ -n "${gifter_summary_pid}" ]; then
   pids+=("${gifter_summary_pid}")
 fi
