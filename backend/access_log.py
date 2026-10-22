@@ -22,6 +22,13 @@ QUEUE_MAX = 5000
 # High-volume, low-signal requests (page assets, audio streaming, progress polling).
 SKIP_PREFIXES = ("/static/", "/media/", "/dist/", "/favicon.ico", "/offline-bundle/status", "/access-log/client")
 MAX_TEXT = 1000
+# Every row is sent with all columns: PostgREST rejects a bulk insert whose rows have
+# different keys ("All object keys must match"), and request/client/websocket rows differ.
+COLUMNS = (
+    "ts", "kind", "visitor_id", "session_id", "ip", "forwarded_for", "fly_region", "host",
+    "method", "path", "query", "status", "duration_ms", "user_agent", "referer",
+    "accept_language", "client",
+)
 
 
 def _clip(value: Optional[str]) -> Optional[str]:
@@ -69,7 +76,7 @@ class AccessLogger:
             return
         row.setdefault("ts", datetime.now(timezone.utc).isoformat())
         try:
-            self._queue.put_nowait(row)
+            self._queue.put_nowait({col: row.get(col) for col in COLUMNS})
         except asyncio.QueueFull:
             pass
 
