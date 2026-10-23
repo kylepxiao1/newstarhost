@@ -57,12 +57,15 @@
     }
   }
 
+  // Song audio on the Supabase Storage CDN is content-addressed: a URL never changes what
+  // it points to, so a cached copy is always valid and can be played without the network.
+  var CDN_AUDIO_PATH = "/storage/v1/object/public/song-audio/";
+
   function isCacheableAudioUrl(absUrl) {
     if (!absUrl || typeof caches === "undefined") return false;
     if (!/^https?:/i.test(absUrl)) return false;
     try {
-      var parsed = new URL(absUrl);
-      return parsed.origin === window.location.origin;
+      return new URL(absUrl).pathname.indexOf(CDN_AUDIO_PATH) === 0;
     } catch (e) {
       return false;
     }
@@ -93,50 +96,100 @@
     }
   }
 
+  // Cache first: a cached song plays instantly with no network round trip. An uncached song
+  // streams straight from the CDN (no waiting for a full download) and is saved for next time.
   async function resolveAudioUrlFromCache(url) {
     var absUrl = toAbsoluteUrl(url);
     if (!isCacheableAudioUrl(absUrl)) return String(url || "");
+    if (_audioBlobUrlBySource[absUrl]) return _audioBlobUrlBySource[absUrl];
     try {
       var cache = await caches.open(AUDIO_CACHE_NAME);
-      // Media files can be replaced in place. Revalidate before playback so a cached
-      // blob never outlives the file currently served at this URL.
-      var resp = await fetch(absUrl, { credentials: "same-origin", cache: "no-store" });
+      var resp = await cache.match(absUrl);
       if (resp && resp.ok) {
-        await cache.put(absUrl, resp.clone());
-        forgetAudioBlobUrl(absUrl);
-      } else {
-        resp = await cache.match(absUrl);
+        var blob = await resp.blob();
+        if (blob && blob.size) {
+          var blobUrl = URL.createObjectURL(blob);
+          rememberAudioBlobUrl(absUrl, blobUrl);
+          return blobUrl;
+        }
       }
-      if (!resp || !resp.ok) return absUrl;
-      var blob = await resp.blob();
-      if (!blob || !blob.size) return absUrl;
-      var blobUrl = URL.createObjectURL(blob);
-      rememberAudioBlobUrl(absUrl, blobUrl);
-      return blobUrl;
-    } catch (e) {
-      return absUrl;
-    }
+    } catch (e) {}
+    primeAudioCache(absUrl);
+    return absUrl;
   }
+
+  var _audioCacheInFlight = Object.create(null);
 
   async function cacheAudioUrl(url) {
     var absUrl = toAbsoluteUrl(url);
     if (!isCacheableAudioUrl(absUrl)) return false;
-    try {
-      var cache = await caches.open(AUDIO_CACHE_NAME);
-      var hit = await cache.match(absUrl);
-      if (hit && hit.ok) return true;
-      var resp = await fetch(absUrl, { credentials: "same-origin" });
-      if (!resp || !resp.ok) return false;
-      await cache.put(absUrl, resp.clone());
-      return true;
-    } catch (e) {
-      return false;
-    }
+    if (_audioCacheInFlight[absUrl]) return _audioCacheInFlight[absUrl];
+    var job = (async function () {
+      try {
+        var cache = await caches.open(AUDIO_CACHE_NAME);
+        var hit = await cache.match(absUrl);
+        if (hit && hit.ok) return true;
+        var resp = await fetch(absUrl, { mode: "cors", credentials: "omit" });
+        if (!resp || !resp.ok || resp.status !== 200) return false;
+        await cache.put(absUrl, resp);
+        return true;
+      } catch (e) {
+        return false;
+      } finally {
+        delete _audioCacheInFlight[absUrl];
+      }
+    })();
+    _audioCacheInFlight[absUrl] = job;
+    return job;
   }
 
   function primeAudioCache(url) {
     cacheAudioUrl(url).catch(function () {});
   }
+
+  // Download the group's whole library in the background (once per app window) so every
+  // song plays from local storage even if the connection drops. Removed songs are evicted.
+  function prefetchSongLibrary() {
+    var host;
+    try { host = window.top || window; host.document; } catch (e) { host = window; }
+    if (host.__nshSongPrefetch || typeof caches === "undefined") return;
+    host.__nshSongPrefetch = true;
+    setTimeout(async function () {
+      try {
+        if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {});
+        var resp = await fetch("/songs", { credentials: "same-origin" });
+        if (!resp.ok) { host.__nshSongPrefetch = false; return; }
+        var songs = await resp.json();
+        var wanted = Object.create(null);
+        Object.values((songs && songs.library) || {}).forEach(function (song) {
+          var absUrl = toAbsoluteUrl(song && song.url);
+          if (isCacheableAudioUrl(absUrl)) wanted[absUrl] = true;
+        });
+        var cache = await caches.open(AUDIO_CACHE_NAME);
+        var cachedKeys = await cache.keys();
+        var have = Object.create(null);
+        for (var i = 0; i < cachedKeys.length; i++) {
+          var key = cachedKeys[i].url;
+          if (wanted[key]) have[key] = true;
+          else await cache.delete(cachedKeys[i]);
+        }
+        var queue = Object.keys(wanted).filter(function (u) { return !have[u]; });
+        async function worker() {
+          while (queue.length) {
+            if (navigator.onLine === false) {
+              await new Promise(function (r) { setTimeout(r, 30000); });
+              continue;
+            }
+            await cacheAudioUrl(queue.shift());
+          }
+        }
+        await Promise.all([worker(), worker()]);
+      } catch (e) {
+        host.__nshSongPrefetch = false;
+      }
+    }, 5000);
+  }
+  prefetchSongLibrary();
 
   function getGlobalAudioPlayer() {
     if (window.top && window.top !== window) {
