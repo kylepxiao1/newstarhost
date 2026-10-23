@@ -81,6 +81,9 @@ def _parse_watch_ids() -> list[str]:
         m = re.match(r"^LISTENER_HEARTBEAT_ID_SET_(\d+)$", key)
         if m:
             indices.add(int(m.group(1)))
+    # Sets 1-3 always run now (their accounts come from Supabase, not app.env).
+    if indices:
+        indices |= {1, 2, 3}
     if not indices:
         single_id = _env("LISTENER_HEARTBEAT_ID", "").strip()
         if single_id:

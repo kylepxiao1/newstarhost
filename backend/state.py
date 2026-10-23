@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Optional, Any, List
 
 from backend.analytics_store import AnalyticsStore
+from backend.group_store import GroupStore
 
 try:
     from mutagen import File as MutagenFile
@@ -81,14 +82,21 @@ class BattleState:
 
 
 class BattleStateManager:
-    def __init__(self, overlay_names, library_path: Optional[Path] = None, dancers_path: Optional[Path] = None, plays_path: Optional[Path] = None, points_path: Optional[Path] = None, analytics_path: Optional[Path] = None) -> None:
-        self._library_path: Optional[Path] = Path(library_path) if library_path else None
-        self._dancers_path: Optional[Path] = Path(dancers_path) if dancers_path else None
-        self._plays_path: Optional[Path] = Path(plays_path) if plays_path else None
-        self._points_path: Optional[Path] = Path(points_path) if points_path else None
-        self._analytics: Optional[AnalyticsStore] = AnalyticsStore(analytics_path) if analytics_path else None
-        if self._analytics and not self._analytics.enabled:
-            self._analytics = None
+    def __init__(
+        self,
+        overlay_names,
+        store: GroupStore,
+        analytics: Optional[AnalyticsStore] = None,
+        group_name: str = "",
+        group_handle: str = "",
+        media_dir: Optional[Path] = None,
+    ) -> None:
+        """State for one dance group. `store` persists the library/dancers/counts;
+        `media_dir` is where locally stored audio lives (offline mode) for duration scans."""
+        self._store = store
+        self._media_dir: Optional[Path] = Path(media_dir) if media_dir else None
+        self._group_handle = (group_handle or "").strip().lstrip("@")
+        self._analytics: Optional[AnalyticsStore] = analytics if analytics and analytics.enabled else None
         library = self._load_library()
         dancers = self._load_dancers()
         if self._analytics:
@@ -96,8 +104,8 @@ class BattleStateManager:
             plays = {k: v.get("play_count", 0) for k, v in stats.items()}
             points = {k: v.get("points_count", 0) for k, v in stats.items()}
         else:
-            plays = self._load_play_counts()
-            points = self._load_points_counts()
+            plays = self._load_counts("play_counts")
+            points = self._load_counts("points_counts")
         self._state = BattleState(
             overlay_states={
                 name: (name not in {"BurstOverlay", "CenterDottedLine"})
@@ -126,7 +134,32 @@ class BattleStateManager:
             self._state.enabled_dancers = enabled
             if default_group:
                 self._state.group_name = default_group
+        if group_name:
+            # The logged-in group is the group; no picking from the dancer list.
+            self._state.group_name = group_name
+            self._state.like_target_group_name = group_name
+            self._state.like_target_group_handle = self._group_handle
+        self._docs: Dict[str, Any] = {}
         self._lock = threading.RLock()
+
+    def flush(self, timeout: float = 30.0) -> None:
+        self._store.flush(timeout)
+
+    def get_doc(self, key: str, default: Any) -> Any:
+        """A per-group document (settings, role_presets, rpd_queries, gift_notes), cached in memory."""
+        with self._lock:
+            if key not in self._docs:
+                try:
+                    self._docs[key] = self._store.load_kv(key, None)
+                except Exception:
+                    return default
+            value = self._docs[key]
+            return default if value is None else json.loads(json.dumps(value))
+
+    def set_doc(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._docs[key] = json.loads(json.dumps(value))
+            self._store.save_kv(key, value)
 
     def get_play_events(self, limit: int = 200, offset: int = 0) -> List[Dict[str, Any]]:
         if not self._analytics:
@@ -300,6 +333,7 @@ class BattleStateManager:
         artist: Optional[str] = None,
         tags: Optional[list] = None,
         battle_disabled: Optional[bool] = None,
+        duration_sec: Optional[int] = None,
     ) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
@@ -333,15 +367,15 @@ class BattleStateManager:
                 "exclusive_mvp_for": exclusive_mvp_for or "",
                 "exclusive_tournament_mvp_for": exclusive_tournament_mvp_for or "",
                 "volume": vol_value,
-                "duration_sec": lib.get(song_id, {}).get("duration_sec"),
+                "duration_sec": duration_sec or lib.get(song_id, {}).get("duration_sec"),
                 "difficulty": (difficulty or "medium"),
                 "camera_dance": bool(camera_dance) if camera_dance is not None else False,
                 "duo_dance": bool(duo_dance) if duo_dance is not None else False,
                 "tags": tags if tags is not None else lib.get(song_id, {}).get("tags", []),
                 "battle_disabled": bool(battle_disabled) if battle_disabled is not None else lib.get(song_id, {}).get("battle_disabled", False),
             }
-            if self._library_path and not lib[song_id].get("duration_sec"):
-                duration = self._get_duration_for_url(url, self._library_path.parent)
+            if self._media_dir and not lib[song_id].get("duration_sec"):
+                duration = self._get_duration_for_url(url, self._media_dir)
                 if duration:
                     lib[song_id]["duration_sec"] = int(duration)
             self._canonicalize_song_dancers([lib[song_id]])
@@ -554,7 +588,9 @@ class BattleStateManager:
             handle_l = (handle or "").lower()
             replaced = False
             for idx, d in enumerate(dancers):
-                if d.get("name", "").lower() == name_l or d.get("handle", "").lower() == handle_l:
+                # Blank handles must not match each other (that replaced dancers without handles).
+                same_handle = bool(handle_l) and d.get("handle", "").lower() == handle_l
+                if d.get("name", "").lower() == name_l or same_handle:
                     entry = {"name": name, "handle": handle}
                     existing_id = d.get("tiktok_id") or d.get("tiktokId")
                     if tiktok_id:
@@ -698,84 +734,54 @@ class BattleStateManager:
             return self._state.copy()
 
     def _persist_library(self, lib: Dict[str, Any]) -> None:
-        if not self._library_path:
-            return
         try:
-            self._library_path.parent.mkdir(parents=True, exist_ok=True)
-            self._library_path.write_text(json.dumps(lib, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._store.save_library(lib)
         except Exception:
             pass
 
-    def _persist_counts(self, path: Optional[Path], data: Dict[str, int]) -> None:
-        if not path:
-            return
+    def _persist_counts(self, key: str, data: Dict[str, int]) -> None:
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
-
-    def _persist_play_counts(self, plays: Dict[str, int]) -> None:
-        if not getattr(self, "_plays_path", None):
-            return
-        try:
-            self._plays_path.parent.mkdir(parents=True, exist_ok=True)
-            self._plays_path.write_text(json.dumps(plays, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._store.save_kv(key, data)
         except Exception:
             pass
 
     def _load_library(self) -> Dict[str, Any]:
-        if not self._library_path or not self._library_path.exists():
-            return {}
         try:
-            data = json.loads(self._library_path.read_text(encoding="utf-8"))
-            changed = False
-            # Normalize front_dancer -> front_dancers list
-            for k, v in data.items():
-                if "front_dancer" in v and "front_dancers" not in v:
-                    v["front_dancers"] = [v.pop("front_dancer")] if v.get("front_dancer") else []
-                    changed = True
-                if "artist" not in v:
-                    v["artist"] = ""
-                    changed = True
-                v.setdefault("front_dancers", [])
-                v.setdefault("dancers", [])
-                v.setdefault("mvp_dancers", [])
-                v.setdefault("roles", [])
-                v.setdefault("knows_song", [])
-                v.setdefault("special_dance_for", [])
-                v.setdefault("duration_sec", None)
-                v.setdefault("difficulty", "medium")
-                v.setdefault("camera_dance", False)
-                v.setdefault("duo_dance", False)
-                v.setdefault("tags", [])
-                v.setdefault("battle_disabled", False)
-            if changed:
-                self._persist_library(data)
-            return data
+            data = self._store.load_library()
         except Exception:
             return {}
+        changed = False
+        # Normalize front_dancer -> front_dancers list
+        for k, v in data.items():
+            if "front_dancer" in v and "front_dancers" not in v:
+                v["front_dancers"] = [v.pop("front_dancer")] if v.get("front_dancer") else []
+                changed = True
+            if "artist" not in v:
+                v["artist"] = ""
+                changed = True
+            v.setdefault("front_dancers", [])
+            v.setdefault("dancers", [])
+            v.setdefault("mvp_dancers", [])
+            v.setdefault("roles", [])
+            v.setdefault("knows_song", [])
+            v.setdefault("special_dance_for", [])
+            v.setdefault("duration_sec", None)
+            v.setdefault("difficulty", "medium")
+            v.setdefault("camera_dance", False)
+            v.setdefault("duo_dance", False)
+            v.setdefault("tags", [])
+            v.setdefault("battle_disabled", False)
+        if changed:
+            self._persist_library(data)
+        return data
 
-    def _load_play_counts(self) -> Dict[str, int]:
-        if not getattr(self, "_plays_path", None) or not self._plays_path.exists():
-            return {}
+    def _load_counts(self, key: str) -> Dict[str, int]:
         try:
-            data = json.loads(self._plays_path.read_text(encoding="utf-8"))
+            data = self._store.load_kv(key, {})
             if isinstance(data, dict):
                 return {str(k): int(v) for k, v in data.items()}
         except Exception:
-            return {}
-        return {}
-
-    def _load_points_counts(self) -> Dict[str, int]:
-        if not getattr(self, "_points_path", None) or not self._points_path.exists():
-            return {}
-        try:
-            data = json.loads(self._points_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                return {str(k): int(v) for k, v in data.items()}
-        except Exception:
-            return {}
+            pass
         return {}
 
     def _clear_roles(self, roles: list, keep_song_id: str, lib: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -806,19 +812,15 @@ class BattleStateManager:
         self._state.songs["background"] = background_url
 
     def _persist_dancers(self, dancers: List[Dict[str, str]]) -> None:
-        if not self._dancers_path:
-            return
         try:
-            self._dancers_path.parent.mkdir(parents=True, exist_ok=True)
-            self._dancers_path.write_text(json.dumps(dancers, ensure_ascii=False, indent=2), encoding="utf-8")
+            self._store.save_kv("dancers", dancers)
         except Exception:
             pass
 
     def _load_dancers(self) -> List[Dict[str, str]]:
-        if not self._dancers_path or not self._dancers_path.exists():
-            return []
         try:
-            return json.loads(self._dancers_path.read_text(encoding="utf-8"))
+            data = self._store.load_kv("dancers", [])
+            return data if isinstance(data, list) else []
         except Exception:
             return []
 
@@ -890,16 +892,18 @@ class BattleStateManager:
                 score_two = int(self._state.scores.get("slot_two", 0))
                 points_count = int(self._state.points_counts.get(url, 0))
                 group_name = self._state.group_name or ""
-                group_key = group_name.strip().lower()
-                group_match = next(
-                    (
-                        d
-                        for d in (self._state.dancers or [])
-                        if (d.get("name") or "").strip().lower() == group_key
-                    ),
-                    None,
-                )
-                tiktok_username = str((group_match or {}).get("handle") or "").strip().lstrip("@")
+                tiktok_username = self._group_handle
+                if not tiktok_username:
+                    group_key = group_name.strip().lower()
+                    group_match = next(
+                        (
+                            d
+                            for d in (self._state.dancers or [])
+                            if (d.get("name") or "").strip().lower() == group_key
+                        ),
+                        None,
+                    )
+                    tiktok_username = str((group_match or {}).get("handle") or "").strip().lstrip("@")
                 self._analytics.increment_play(
                     url,
                     song_name,
@@ -1017,6 +1021,6 @@ class BattleStateManager:
             else:
                 self._state.play_counts = plays
                 self._state.points_counts = points
-                self._persist_counts(self._plays_path, plays)
-                self._persist_counts(self._points_path, points)
+                self._persist_counts("play_counts", plays)
+                self._persist_counts("points_counts", points)
             self._persist_library(lib)

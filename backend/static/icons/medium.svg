@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+  <title>Medium</title>
+  <g stroke="#F59E0B" stroke-width="4" stroke-linecap="round">
+    <!-- baseline -->
+    <line x1="12" y1="52" x2="52" y2="52"></line>
+    <!-- bars -->
+    <line x1="20" y1="52" x2="20" y2="40"></line>
+    <line x1="32" y1="52" x2="32" y2="32"></line>
+    <line x1="44" y1="52" x2="44" y2="52" opacity="0.25"></line>
+  </g>
+</svg>

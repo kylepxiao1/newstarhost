@@ -87,10 +87,6 @@
         <label for="frontSelect" style="display:block;margin-bottom:6px;">Front Dancer</label>
         <select id="frontSelect" onchange="renderSongs()"></select>
       </div>
-      <div class="field">
-        <label for="groupSelect" style="display:block;margin-bottom:6px;">Group</label>
-        <select id="groupSelect" onchange="renderSongs()"></select>
-      </div>
     </div>
   </section>
 
@@ -383,7 +379,8 @@
       if (container) {
         container.innerHTML = "";
         const selectedFront = (document.getElementById("frontSelect")?.value || "").toLowerCase();
-        const selectedGroup = (document.getElementById("groupSelect")?.value || "").toLowerCase().trim();
+        // The logged-in group: its songs are the ones tagged with its name.
+        const selectedGroup = String(state.group_name || "").toLowerCase().trim();
         const songSearch = (document.getElementById("songSearch")?.value || "").toLowerCase().trim();
         const durationLabel = (song) => {
           const d = parseInt(song.duration_sec, 10);
@@ -402,16 +399,11 @@
             return (s.front_dancers||[]).map(x=>x.toLowerCase()).includes(selectedFront);
           })
           .filter(s => {
-            const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
-            const songGroups = all
-              .map(n => String(n || "").trim())
-              .filter(n => {
-                const low = n.toLowerCase();
-                return low.includes("boys") || low.includes("girls");
-              });
-            if (!songGroups.length) return false;
-            if (!selectedGroup) return true;
-            return songGroups.some(n => n.toLowerCase() === selectedGroup);
+            const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])]
+              .map(n => String(n || "").trim().toLowerCase());
+            if (selectedGroup) return all.includes(selectedGroup);
+            // No group (offline bundle without one): any "...Boys"/"...Girls" tag marks a group song.
+            return all.some(n => n.includes("boys") || n.includes("girls"));
           })
           .sort((a,b)=> (a.name||"").localeCompare(b.name||""));
         const lowPlaySet = getLowPlaySet(list);
@@ -444,21 +436,21 @@
               flags.className = "corner-flags";
               if (song.camera_dance) {
                 const cam = document.createElement("img");
-                cam.src = "/media/video-camera.svg";
+                cam.src = "/static/icons/video-camera.svg";
                 cam.alt = "Camera dance";
                 cam.className = "corner-flag";
                 flags.appendChild(cam);
               }
               if (hasClosingRole) {
                 const closing = document.createElement("img");
-                closing.src = "/media/closing.svg";
+                closing.src = "/static/icons/closing.svg";
                 closing.alt = "Closing dance";
                 closing.className = "corner-flag";
                 flags.appendChild(closing);
               }
               if (hasPracticeRole) {
                 const practice = document.createElement("img");
-                practice.src = "/media/practice-song.svg";
+                practice.src = "/static/icons/practice-song.svg";
                 practice.alt = "Practice song";
                 practice.className = "corner-flag";
                 flags.appendChild(practice);

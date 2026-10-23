@@ -1,7 +1,7 @@
 import asyncio
 import json
 import logging
-from typing import List
+from typing import Dict, List
 
 from fastapi import WebSocket
 
@@ -9,36 +9,34 @@ logger = logging.getLogger(__name__)
 
 
 class WebsocketManager:
+    """Live-update sockets, grouped by dance group so each group only sees its own state."""
+
     def __init__(self) -> None:
-        self.connections: List[WebSocket] = []
+        self.connections: Dict[str, List[WebSocket]] = {}
         self._lock = asyncio.Lock()
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, group_id: str) -> None:
         await websocket.accept()
         async with self._lock:
-            self.connections.append(websocket)
-            count = len(self.connections)
-        if count == 1:
-            logger.info("WebSocket connected (first client)")
-        else:
-            logger.debug("WebSocket connected (%s total)", count)
+            self.connections.setdefault(group_id, []).append(websocket)
+            count = len(self.connections[group_id])
+        logger.debug("WebSocket connected (group=%s, %s total)", group_id, count)
 
-    async def disconnect(self, websocket: WebSocket) -> None:
+    async def disconnect(self, websocket: WebSocket, group_id: str) -> None:
         async with self._lock:
-            if websocket in self.connections:
-                self.connections.remove(websocket)
-            count = len(self.connections)
-        if count == 0:
-            logger.info("WebSocket disconnected (no active clients)")
-        else:
-            logger.debug("WebSocket disconnected (%s total)", count)
+            sockets = self.connections.get(group_id, [])
+            if websocket in sockets:
+                sockets.remove(websocket)
+            if not sockets:
+                self.connections.pop(group_id, None)
 
-    async def broadcast(self, message: dict) -> None:
-        if not self.connections:
+    async def broadcast(self, message: dict, group_id: str) -> None:
+        sockets = list(self.connections.get(group_id, []))
+        if not sockets:
             return
         payload = json.dumps(message)
         to_remove = []
-        for ws in list(self.connections):
+        for ws in sockets:
             try:
                 await ws.send_text(payload)
             except Exception as exc:
@@ -46,6 +44,7 @@ class WebsocketManager:
                 to_remove.append(ws)
         if to_remove:
             async with self._lock:
+                remaining = self.connections.get(group_id, [])
                 for ws in to_remove:
-                    if ws in self.connections:
-                        self.connections.remove(ws)
+                    if ws in remaining:
+                        remaining.remove(ws)

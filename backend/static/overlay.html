@@ -20,7 +20,10 @@
   <script src="/static/state_ws_helper.js"></script>
   <script>
     (() => {
-      const wsUrl = (location.origin.replace(/^http/, "ws")) + "/ws/state";
+      // The overlay link's read-only group key (?key=...) authenticates these requests.
+      const overlayKey = new URLSearchParams(location.search).get("key");
+      const keyQuery = overlayKey ? "?key=" + encodeURIComponent(overlayKey) : "";
+      const wsUrl = (location.origin.replace(/^http/, "ws")) + "/ws/state" + keyQuery;
       const wrap = document.getElementById("wrap");
       const line = document.getElementById("centerLine");
 
@@ -64,7 +67,7 @@
       }
 
       function bootstrap() {
-        fetch("/state").then(r => r.json()).then(render).catch(()=>{});
+        fetch("/state" + keyQuery).then(r => r.json()).then(render).catch(()=>{});
       }
 
       function connect() {

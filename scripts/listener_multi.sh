@@ -60,11 +60,15 @@ run_shard_loop() {
   local shard_tag="$1"
   local usernames="$2"
   local heartbeat_id="$3"
+  local child=""
 
   if [ -z "${usernames}" ] || [ -z "${heartbeat_id}" ]; then
     log "Skipping ${shard_tag}: usernames or heartbeat_id is empty"
     return 0
   fi
+
+  # Stopping this loop (account list changed, or shutdown) also stops its listener.
+  trap 'if [ -n "${child}" ]; then kill "${child}" 2>/dev/null || true; wait "${child}" 2>/dev/null || true; fi; exit 0' SIGINT SIGTERM
 
   while true; do
     log "Starting ${shard_tag} heartbeat_id=${heartbeat_id} usernames=${usernames}"
@@ -74,11 +78,15 @@ run_shard_loop() {
       LISTENER_HEARTBEAT_ID="${heartbeat_id}" \
       "${python_bin}" "${listener_script}" \
       > >(prefix_stdout "${shard_tag}") \
-      2> >(prefix_stderr "${shard_tag}")
+      2> >(prefix_stderr "${shard_tag}") &
+    child=$!
+    wait "${child}"
     exit_code=$?
+    child=""
     set -e
     log "${shard_tag} exited status=${exit_code}; restarting in ${restart_delay}s"
-    sleep "${restart_delay}"
+    sleep "${restart_delay}" &
+    wait $! || true
   done
 }
 
@@ -111,55 +119,112 @@ collect_shard_indices() {
   printf '%s\n' "${found[@]}" | sort -n -u
 }
 
-pids=()
-started=0
-started_tags=()
+# Sets 1-3 (primary account, group accounts, dancer accounts) come from Supabase via
+# listener_accounts.py and are re-checked every LISTENER_ACCOUNTS_REFRESH_SECONDS, so new
+# groups and dancers are picked up without editing app.env. Sets 4+ stay in app.env.
+accounts_script="${script_dir}/listener_accounts.py"
+refresh_seconds="${LISTENER_ACCOUNTS_REFRESH_SECONDS:-300}"
+AUTO_SETS=(1 2 3)
+declare -A shard_users=()
+declare -A shard_pids=()
 
-while IFS= read -r shard_idx; do
-  [ -n "${shard_idx}" ] || continue
+auto_accounts() {
+  # Prints "<set>\t<handles>" lines, or fails (callers then keep what they have).
+  "${python_bin}" "${accounts_script}" 2>/dev/null
+}
 
-  usernames_var="TIKTOK_USERNAMES_SET_${shard_idx}"
-  heartbeat_var="LISTENER_HEARTBEAT_ID_SET_${shard_idx}"
-  shard_tag="listener-set-${shard_idx}"
-
-  usernames="${!usernames_var:-}"
+usernames_for_shard() {
+  local shard_idx="$1"
+  local usernames_var="TIKTOK_USERNAMES_SET_${shard_idx}"
+  local usernames="${!usernames_var:-}"
   if [ -z "${usernames}" ]; then
     usernames="$(default_usernames_for_shard "${shard_idx}")"
   fi
-  heartbeat_id="${!heartbeat_var:-listener-set-${shard_idx}}"
+  printf '%s\n' "${usernames}"
+}
 
-  if [ -z "${usernames}" ] || [ -z "${heartbeat_id}" ]; then
-    log "Skipping ${shard_tag}: usernames or heartbeat_id is empty"
-    continue
+start_shard() {
+  local shard_idx="$1"
+  local usernames="$2"
+  local heartbeat_var="LISTENER_HEARTBEAT_ID_SET_${shard_idx}"
+  local heartbeat_id="${!heartbeat_var:-listener-set-${shard_idx}}"
+  shard_users["${shard_idx}"]="${usernames}"
+  if [ -z "${usernames}" ]; then
+    log "listener-set-${shard_idx}: no accounts"
+    unset 'shard_pids[$shard_idx]'
+    return 0
   fi
+  run_shard_loop "listener-set-${shard_idx}" "${usernames}" "${heartbeat_id}" &
+  shard_pids["${shard_idx}"]=$!
+}
 
-  run_shard_loop "${shard_tag}" "${usernames}" "${heartbeat_id}" &
-  pids+=("$!")
-  started=$((started + 1))
-  started_tags+=("${shard_tag}:${heartbeat_id}")
-done < <(collect_shard_indices)
+stop_shard() {
+  local shard_idx="$1"
+  local pid="${shard_pids[$shard_idx]:-}"
+  if [ -n "${pid}" ] && kill -0 "${pid}" 2>/dev/null; then
+    kill "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+  fi
+  unset 'shard_pids[$shard_idx]'
+}
 
-if [ "${started}" -le 0 ]; then
-  log "No listener shards started; configure TIKTOK_USERNAMES_SET_<N>."
-  exit 1
+declare -A initial=()
+if auto_output="$(auto_accounts)"; then
+  while IFS=$'\t' read -r idx handles; do
+    [ -n "${idx}" ] && initial["${idx}"]="${handles}"
+  done <<< "${auto_output}"
+  log "Accounts for sets ${AUTO_SETS[*]} loaded from Supabase"
+else
+  log "WARNING: couldn't load accounts from Supabase; using app.env for sets ${AUTO_SETS[*]}"
+  for idx in "${AUTO_SETS[@]}"; do
+    initial["${idx}"]="$(usernames_for_shard "${idx}")"
+  done
 fi
 
-log "Started ${started} listener shard manager(s): ${started_tags[*]}"
+for idx in "${AUTO_SETS[@]}"; do
+  start_shard "${idx}" "${initial[$idx]:-}"
+done
+while IFS= read -r shard_idx; do
+  [ -n "${shard_idx}" ] || continue
+  case " ${AUTO_SETS[*]} " in *" ${shard_idx} "*) continue ;; esac
+  start_shard "${shard_idx}" "$(usernames_for_shard "${shard_idx}")"
+done < <(collect_shard_indices)
+
+if [ "${#shard_pids[@]}" -le 0 ]; then
+  log "No listener shards started; no accounts found."
+  exit 1
+fi
+log "Started ${#shard_pids[@]} listener shard manager(s): sets ${!shard_pids[*]}"
 
 cleanup() {
   log "Stopping listener shard processes"
-  for pid in "${pids[@]}"; do
-    if kill -0 "${pid}" 2>/dev/null; then
-      kill "${pid}" 2>/dev/null || true
-    fi
+  for idx in "${!shard_pids[@]}"; do
+    stop_shard "${idx}"
   done
-  wait || true
 }
 
 trap 'cleanup; exit 0' SIGINT SIGTERM
 
-wait -n "${pids[@]}"
-exit_code=$?
-log "A listener shard manager exited unexpectedly status=${exit_code}"
-cleanup
-exit "${exit_code}"
+while true; do
+  sleep "${refresh_seconds}" &
+  wait $! || true
+  for idx in "${!shard_pids[@]}"; do
+    if ! kill -0 "${shard_pids[$idx]}" 2>/dev/null; then
+      log "listener-set-${idx} manager exited unexpectedly"
+      cleanup
+      exit 1
+    fi
+  done
+  if ! auto_output="$(auto_accounts)"; then
+    log "WARNING: account refresh from Supabase failed; keeping current accounts"
+    continue
+  fi
+  while IFS=$'\t' read -r idx handles; do
+    [ -n "${idx}" ] || continue
+    if [ "${handles}" != "${shard_users[$idx]:-}" ]; then
+      log "listener-set-${idx} accounts changed: '${shard_users[$idx]:-}' -> '${handles}'; restarting it"
+      stop_shard "${idx}"
+      start_shard "${idx}" "${handles}"
+    fi
+  done <<< "${auto_output}"
+done

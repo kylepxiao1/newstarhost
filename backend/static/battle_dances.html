@@ -103,8 +103,8 @@
       </div>
       <div class="row">
         <label style="display:flex;gap:6px;align-items:center; width:100%;">
-          <span style="white-space:nowrap;">Current group:</span>
-          <select id="groupSelect" style="flex:1;" onchange="saveGroupSelect()"></select>
+          <span style="white-space:nowrap;">Group:</span>
+          <strong id="groupNameLabel" style="flex:1;"></strong>
         </label>
       </div>
       <div class="row" id="enabledDancers"></div>
@@ -318,6 +318,8 @@
     }
 
     function selectedGroupHandle() {
+      // The logged-in group's own TikTok account.
+      if (window.NSH_GROUP && window.NSH_GROUP.tiktok_handle) return normalizeHandle(window.NSH_GROUP.tiktok_handle);
       const groupName = selectedGroupName().toLowerCase();
       if (!groupName) return "";
       const dancer = (state.dancers || []).find(d => ((d.name || "").toLowerCase() === groupName));
@@ -1220,6 +1222,8 @@
     }
 
     function renderGroupSelect() {
+      const label = document.getElementById("groupNameLabel");
+      if (label) label.textContent = (state.group_name || "").trim() || "(no group)";
       const sel = document.getElementById("groupSelect");
       if (!sel) return;
       sel.innerHTML = "";
@@ -1443,27 +1447,27 @@
             const flags = document.createElement("div");
             flags.className = "corner-flags";
             const difficulty = document.createElement("img");
-            difficulty.src = `/media/${diff}.svg`;
+            difficulty.src = `/static/icons/${diff}.svg`;
             difficulty.alt = `${diff} difficulty`;
             difficulty.className = "corner-flag";
             flags.appendChild(difficulty);
             if (song.camera_dance) {
               const cam = document.createElement("img");
-              cam.src = "/media/video-camera.svg";
+              cam.src = "/static/icons/video-camera.svg";
               cam.alt = "Camera dance";
               cam.className = "corner-flag";
               flags.appendChild(cam);
             }
             if (hasClosingRole) {
               const closing = document.createElement("img");
-              closing.src = "/media/closing.svg";
+              closing.src = "/static/icons/closing.svg";
               closing.alt = "Closing dance";
               closing.className = "corner-flag";
               flags.appendChild(closing);
             }
             if (hasPracticeRole) {
               const practice = document.createElement("img");
-              practice.src = "/media/practice-song.svg";
+              practice.src = "/static/icons/practice-song.svg";
               practice.alt = "Practice song";
               practice.className = "corner-flag";
               flags.appendChild(practice);

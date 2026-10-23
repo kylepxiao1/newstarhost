@@ -202,6 +202,18 @@
       </div>
     </section>
 
+    <section id="overlayLinkSection" style="display:none;">
+      <h2>OBS Overlay Link</h2>
+      <div class="row">
+        <input id="overlayUrlInput" readonly style="flex:1; min-width:0;">
+        <button id="copyOverlayBtn">Copy</button>
+        <button id="rotateOverlayBtn" style="background:#b91c1c;">Make New Link</button>
+      </div>
+      <div class="row">
+        <span id="overlayLinkStatus" class="status">Paste this into an OBS Browser Source. It can only view your group's overlay, never change anything. Making a new link stops the old one working.</span>
+      </div>
+    </section>
+
     <section>
       <h2>Offline Bundle</h2>
       <div class="row">
@@ -634,6 +646,34 @@
         if (status) status.textContent = "Couldn't start the build";
       }
     }
+    window.PageShared?.getGroup?.().then((me) => {
+      if (!me || me.offline || !me.overlay_url) return;
+      document.getElementById("overlayLinkSection").style.display = "";
+      document.getElementById("overlayUrlInput").value = me.overlay_url;
+    });
+    document.getElementById("copyOverlayBtn")?.addEventListener("click", async () => {
+      const input = document.getElementById("overlayUrlInput");
+      const status = document.getElementById("overlayLinkStatus");
+      try {
+        await navigator.clipboard.writeText(input.value);
+        status.textContent = "Copied.";
+      } catch (e) {
+        input.select();
+        status.textContent = "Press Ctrl+C / Cmd+C to copy.";
+      }
+    });
+    document.getElementById("rotateOverlayBtn")?.addEventListener("click", async () => {
+      if (!confirm("Make a new overlay link? The current link in OBS will stop working.")) return;
+      const status = document.getElementById("overlayLinkStatus");
+      try {
+        const data = await (await api("/auth/overlay-key/rotate", { method: "POST" })).json();
+        if (!data.overlay_url) throw new Error(data.error || "failed");
+        document.getElementById("overlayUrlInput").value = data.overlay_url;
+        status.textContent = "New link made. Update the Browser Source in OBS.";
+      } catch (e) {
+        status.textContent = "Couldn't make a new link.";
+      }
+    });
     document.getElementById("offlineBundleBtn")?.addEventListener("click", startOfflineBundle);
     // Show progress if a build is already running (e.g. started from another tab).
     api("/offline-bundle/status").then((r) => r.json()).then((data) => {

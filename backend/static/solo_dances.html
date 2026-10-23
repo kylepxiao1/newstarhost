@@ -567,13 +567,13 @@
           const flags = document.createElement("div");
           flags.className = "corner-flags";
           const difficulty = document.createElement("img");
-          difficulty.src = `/media/${diff}.svg`;
+          difficulty.src = `/static/icons/${diff}.svg`;
           difficulty.alt = `${diff} difficulty`;
           difficulty.className = "corner-flag";
           flags.appendChild(difficulty);
           if (isPracticeSong(song)) {
             const practice = document.createElement("img");
-            practice.src = "/media/practice-song.svg";
+            practice.src = "/static/icons/practice-song.svg";
             practice.alt = "Practice song";
             practice.className = "corner-flag";
             flags.appendChild(practice);

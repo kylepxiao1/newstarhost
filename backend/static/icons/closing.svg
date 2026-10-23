@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <title>Sleep</title>
+
+  <defs>
+    <linearGradient id="moonGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E0E7FF"></stop>
+      <stop offset="100%" stop-color="#818CF8"></stop>
+    </linearGradient>
+  </defs>
+
+  <!-- Crescent Moon -->
+  <path d="M40 8
+           A22 22 0 1 0 56 44
+           A18 18 0 1 1 40 8 Z" fill="url(#moonGrad)"></path>
+
+  <!-- Z letters -->
+  <text x="10" y="20" font-family="Arial, sans-serif" font-size="10" fill="#A5B4FC" font-weight="bold">Z</text>
+  <text x="6" y="32" font-family="Arial, sans-serif" font-size="14" fill="#818CF8" font-weight="bold">Z</text>
+  <text x="2" y="48" font-family="Arial, sans-serif" font-size="18" fill="#6366F1" font-weight="bold">Z</text>
+</svg>

@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="Graduation cap icon">
+  <defs>
+    <linearGradient id="capFill" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2A2F3A"></stop>
+      <stop offset="1" stop-color="#0F1218"></stop>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#F7D154"></stop>
+      <stop offset="1" stop-color="#D6A92C"></stop>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#000" flood-opacity="0.25"></feDropShadow>
+    </filter>
+  </defs>
+
+  <!-- Backgroundless, game-style graduation cap -->
+  <g filter="url(#soft)">
+    <!-- Mortarboard top -->
+    <path d="M28 96 L128 52 L228 96 L128 140 Z" fill="url(#capFill)" stroke="#0B0F18" stroke-width="8" stroke-linejoin="round"></path>
+
+    <!-- Top highlight ridge -->
+    <path d="M56 96 L128 68 L200 96 L128 124 Z" fill="none" stroke="#3B455C" stroke-width="6" stroke-linejoin="round" opacity="0.65"></path>
+
+    <!-- Cap base (headband) -->
+    <path d="M78 132
+             C92 146 112 156 128 156
+             C144 156 164 146 178 132
+             V168
+             C178 186 156 202 128 202
+             C100 202 78 186 78 168
+             Z" fill="url(#capFill)" stroke="#0B0F18" stroke-width="8" stroke-linejoin="round"></path>
+
+    <!-- Base inner seam -->
+    <path d="M92 152
+             C104 162 116 168 128 168
+             C140 168 152 162 164 152" fill="none" stroke="#3B455C" stroke-width="6" stroke-linecap="round" opacity="0.7"></path>
+
+    <!-- Button on top -->
+    <circle cx="128" cy="96" r="10" fill="url(#gold)" stroke="#8A6A12" stroke-width="6"></circle>
+
+    <!-- Tassel string -->
+    <path d="M128 106
+             C150 118 170 126 190 130" fill="none" stroke="url(#gold)" stroke-width="6" stroke-linecap="round"></path>
+
+    <!-- Tassel (chunky, game-y) -->
+    <g transform="translate(0,0)">
+      <path d="M196 130
+               C206 136 214 146 214 158
+               C214 174 202 186 186 186
+               C170 186 158 174 158 158
+               C158 146 166 136 176 130" fill="url(#gold)" stroke="#8A6A12" stroke-width="8" stroke-linejoin="round"></path>
+      <path d="M178 146
+               C186 154 186 162 178 170" fill="none" stroke="#FFF2BF" stroke-width="6" stroke-linecap="round" opacity="0.8"></path>
+    </g>
+
+    <!-- Spark (optional "achievement" flair) -->
+    <path d="M48 60 L56 76 L72 84 L56 92 L48 108 L40 92 L24 84 L40 76 Z" fill="#22C55E" stroke="#12813A" stroke-width="6" stroke-linejoin="round"></path>
+  </g>
+</svg>

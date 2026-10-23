@@ -1,9 +1,9 @@
 """Build a standalone, offline Windows zip of the base NewStarHost app.
 
-    python scripts/build_offline_bundle.py [--source https://newstarhost.fly.dev] [--out build]
+    python scripts/build_offline_bundle.py --group wildcardz [--out build]
 
-The server also calls build_bundle() directly (Settings > Offline Bundle), packaging its own
-media folder.
+The server also calls build_bundle() directly (Settings > Offline Bundle) for the logged-in
+group. Audio is fetched from the Supabase Storage CDN while zipping.
 
 The zip contains an embedded Windows Python, the backend + web pages, and a copy of the
 song library, dancers, settings and audio pulled from the live deployment. Unzip it on
@@ -16,16 +16,17 @@ import argparse
 import json
 import re
 import subprocess
-import tempfile
 import sys
 import urllib.parse
 import zipfile
-from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Callable, Optional
 
 import httpx
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from backend.group_store import LOCAL_KV_FILES  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 PY_VERSION = "3.12.7"
@@ -58,20 +59,13 @@ APP_FILES = [
     "backend/analytics_store.py",
     "backend/websocket_manager.py",
     "backend/access_log.py",
+    "backend/auth.py",
+    "backend/group_store.py",
+    "backend/supabase_rest.py",
+    "backend/tenancy.py",
     "scripts/utils.py",
     "scripts/sync_song_sheet.py",
 ]
-MEDIA_JSON = [
-    "songs.json",
-    "dancers.json",
-    "hotkeys.json",
-    "role_presets.json",
-    "rpd_queries.json",
-    "gift_notes.json",
-    "play_counts.json",
-    "points_counts.json",
-]
-
 LAUNCHER = r"""@echo off
 title NewStarHost (offline)
 "%~dp0python\python.exe" "%~dp0app\run_offline.py"
@@ -92,6 +86,7 @@ APP_DIR = Path(__file__).resolve().parent
 os.chdir(APP_DIR)
 sys.path.insert(0, str(APP_DIR))
 os.environ.setdefault("PYTHONUTF8", "1")
+os.environ["NSH_OFFLINE"] = "1"  # single local group, data in media/, no logins
 
 
 def free_port(start=8000):
@@ -189,125 +184,131 @@ def prepare_runtime(cache: Path, client: httpx.Client) -> tuple[Path, Path, Path
     return embed_zip, wheels, supabase_js
 
 
-def media_files(media_dir: Path) -> list[str]:
-    """Audio files referenced by the song library, as names inside media_dir."""
-    library = json.loads((media_dir / "songs.json").read_text(encoding="utf-8"))
-    files = set()
-    for song in library.values():
-        url = str(song.get("url") or "")
-        if url.startswith("/media/"):
-            files.add(urllib.parse.unquote(url[len("/media/"):]))
-    bad = sorted(f for f in files if re.search(r'[<>:"/\\|?*]', f) or f.endswith((" ", ".")))
-    if bad:
-        raise RuntimeError(f"Media names not valid on Windows: {bad}")
-    return sorted(files)
+def _audio_name(url: str) -> str:
+    name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1])
+    if not name or re.search(r'[<>:"/\\|?*]', name) or name.endswith((" ", ".")):
+        raise RuntimeError(f"Audio name not valid on Windows: {name!r}")
+    return name
 
 
-def build_bundle(zip_path: Path, media_dir: Path, cache: Path, progress: Progress = None) -> dict:
-    """Write the offline zip straight from the sources (no staging copy of the media)."""
+def build_bundle(zip_path: Path, export: dict, cache: Path, progress: Progress = None) -> dict:
+    """Write the offline zip for one group.
+
+    export = {"songs": {song_id: song}, "docs": {"dancers": [...], "settings": {...}, ...}}.
+    Audio is downloaded from each song's (CDN) URL while zipping and the songs are rewritten
+    to point at the bundled copies in /media/.
+    """
     def report(step: str, frac: float) -> None:
         if progress:
             progress(step, frac)
 
     report("Preparing Windows runtime", 0.0)
-    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-        embed_zip, wheels, supabase_js = prepare_runtime(cache, client)
-    audio = [name for name in media_files(media_dir) if (media_dir / name).is_file()]
-    missing = len(media_files(media_dir)) - len(audio)
+    songs = json.loads(json.dumps(export.get("songs") or {}))
+    docs = export.get("docs") or {}
+    sources: dict[str, str] = {}  # bundled name -> source URL
+    for song in songs.values():
+        url = str(song.get("url") or "")
+        if url.startswith("http://") or url.startswith("https://"):
+            name = _audio_name(url)
+            sources.setdefault(name, url)
+            song["url"] = f"/media/{name}"
 
+    missing = 0
     root = "NewStarHost"
     tmp = zip_path.with_suffix(".zip.part")
-    with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
-        def add_bytes(arc: str, data: bytes) -> None:
-            kind = zipfile.ZIP_STORED if Path(arc).suffix.lower() in _STORED_SUFFIXES else zipfile.ZIP_DEFLATED
-            zf.writestr(f"{root}/{arc}", data, compress_type=kind)
+    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
+        embed_zip, wheels, supabase_js = prepare_runtime(cache, client)
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+            def add_bytes(arc: str, data: bytes) -> None:
+                kind = zipfile.ZIP_STORED if Path(arc).suffix.lower() in _STORED_SUFFIXES else zipfile.ZIP_DEFLATED
+                zf.writestr(f"{root}/{arc}", data, compress_type=kind)
 
-        def add_file(arc: str, src: Path) -> None:
-            kind = zipfile.ZIP_STORED if src.suffix.lower() in _STORED_SUFFIXES else zipfile.ZIP_DEFLATED
-            zf.write(src, f"{root}/{arc}", compress_type=kind)
+            def add_file(arc: str, src: Path) -> None:
+                kind = zipfile.ZIP_STORED if src.suffix.lower() in _STORED_SUFFIXES else zipfile.ZIP_DEFLATED
+                zf.write(src, f"{root}/{arc}", compress_type=kind)
 
-        report("Packing Python", 0.05)
-        with zipfile.ZipFile(embed_zip) as ez:
-            for info in ez.infolist():
-                data = ez.read(info)
-                if info.filename.endswith("._pth"):
-                    stem = Path(info.filename).stem
-                    data = f"{stem}.zip\n.\nLib\\site-packages\n..\\app\nimport site\n".encode()
-                add_bytes(f"python/{info.filename}", data)
-        for wheel in sorted(wheels.glob("*.whl")):
-            with zipfile.ZipFile(wheel) as wz:
-                for info in wz.infolist():
-                    if not info.is_dir():
-                        add_bytes(f"python/Lib/site-packages/{info.filename}", wz.read(info))
+            report("Packing Python", 0.05)
+            with zipfile.ZipFile(embed_zip) as ez:
+                for info in ez.infolist():
+                    data = ez.read(info)
+                    if info.filename.endswith("._pth"):
+                        stem = Path(info.filename).stem
+                        data = f"{stem}.zip\n.\nLib\\site-packages\n..\\app\nimport site\n".encode()
+                    add_bytes(f"python/{info.filename}", data)
+            for wheel in sorted(wheels.glob("*.whl")):
+                with zipfile.ZipFile(wheel) as wz:
+                    for info in wz.infolist():
+                        if not info.is_dir():
+                            add_bytes(f"python/Lib/site-packages/{info.filename}", wz.read(info))
 
-        report("Packing app", 0.1)
-        for rel in APP_FILES:
-            add_file(f"app/{rel}", REPO / rel)
-        add_bytes("app/scripts/__init__.py", b"")
-        static = REPO / "backend" / "static"
-        for path in sorted(static.rglob("*")):
-            if not path.is_file():
-                continue
-            arc = f"app/backend/static/{path.relative_to(static).as_posix()}"
-            if path.suffix == ".html":
-                text = path.read_text(encoding="utf-8")
-                add_bytes(arc, text.replace(SUPABASE_JS_URL, "/static/vendor/supabase.js").encode("utf-8"))
-            else:
-                add_file(arc, path)
-        add_file("app/backend/static/vendor/supabase.js", supabase_js)
-        add_bytes("app/run_offline.py", RUNNER.encode("utf-8"))
-        add_bytes("Start NewStarHost.bat", LAUNCHER.replace("\n", "\r\n").encode("ascii"))
-        add_bytes("README.txt", README.format(snapshot=date.today().isoformat()).replace("\n", "\r\n").encode("utf-8"))
+            report("Packing app", 0.1)
+            for rel in APP_FILES:
+                add_file(f"app/{rel}", REPO / rel)
+            add_bytes("app/scripts/__init__.py", b"")
+            static = REPO / "backend" / "static"
+            for path in sorted(static.rglob("*")):
+                if not path.is_file():
+                    continue
+                arc = f"app/backend/static/{path.relative_to(static).as_posix()}"
+                if path.suffix == ".html":
+                    text = path.read_text(encoding="utf-8")
+                    add_bytes(arc, text.replace(SUPABASE_JS_URL, "/static/vendor/supabase.js").encode("utf-8"))
+                else:
+                    add_file(arc, path)
+            add_file("app/backend/static/vendor/supabase.js", supabase_js)
+            add_bytes("app/run_offline.py", RUNNER.encode("utf-8"))
+            add_bytes("Start NewStarHost.bat", LAUNCHER.replace("\n", "\r\n").encode("ascii"))
+            add_bytes("README.txt", README.format(snapshot=date.today().isoformat()).replace("\n", "\r\n").encode("utf-8"))
 
-        for name in MEDIA_JSON:
-            if (media_dir / name).is_file():
-                add_file(f"app/media/{name}", media_dir / name)
-        for i, name in enumerate(audio):
-            add_file(f"app/media/{name}", media_dir / name)
-            if i % 10 == 0:
-                report(f"Packing songs ({i}/{len(audio)})", 0.15 + 0.85 * i / max(1, len(audio)))
+            add_bytes("app/media/songs.json", json.dumps(songs, ensure_ascii=False, indent=2).encode("utf-8"))
+            for key, value in docs.items():
+                filename = LOCAL_KV_FILES.get(key, f"{key}.json")
+                add_bytes(f"app/media/{filename}", json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8"))
+
+            names = sorted(sources)
+            for i, name in enumerate(names):
+                try:
+                    resp = client.get(sources[name])
+                    resp.raise_for_status()
+                    add_bytes(f"app/media/{name}", resp.content)
+                except Exception:
+                    missing += 1
+                if i % 10 == 0:
+                    report(f"Packing songs ({i}/{len(names)})", 0.15 + 0.85 * i / max(1, len(names)))
     tmp.replace(zip_path)
     report("Done", 1.0)
-    return {"songs": len(audio), "missing_audio": missing, "bytes": zip_path.stat().st_size}
+    return {"songs": len(sources) - missing, "missing_audio": missing, "bytes": zip_path.stat().st_size}
 
 
-def fetch_remote_media(source: str, media_dir: Path) -> None:
-    """Copy the song library, settings and audio from a running deployment."""
-    media_dir.mkdir(parents=True, exist_ok=True)
-    with httpx.Client(timeout=120.0, follow_redirects=True) as client:
-        for name in MEDIA_JSON:
-            resp = client.get(f"{source}/media/{name}")
-            if resp.status_code == 200:
-                (media_dir / name).write_bytes(resp.content)
-            else:
-                log(f"  (no {name} on the server, skipping)")
-        files = [f for f in media_files(media_dir) if not (media_dir / f).exists()]
-        log(f"Downloading {len(files)} audio files...")
+def export_group(username: str) -> dict:
+    """Read one group's library and documents straight from Supabase (secret key)."""
+    from backend.supabase_rest import SupabaseRest
 
-        def fetch(name: str) -> None:
-            download(client, f"{source}/media/{urllib.parse.quote(name)}", media_dir / name)
-
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            list(pool.map(fetch, files))
+    rest = SupabaseRest()
+    group = rest.select_one("groups", {"select": "id,display_name", "username": f"eq.{username.lower()}"})
+    if not group:
+        raise SystemExit(f"No group with username {username!r}")
+    rows = rest.select("group_songs", {"select": "song_id,data", "group_id": f"eq.{group['id']}"})
+    docs = rest.select("group_kv", {"select": "key,value", "group_id": f"eq.{group['id']}"})
+    return {"songs": {r["song_id"]: r["data"] for r in rows}, "docs": {d["key"]: d["value"] for d in docs}}
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--source", default="https://newstarhost.fly.dev", help="Deployment to copy data from.")
+    parser.add_argument("--group", required=True, help="Username of the group to export.")
     parser.add_argument("--out", default=str(REPO / "build"), help="Output directory.")
     args = parser.parse_args()
 
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     zip_path = out / "NewStarHost-offline.zip"
-    with tempfile.TemporaryDirectory() as tmp:
-        media_dir = Path(tmp) / "media"
-        fetch_remote_media(args.source.rstrip("/"), media_dir)
-        log("Zipping...")
-        info = build_bundle(zip_path, media_dir, out / "cache")
+    export = export_group(args.group)
+    log(f"Zipping {len(export['songs'])} songs...")
+    info = build_bundle(zip_path, export, out / "cache")
     log(f"Done: {zip_path} ({info['bytes'] / 1e6:.0f} MB, {info['songs']} songs)")
     return 0
 
 
 if __name__ == "__main__":
+    sys.path.insert(0, str(REPO))
     raise SystemExit(main())

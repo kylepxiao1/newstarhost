@@ -121,6 +121,26 @@ Notes: this Skia path currently falls back to CPU renderer when overlay rotation
   - Optional overlays matching `OVERLAY_SOURCES` (default: `BattleLowerThird`, `BurstOverlay`, `CenterDottedLine`).
 - Start OBS Virtual Camera or RTMP if available; choose it in TikTok LIVE Studio.
 
+## Group Logins & Data
+
+Each dance group has one login; there is no sign-up page. A group only sees and edits its own
+songs, dancers, settings, notes and TikTok data. Group data lives in Supabase (`groups`,
+`group_songs`, `group_kv`; schema in `supabase/multi_tenant.sql`) and song audio in the public
+`song-audio` Storage bucket, served through Supabase's CDN (content-addressed, cached for a year).
+
+```bash
+python scripts/manage_groups.py list
+python scripts/manage_groups.py create <username> --name "Group Name" --handle <tiktok_handle>
+python scripts/manage_groups.py set-password <username>     # also logs out every device
+python scripts/manage_groups.py update <username> --handle <new_handle>
+python scripts/manage_groups.py rotate-overlay <username>   # new OBS overlay link
+python scripts/manage_groups.py disable <username>
+python scripts/supabase_sql.py -c "select ..."              # run SQL (needs SUPABASE_ACCESS_TOKEN)
+```
+
+OBS uses each group's private, view-only overlay link (Settings > OBS Overlay Link).
+`SESSION_SECRET` in `app.env` signs login cookies; changing it logs everyone out.
+
 ## Control Panel
 - Start/End battle.
 - Increment scores per slot.

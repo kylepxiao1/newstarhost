@@ -48,8 +48,8 @@
     <section>
       <h2>Filters</h2>
       <div class="row">
-        <label for="groupSelect">Group</label>
-        <select id="groupSelect"></select>
+        <label for="groupSelect" style="display:none;">Group</label>
+        <select id="groupSelect" style="display:none;"></select>
         <label for="dateInput">Date (MT)</label>
         <input id="dateInput" type="date">
         <button id="refreshBtn" type="button">Refresh</button>
@@ -148,6 +148,13 @@
     }
 
     async function loadGroups() {
+      // Online, the group is the logged-in one; the list below is only for the offline bundle.
+      const me = await (window.PageShared?.getGroup?.() || Promise.resolve(null));
+      if (me && !me.offline) {
+        groups = me.tiktok_handle ? [{ name: me.display_name, handle: String(me.tiktok_handle).toLowerCase() }] : [];
+        renderGroupOptions();
+        return;
+      }
       const dancers = await api("/dancers").then((r) => r.json()).catch(() => []);
       const out = [];
       (Array.isArray(dancers) ? dancers : []).forEach((d) => {

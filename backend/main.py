@@ -30,6 +30,11 @@ import backend.config as config
 from backend.obs_controller import OBSController
 from backend.state import BattleStateManager
 from backend.websocket_manager import WebsocketManager
+from backend.analytics_store import AnalyticsStore
+from backend.auth import SESSION_COOKIE, SESSION_MAX_AGE, Group, GroupDirectory, make_session_token
+from backend.group_store import LocalGroupStore, SupabaseGroupStore
+from backend.supabase_rest import SupabaseRest, audio_object_path
+from backend.tenancy import OFFLINE_GROUP, CurrentGroupProxy, GroupRegistry, current_group, require_group
 from backend.access_log import AccessLogger, SKIP_PREFIXES, VISITOR_COOKIE, request_fields
 from scripts.utils import _env
 from scripts.sync_song_sheet import sync_song_sheet, SongSheetError
@@ -42,10 +47,9 @@ STATIC_DIR = BASE_DIR / "static"
 MEDIA_DIR = (BASE_DIR / ".." / "media").resolve()
 DIST_DIR = (BASE_DIR / ".." / "dist").resolve()
 MEDIA_DIR.mkdir(exist_ok=True)
-HOTKEYS_PATH = MEDIA_DIR / "hotkeys.json"
-RPD_QUERIES_PATH = MEDIA_DIR / "rpd_queries.json"
-GIFT_NOTES_PATH = MEDIA_DIR / "gift_notes.json"
-ROLE_PRESETS_PATH = MEDIA_DIR / "role_presets.json"
+# Offline bundle: one local group, data in media/*.json, no logins. Otherwise every group's
+# data lives in Supabase and media/ is only scratch space for audio processing.
+OFFLINE_MODE = _env("NSH_OFFLINE", "").strip() == "1"
 RAPIDAPI_KEY = _env("RAPIDAPI_KEY", "")
 RAPIDAPI_HOST = _env("RAPIDAPI_HOST", "")
 SUPABASE_PROJECT_ID = _env("SUPABASE_PROJECT_ID", "").strip()
@@ -72,13 +76,8 @@ def _load_hotkeys() -> dict:
         "enable_duo_dance": False,
         "hotkeys": {},
     }
-    if not HOTKEYS_PATH.exists():
-        return defaults
-    try:
-        payload = json.loads(HOTKEYS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return defaults
-    except Exception:
+    payload = state_manager.get_doc("settings", None)
+    if not isinstance(payload, dict):
         return defaults
     fade_in = payload.get("fade_in")
     fade_out = payload.get("fade_out")
@@ -93,25 +92,18 @@ def _load_hotkeys() -> dict:
         "display_background_timer": bool(display_background_timer),
         "enable_duo_dance": bool(enable_duo_dance),
         "hotkeys": hotkeys if isinstance(hotkeys, dict) else {},
+        "song_sheet_id": str(payload.get("song_sheet_id") or ""),
     }
     return data
 
 
 def _save_hotkeys(payload: dict) -> None:
-    try:
-        HOTKEYS_PATH.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to save hotkeys.json: %s", exc)
+    state_manager.set_doc("settings", payload)
 
 
 def _load_rpd_queries() -> list:
-    if not RPD_QUERIES_PATH.exists():
-        return []
-    try:
-        payload = json.loads(RPD_QUERIES_PATH.read_text(encoding="utf-8"))
-        if not isinstance(payload, list):
-            return []
-    except Exception:
+    payload = state_manager.get_doc("rpd_queries", [])
+    if not isinstance(payload, list):
         return []
     out = []
     for item in payload:
@@ -130,20 +122,12 @@ def _load_rpd_queries() -> list:
 
 
 def _save_rpd_queries(queries: list) -> None:
-    try:
-        RPD_QUERIES_PATH.write_text(json.dumps(queries, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to save rpd_queries.json: %s", exc)
+    state_manager.set_doc("rpd_queries", queries)
 
 
 def _load_role_presets() -> list:
-    if not ROLE_PRESETS_PATH.exists():
-        return []
-    try:
-        payload = json.loads(ROLE_PRESETS_PATH.read_text(encoding="utf-8"))
-        if not isinstance(payload, list):
-            return []
-    except Exception:
+    payload = state_manager.get_doc("role_presets", [])
+    if not isinstance(payload, list):
         return []
     out = []
     for item in payload:
@@ -167,29 +151,18 @@ def _load_role_presets() -> list:
 
 
 def _save_role_presets(presets: list) -> None:
-    try:
-        ROLE_PRESETS_PATH.write_text(json.dumps(presets, ensure_ascii=False, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to save role_presets.json: %s", exc)
+    state_manager.set_doc("role_presets", presets)
 
 
 def _load_gift_notes() -> dict:
-    if not GIFT_NOTES_PATH.exists():
-        return {}
-    try:
-        payload = json.loads(GIFT_NOTES_PATH.read_text(encoding="utf-8"))
-        if not isinstance(payload, dict):
-            return {}
-    except Exception:
+    payload = state_manager.get_doc("gift_notes", {})
+    if not isinstance(payload, dict):
         return {}
     return {str(k): str(v) for k, v in payload.items() if str(v or "").strip()}
 
 
 def _save_gift_notes(notes: dict) -> None:
-    try:
-        GIFT_NOTES_PATH.write_text(json.dumps(notes, indent=2), encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Failed to save gift_notes.json: %s", exc)
+    state_manager.set_doc("gift_notes", notes)
 
 
 def _find_tiktok_id(data, handle: str) -> Optional[str]:
@@ -280,18 +253,26 @@ async def lifespan(app: FastAPI):
     # Standalone mode: skip OBS control
     obs.enabled = False
     logger.info("Service started (headless). Overlay websocket at %s", config.WEBSOCKET_PATH)
-    try:
-        state_manager.rename_media_files(MEDIA_DIR)
-    except Exception as exc:
-        logger.warning("Media rename on startup failed: %s", exc)
-    try:
-        state_manager.ensure_song_durations(MEDIA_DIR)
-    except Exception as exc:
-        logger.warning("Song duration scan failed: %s", exc)
-    _cleanup_unregistered_media(state_manager)
+    if OFFLINE_MODE:
+        # Local audio files only exist in the offline bundle.
+        token = current_group.set(OFFLINE_GROUP)
+        try:
+            try:
+                state_manager.rename_media_files(MEDIA_DIR)
+            except Exception as exc:
+                logger.warning("Media rename on startup failed: %s", exc)
+            try:
+                state_manager.ensure_song_durations(MEDIA_DIR)
+            except Exception as exc:
+                logger.warning("Song duration scan failed: %s", exc)
+            _cleanup_unregistered_media(state_manager)
+        finally:
+            current_group.reset(token)
     access_logger.start()
     yield
     await access_logger.stop()
+    # Push any queued group writes to Supabase before the process exits.
+    await asyncio.to_thread(group_registry.flush_all, 20.0)
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -307,8 +288,65 @@ class NoCacheStaticFiles(StaticFiles):
 
 app = FastAPI(title="TikTok LIVE Battle Controller", openapi_url="/openapi.json", lifespan=lifespan)
 app.mount("/static", NoCacheStaticFiles(directory=str(STATIC_DIR)), name="static")
-app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
+if OFFLINE_MODE:
+    # Online, audio is served from the Supabase Storage CDN and media/ is private scratch space.
+    app.mount("/media", StaticFiles(directory=str(MEDIA_DIR)), name="media")
 app.mount("/dist", StaticFiles(directory=str(DIST_DIR), check_dir=False), name="dist")
+
+
+supabase_rest = SupabaseRest()
+group_directory = GroupDirectory(supabase_rest)
+
+# Reachable without logging in.
+PUBLIC_PATHS = {"/login", "/auth/login", "/auth/logout", "/favicon.ico", "/access-log/client"}
+PUBLIC_PREFIXES = ("/static/",)
+# What a read-only overlay link (?key=...) may load.
+OVERLAY_PATHS = {"/overlay", "/state", "/config", "/camera/likes/summary"}
+_LOGIN_ATTEMPTS: Dict[str, List[float]] = {}
+
+
+async def _group_from_request(request) -> Tuple[Optional[Group], bool]:
+    """(group, via_overlay_key) from the session cookie, else an overlay ?key=."""
+    token = request.cookies.get(SESSION_COOKIE)
+    if token:
+        group = await asyncio.to_thread(group_directory.session_group, token)
+        if group:
+            return group, False
+    key = request.query_params.get("key")
+    if key:
+        group = await asyncio.to_thread(group_directory.by_overlay_key, key)
+        if group and not group.disabled:
+            return group, True
+    return None, False
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if OFFLINE_MODE:
+        token = current_group.set(OFFLINE_GROUP)
+        try:
+            return await call_next(request)
+        finally:
+            current_group.reset(token)
+    path = request.url.path
+    if path in PUBLIC_PATHS or path.startswith(PUBLIC_PREFIXES):
+        return await call_next(request)
+    group, via_overlay = await _group_from_request(request)
+    if group is None:
+        if request.method == "GET" and "text/html" in request.headers.get("accept", ""):
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse("/login", status_code=303)
+        return JSONResponse({"error": "Not logged in", "login": "/login"}, status_code=401)
+    if via_overlay and (request.method not in ("GET", "HEAD") or path not in OVERLAY_PATHS):
+        return JSONResponse({"error": "Overlay links are view-only"}, status_code=403)
+    request.state.group_id = group.id
+    token = current_group.set(group)
+    try:
+        # Load the group's data off the event loop the first time it's used.
+        await asyncio.to_thread(group_registry.get, group)
+        return await call_next(request)
+    finally:
+        current_group.reset(token)
 
 
 @app.middleware("http")
@@ -333,6 +371,7 @@ async def access_log_middleware(request: Request, call_next):
                 "query": request.url.query[:1000] or None,
                 "status": status,
                 "duration_ms": int((time.perf_counter() - started) * 1000),
+                "group_id": getattr(request.state, "group_id", None),
                 **request_fields(request.headers, request.client.host if request.client else None),
             })
     if new_visitor:
@@ -367,7 +406,8 @@ async def access_log_client(request: Request) -> Response:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    # Same-origin app; never let other sites send requests with a group's session cookie.
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -378,15 +418,94 @@ async def get_config() -> JSONResponse:
     return JSONResponse({"supabase_url": SUPABASE_URL, "supabase_key": SUPABASE_CLIENT_KEY})
 
 obs = OBSController()
-state_manager = BattleStateManager(
-    config.OVERLAY_SOURCES,
-    library_path=MEDIA_DIR / "songs.json",
-    dancers_path=MEDIA_DIR / "dancers.json",
-    plays_path=MEDIA_DIR / "play_counts.json",
-    points_path=MEDIA_DIR / "points_counts.json",
-    analytics_path=MEDIA_DIR / "analytics.sqlite",
-)
+
+
+def _make_group_state(group: Group) -> BattleStateManager:
+    if OFFLINE_MODE:
+        return BattleStateManager(config.OVERLAY_SOURCES, LocalGroupStore(MEDIA_DIR), media_dir=MEDIA_DIR)
+    return BattleStateManager(
+        config.OVERLAY_SOURCES,
+        SupabaseGroupStore(supabase_rest, group.id),
+        analytics=AnalyticsStore(group_id=group.id),
+        group_name=group.display_name,
+        group_handle=group.tiktok_handle,
+    )
+
+
+group_registry = GroupRegistry(_make_group_state)
+# Resolves to the logged-in group's state for the current request.
+state_manager = CurrentGroupProxy(group_registry)
 ws_manager = WebsocketManager()
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+def _login_rate_limited(ip: str) -> bool:
+    now = time.time()
+    attempts = [t for t in _LOGIN_ATTEMPTS.get(ip, []) if now - t < 300]
+    _LOGIN_ATTEMPTS[ip] = attempts
+    return len(attempts) >= 10
+
+
+@app.get("/login")
+async def login_page() -> FileResponse:
+    return _static_file("login.html")
+
+
+@app.post("/auth/login")
+async def auth_login(body: LoginRequest, request: Request) -> JSONResponse:
+    ip = request.headers.get("fly-client-ip") or (request.client.host if request.client else "")
+    if _login_rate_limited(ip):
+        return JSONResponse({"ok": False, "error": "Too many attempts. Try again in a few minutes."}, status_code=429)
+    group = await asyncio.to_thread(group_directory.authenticate, body.username, body.password)
+    if not group:
+        _LOGIN_ATTEMPTS.setdefault(ip, []).append(time.time())
+        return JSONResponse({"ok": False, "error": "Wrong username or password."}, status_code=401)
+    response = JSONResponse({"ok": True, "group": group.display_name})
+    response.set_cookie(
+        SESSION_COOKIE, make_session_token(group), max_age=SESSION_MAX_AGE, httponly=True, samesite="lax",
+        secure=request.headers.get("x-forwarded-proto") == "https",
+    )
+    return response
+
+
+@app.post("/auth/logout")
+async def auth_logout() -> JSONResponse:
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(SESSION_COOKIE)
+    return response
+
+
+def _overlay_url(request: Request, group: Group) -> str:
+    base = str(request.base_url).rstrip("/")
+    if request.headers.get("x-forwarded-proto") == "https":
+        base = base.replace("http://", "https://", 1)
+    return f"{base}/overlay?key={group.overlay_key}" if group.overlay_key else ""
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request) -> JSONResponse:
+    group = require_group()
+    return JSONResponse({
+        "offline": OFFLINE_MODE,
+        "username": group.username,
+        "display_name": group.display_name,
+        "tiktok_handle": group.tiktok_handle,
+        "overlay_url": "" if OFFLINE_MODE else _overlay_url(request, group),
+    })
+
+
+@app.post("/auth/overlay-key/rotate")
+async def rotate_overlay_key(request: Request) -> JSONResponse:
+    if OFFLINE_MODE:
+        return JSONResponse({"error": "Not available offline"}, status_code=400)
+    group = require_group()
+    await asyncio.to_thread(group_directory.rotate_overlay_key, group.id)
+    fresh = await asyncio.to_thread(group_directory.by_id, group.id)
+    return JSONResponse({"overlay_url": _overlay_url(request, fresh)})
 
 
 class BattleStartRequest(BaseModel):
@@ -628,8 +747,12 @@ async def update_settings(body: SettingsRequest) -> JSONResponse:
 
 @app.post("/settings/song-sheet/sync")
 async def sync_song_sheet_endpoint() -> JSONResponse:
+    sheet_id = str(_load_hotkeys().get("song_sheet_id") or "").strip()
+    if not sheet_id:
+        return JSONResponse({"error": "No song sheet is set up for this group."}, status_code=400)
+    songs = state_manager.get_state().get("songs", {}).get("library", {}) or {}
     try:
-        result = await asyncio.to_thread(sync_song_sheet)
+        result = await asyncio.to_thread(sync_song_sheet, spreadsheet_id=sheet_id, songs=songs)
     except SongSheetError as exc:
         return JSONResponse({"error": str(exc)}, status_code=400)
     except Exception as exc:
@@ -638,29 +761,40 @@ async def sync_song_sheet_endpoint() -> JSONResponse:
     return JSONResponse(result)
 
 
-# Offline bundle: built in the background (it packs ~all media), then downloaded.
+# Offline bundle: built in the background per group (it packs every song), then downloaded.
 OFFLINE_BUNDLE_DIR = Path(tempfile.gettempdir()) / "newstarhost-offline"
-OFFLINE_BUNDLE_ZIP = OFFLINE_BUNDLE_DIR / "NewStarHost-offline.zip"
-_offline_bundle: Dict[str, object] = {"state": "idle", "step": "", "progress": 0.0, "error": "", "built_at": "", "songs": 0, "bytes": 0}
+_offline_bundles: Dict[str, Dict[str, object]] = {}
 
 
-def _build_offline_bundle() -> None:
+def _bundle_status(group_id: str) -> Dict[str, object]:
+    return _offline_bundles.setdefault(
+        group_id, {"state": "idle", "step": "", "progress": 0.0, "error": "", "built_at": "", "songs": 0, "bytes": 0}
+    )
+
+
+def _bundle_zip(group_id: str) -> Path:
+    return OFFLINE_BUNDLE_DIR / f"{group_id}.zip"
+
+
+def _build_offline_bundle(group_id: str, export: dict) -> None:
+    status = _bundle_status(group_id)
+
     def on_progress(step: str, frac: float) -> None:
-        _offline_bundle.update(step=step, progress=round(frac, 3))
+        status.update(step=step, progress=round(frac, 3))
 
     try:
         from scripts.build_offline_bundle import build_bundle
     except ImportError:
-        _offline_bundle.update(state="error", error="The offline bundle can only be built from the live app.")
+        status.update(state="error", error="The offline bundle can only be built from the live app.")
         return
     try:
         OFFLINE_BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
-        info = build_bundle(OFFLINE_BUNDLE_ZIP, MEDIA_DIR, OFFLINE_BUNDLE_DIR / "cache", progress=on_progress)
+        info = build_bundle(_bundle_zip(group_id), export, OFFLINE_BUNDLE_DIR / "cache", progress=on_progress)
     except Exception as exc:
         logger.exception("offline bundle build failed")
-        _offline_bundle.update(state="error", error=f"Build failed: {exc}")
+        status.update(state="error", error=f"Build failed: {exc}")
         return
-    _offline_bundle.update(
+    status.update(
         state="ready",
         built_at=datetime.now(timezone.utc).isoformat(),
         songs=info["songs"],
@@ -671,22 +805,39 @@ def _build_offline_bundle() -> None:
 
 @app.post("/offline-bundle")
 async def start_offline_bundle() -> JSONResponse:
-    if _offline_bundle["state"] != "building":
-        _offline_bundle.update(state="building", step="Starting", progress=0.0, error="")
-        asyncio.get_running_loop().run_in_executor(None, _build_offline_bundle)
-    return JSONResponse(_offline_bundle)
+    if OFFLINE_MODE:
+        return JSONResponse({"state": "error", "error": "The offline bundle can only be built from the live app."})
+    group = require_group()
+    status = _bundle_status(group.id)
+    if status["state"] != "building":
+        state = state_manager.get_state()
+        export = {
+            "songs": state.get("songs", {}).get("library", {}) or {},
+            "docs": {
+                "dancers": state.get("dancers", []) or [],
+                "settings": state_manager.get_doc("settings", {}),
+                "role_presets": state_manager.get_doc("role_presets", []),
+                "rpd_queries": state_manager.get_doc("rpd_queries", []),
+                "gift_notes": state_manager.get_doc("gift_notes", {}),
+            },
+        }
+        status.update(state="building", step="Starting", progress=0.0, error="")
+        asyncio.get_running_loop().run_in_executor(None, _build_offline_bundle, group.id, export)
+    return JSONResponse(status)
 
 
 @app.get("/offline-bundle/status")
 async def offline_bundle_status() -> JSONResponse:
-    return JSONResponse(_offline_bundle)
+    return JSONResponse(_bundle_status(require_group().id))
 
 
 @app.get("/offline-bundle/download")
 async def download_offline_bundle():
-    if _offline_bundle["state"] != "ready" or not OFFLINE_BUNDLE_ZIP.exists():
+    group = require_group()
+    path = _bundle_zip(group.id)
+    if _bundle_status(group.id)["state"] != "ready" or not path.exists():
         return JSONResponse({"error": "No offline bundle has been built yet."}, status_code=404)
-    return FileResponse(OFFLINE_BUNDLE_ZIP, media_type="application/zip", filename="NewStarHost-offline.zip")
+    return FileResponse(path, media_type="application/zip", filename="NewStarHost-offline.zip")
 
 
 @app.post("/settings/role-assignments")
@@ -803,6 +954,46 @@ def _norm_filename(s: str) -> str:
     s = re.sub(r"\s+", " ", s.strip())
     return s[:200] or "untitled"
 
+# Durations measured at upload, picked up when the song is registered (CDN audio isn't on disk).
+_AUDIO_DURATIONS: Dict[str, int] = {}
+
+
+def _audio_duration(path: Path) -> Optional[int]:
+    try:
+        from mutagen import File as MutagenFile
+        audio = MutagenFile(str(path))
+        length = getattr(getattr(audio, "info", None), "length", None)
+        return int(round(float(length))) if length else None
+    except Exception:
+        return None
+
+
+def _publish_audio_sync(path: Path, group_id: str) -> str:
+    """Make a processed audio file playable and return its URL.
+
+    Online it goes to the Supabase Storage CDN under a content hash (immutable, cached for a
+    year) and the local scratch file is removed. Offline it stays in media/."""
+    path = Path(path)
+    if OFFLINE_MODE:
+        return f"/media/{path.name}"
+    data = path.read_bytes()
+    ext = path.suffix.lstrip(".").lower() or "mp3"
+    content_type = {"mp3": "audio/mpeg", "m4a": "audio/mp4", "aac": "audio/aac", "wav": "audio/wav", "ogg": "audio/ogg"}.get(ext, "audio/mpeg")
+    duration = _audio_duration(path)
+    url = supabase_rest.upload(audio_object_path(group_id, data, ext), data, content_type)
+    if duration:
+        _AUDIO_DURATIONS[url] = duration
+    try:
+        path.unlink()
+    except Exception:
+        pass
+    return url
+
+
+async def _publish_audio(path: Path) -> str:
+    return await asyncio.to_thread(_publish_audio_sync, path, require_group().id)
+
+
 def _cleanup_unregistered_media(state_manager: BattleStateManager) -> None:
     """
     Remove mp3 files in media/ that are not referenced by the song library.
@@ -853,10 +1044,8 @@ async def download_via_api(url: str) -> Optional[Path]:
 
 
 def _broadcast_state(state: dict) -> None:
-    # Fire-and-forget broadcast
-    import asyncio
-
-    asyncio.create_task(ws_manager.broadcast({"type": "state", "payload": state}))
+    # Fire-and-forget broadcast to the current group's open pages only.
+    asyncio.create_task(ws_manager.broadcast({"type": "state", "payload": state}, require_group().id))
 
 
 def _sync_obs(state: dict) -> None:
@@ -902,7 +1091,7 @@ async def _insert_supabase_row(table: str, row: dict) -> Optional[str]:
     return f"Supabase insert failed (status={resp.status_code}): {payload}"
 
 
-async def _update_supabase_row(table: str, row_id: str, updates: dict) -> Optional[str]:
+async def _update_supabase_row(table: str, row_id: str, updates: dict, extra_filters: Optional[dict] = None) -> Optional[str]:
     headers = _supabase_headers()
     if not headers:
         return "Supabase credentials missing. Set SUPABASE_URL/SUPABASE_PROJECT_ID and SUPABASE_SECRET_KEY."
@@ -910,7 +1099,7 @@ async def _update_supabase_row(table: str, row_id: str, updates: dict) -> Option
         async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=10.0) as client:
             resp = await client.patch(
                 f"/{table}",
-                params={"id": f"eq.{row_id}"},
+                params={"id": f"eq.{row_id}", **(extra_filters or {})},
                 json=updates,
                 headers=headers,
             )
@@ -925,7 +1114,14 @@ async def _update_supabase_row(table: str, row_id: str, updates: dict) -> Option
     return f"Supabase update failed (status={resp.status_code}): {payload}"
 
 
+def _group_handle() -> str:
+    """The logged-in group's TikTok handle (each group only ever sees its own TikTok data)."""
+    return require_group().tiktok_handle
+
+
 def _resolve_group_handle_from_state(state: dict) -> str:
+    if not OFFLINE_MODE:
+        return _group_handle()
     group_name = str(state.get("group_name") or "").strip()
     return _resolve_group_handle_by_name(state, group_name)
 
@@ -961,6 +1157,9 @@ def _resolve_group_name_by_handle(state: dict, handle: str) -> str:
 
 
 def _resolve_like_overlay_target_from_state(state: dict) -> tuple[str, str, str]:
+    if not OFFLINE_MODE:
+        group = require_group()
+        return group.display_name, group.tiktok_handle, "group"
     configured_name = str(state.get("like_target_group_name") or "").strip()
     configured_handle = str(state.get("like_target_group_handle") or "").strip().lstrip("@")
     if configured_name or configured_handle:
@@ -1401,8 +1600,12 @@ async def set_winner(body: WinnerRequest) -> JSONResponse:
 
 @app.post("/battle/group")
 async def set_group(body: GroupRequest) -> JSONResponse:
-    state = state_manager.set_group_name(body.name)
-    _broadcast_state(state)
+    # The group comes from the login now; only the offline bundle can pick one.
+    if OFFLINE_MODE:
+        state = state_manager.set_group_name(body.name)
+        _broadcast_state(state)
+    else:
+        state = state_manager.get_state()
     return JSONResponse(state)
 
 
@@ -1465,9 +1668,7 @@ async def spoof_gift(body: SpoofGiftRequest = SpoofGiftRequest()) -> JSONRespons
     else:
         competition_id = int(time.time() * 1000)
 
-    group_name = (state.get("group_name") or "").strip().lower()
-    group_match = next((d for d in dancers if (d.get("name") or "").strip().lower() == group_name), None)
-    tiktok_username = str((group_match or {}).get("handle") or "DUMMY").strip().lstrip("@") or "DUMMY"
+    tiktok_username = _resolve_group_handle_from_state(state) or "DUMMY"
 
     now_dt = datetime.now(timezone.utc)
     row_id = int(time.time() * 1000) * 1000 + random.randint(0, 999)
@@ -1548,9 +1749,7 @@ async def spoof_start_battle(body: SpoofStartBattleRequest = SpoofStartBattleReq
     if duration_sec < 1:
         duration_sec = 120
 
-    group_name = (state.get("group_name") or "").strip().lower()
-    group_match = next((d for d in dancers if (d.get("name") or "").strip().lower() == group_name), None)
-    tiktok_username = str((group_match or {}).get("handle") or "DUMMY").strip().lstrip("@") or "DUMMY"
+    tiktok_username = _resolve_group_handle_from_state(state) or "DUMMY"
 
     now_dt = datetime.now(timezone.utc)
     now_sec = int(now_dt.timestamp())
@@ -1668,6 +1867,8 @@ async def live_battle_end(body: LiveBattleEndRequest) -> JSONResponse:
         "end_iso_ts": end_dt.isoformat(),
         "end_unix_ts": int(end_dt.timestamp()),
     }
+    if not OFFLINE_MODE:
+        row["group_id"] = require_group().id
     err = await _insert_supabase_row("battle_results", row)
     if err:
         logger.warning("Battle event insert failed: %s", err)
@@ -1774,6 +1975,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
         camera_dance=body.camera_dance,
         duo_dance=body.duo_dance,
         artist=body.artist,
+        duration_sec=_AUDIO_DURATIONS.get(body.url),
     )
     _broadcast_state(state)
     return JSONResponse(state)
@@ -1988,9 +2190,9 @@ async def camera_likes_summary() -> JSONResponse:
 
 @app.get("/top-gifters/summary")
 async def top_gifters_summary(group_handle: str = "", date_mt: Optional[str] = None) -> JSONResponse:
-    handle = str(group_handle or "").strip().lstrip("@")
+    handle = str(group_handle or "").strip().lstrip("@") if OFFLINE_MODE else _group_handle()
     if not handle:
-        return JSONResponse({"ok": False, "error": "group_handle is required."}, status_code=400)
+        return JSONResponse({"ok": False, "error": "This group has no TikTok handle set."}, status_code=400)
     try:
         mt_tz = ZoneInfo("America/Denver")
     except Exception:
@@ -2071,7 +2273,8 @@ def _build_stream_note_row(body: StreamNoteRequest, *, default_date) -> tuple[Op
     row = {
         "stream_date": stream_date_value,
         "host": (body.host or "").strip(),
-        "group_name": (body.group or "").strip(),
+        # Online the group is always the logged-in one; only the offline bundle picks it.
+        "group_name": (body.group or "").strip() if OFFLINE_MODE else require_group().display_name,
         "outfit_theme": (body.outfit_theme or "").strip(),
         "mvp": (body.mvp or "").strip(),
         "members_present": members,
@@ -2089,6 +2292,8 @@ async def add_stream_note(body: StreamNoteRequest) -> JSONResponse:
         return JSONResponse({"ok": False, "error": err}, status_code=400)
     row["iso_ts"] = now_dt.isoformat()
     row["unix_ts"] = int(now_dt.timestamp())
+    if not OFFLINE_MODE:
+        row["group_id"] = require_group().id
     insert_err = await _insert_supabase_row("stream_notes", row)
     if insert_err:
         logger.warning("Stream note insert failed: %s", insert_err)
@@ -2104,7 +2309,9 @@ async def update_stream_note(body: StreamNoteUpdateRequest) -> JSONResponse:
     row, err = _build_stream_note_row(body, default_date=datetime.now(timezone.utc).date())
     if err:
         return JSONResponse({"ok": False, "error": err}, status_code=400)
-    update_err = await _update_supabase_row("stream_notes", note_id, row)
+    update_err = await _update_supabase_row(
+        "stream_notes", note_id, row, extra_filters=None if OFFLINE_MODE else {"group_id": f"eq.{require_group().id}"}
+    )
     if update_err:
         logger.warning("Stream note update failed: %s", update_err)
         return JSONResponse({"ok": False, "error": update_err}, status_code=500)
@@ -2135,6 +2342,8 @@ async def stream_notes_history(limit: int = 10, offset: int = 0) -> JSONResponse
         ("limit", str(page_size + 1)),
         ("offset", str(page_offset)),
     ]
+    if not OFFLINE_MODE:
+        params.append(("group_id", f"eq.{require_group().id}"))
     try:
         async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
             resp = await client.get("/stream_notes", params=params, headers=headers)
@@ -2198,9 +2407,9 @@ async def top_gifters_page() -> FileResponse:
 
 @app.get("/gifts/list")
 async def gifts_list(group_handle: str = "", date_mt: Optional[str] = None) -> JSONResponse:
-    handle = str(group_handle or "").strip().lstrip("@")
+    handle = str(group_handle or "").strip().lstrip("@") if OFFLINE_MODE else _group_handle()
     if not handle:
-        return JSONResponse({"ok": False, "error": "group_handle is required."}, status_code=400)
+        return JSONResponse({"ok": False, "error": "This group has no TikTok handle set."}, status_code=400)
     try:
         mt_tz = ZoneInfo("America/Denver")
     except Exception:
@@ -2301,9 +2510,9 @@ async def comments_list(
     username: str = "",
     keyword: str = "",
 ) -> JSONResponse:
-    handle = str(group_handle or "").strip().lstrip("@")
+    handle = str(group_handle or "").strip().lstrip("@") if OFFLINE_MODE else _group_handle()
     if not handle:
-        return JSONResponse({"ok": False, "error": "group_handle is required."}, status_code=400)
+        return JSONResponse({"ok": False, "error": "This group has no TikTok handle set."}, status_code=400)
     try:
         mt_tz = ZoneInfo("America/Denver")
     except Exception:
@@ -2388,7 +2597,9 @@ async def analytics_plays_csv(limit: int = 1000, offset: int = 0) -> PlainTextRe
 @app.post("/songs/scan_durations")
 async def scan_song_durations() -> JSONResponse:
     try:
-        state_manager.ensure_song_durations(MEDIA_DIR)
+        # Online, durations are measured when audio is uploaded; only offline audio is on disk.
+        if OFFLINE_MODE:
+            state_manager.ensure_song_durations(MEDIA_DIR)
     except Exception as exc:
         logger.warning("Song duration scan failed: %s", exc)
     state = state_manager.get_state()
@@ -2414,15 +2625,28 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         "kind": "websocket",
         "visitor_id": websocket.cookies.get(VISITOR_COOKIE),
         "path": websocket.url.path,
+        "group_id": None,
         **request_fields(websocket.headers, websocket.client.host if websocket.client else None),
     })
-    await ws_manager.connect(websocket)
+    if OFFLINE_MODE:
+        group = OFFLINE_GROUP
+    else:
+        group, _ = await _group_from_request(websocket)
+        if group is None:
+            await websocket.close(code=4401)
+            return
+    token = current_group.set(group)
     try:
-        await websocket.send_json({"type": "state", "payload": state_manager.get_state()})
-        while True:
-            await websocket.receive_text()
-    except WebSocketDisconnect:
-        await ws_manager.disconnect(websocket)
+        manager = await asyncio.to_thread(group_registry.get, group)
+        await ws_manager.connect(websocket, group.id)
+        try:
+            await websocket.send_json({"type": "state", "payload": manager.get_state()})
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            await ws_manager.disconnect(websocket, group.id)
+    finally:
+        current_group.reset(token)
 
 
 def _static_file(filename: str) -> FileResponse:
@@ -2560,7 +2784,12 @@ async def process_audio(
 
     # If no trimming requested and file is already mp3, just return
     if (start is None and end is None) and str(input_path).lower().endswith(".mp3"):
-        return JSONResponse({"output": str(input_path).replace(str(BASE_DIR.parent), "").replace("\\", "/"), "note": "Downloaded", "title": title})
+        try:
+            output_url = await _publish_audio(Path(input_path))
+        except Exception as exc:
+            logger.exception("audio upload failed")
+            return JSONResponse(status_code=500, content={"output": "", "note": f"Upload failed: {exc}"})
+        return JSONResponse({"output": output_url, "note": "Downloaded", "title": title})
 
     ffmpeg_bin = os.environ.get("FFMPEG_BIN") or shutil.which("ffmpeg")
     if ffmpeg_bin and not Path(ffmpeg_bin).exists():
@@ -2584,8 +2813,19 @@ async def process_audio(
         return JSONResponse(
             status_code=500, content={"output": "", "note": f"ffmpeg failed: {exc.stderr.decode(errors='ignore')}"}
         )
+    finally:
+        if input_path and Path(input_path) != out_path and not OFFLINE_MODE:
+            try:
+                Path(input_path).unlink()
+            except Exception:
+                pass
 
-    return JSONResponse({"output": f"/media/{out_name}", "note": note or "Downloaded", "title": title})
+    try:
+        output_url = await _publish_audio(out_path)
+    except Exception as exc:
+        logger.exception("audio upload failed")
+        return JSONResponse(status_code=500, content={"output": "", "note": f"Upload failed: {exc}"})
+    return JSONResponse({"output": output_url, "note": note or "Downloaded", "title": title})
 
 EXCLUDE_TERMS = {"tutorial", "dancetutorial", "slow"}
 
@@ -2722,7 +2962,11 @@ async def audio_batch_csv(body: CSVBatchRequest) -> JSONResponse:
             shutil.move(str(dl_tmp), final_path)
         except Exception:
             final_path = dl_tmp
-        public = f"/media/{final_path.name}"
+        try:
+            public = await _publish_audio(final_path)
+        except Exception as exc:
+            results.append({"title": title, "artist": artist, "status": "error", "note": f"upload failed: {exc}"})
+            continue
         song_id = uuid.uuid4().hex
         latest_state = state_manager.register_song(
             song_id=song_id,
@@ -2732,6 +2976,7 @@ async def audio_batch_csv(body: CSVBatchRequest) -> JSONResponse:
             front_dancers=[],
             mvp_dancers=[],
             artist=artist,
+            duration_sec=_AUDIO_DURATIONS.get(public),
         )
         results.append({"title": title, "artist": artist, "status": "ok", "output": public, "note": "Downloaded via API", "song_id": song_id})
     if latest_state:

@@ -1,14 +1,35 @@
 (function () {
   "use strict";
 
+  function goToLogin() {
+    try { (window.top || window).location.href = "/login"; } catch (e) { window.location.href = "/login"; }
+  }
+
   function api(path, opts) {
     const o = opts || {};
     return fetch(path, {
       method: o.method || "GET",
       headers: {"Content-Type": "application/json"},
       body: o.body ? JSON.stringify(o.body) : undefined,
+    }).then(function (resp) {
+      // Session expired or logged out elsewhere: send the whole app to the login page.
+      if (resp.status === 401) goToLogin();
+      return resp;
     });
   }
+
+  // The logged-in dance group ({display_name, tiktok_handle, overlay_url, ...}), fetched once.
+  var groupPromise = null;
+  function getGroup() {
+    if (!groupPromise) {
+      groupPromise = fetch("/auth/me")
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (g) { window.NSH_GROUP = g; return g; })
+        .catch(function () { return null; });
+    }
+    return groupPromise;
+  }
+  getGroup();
 
   function isTypingTarget(target) {
     if (!target) return false;
@@ -545,6 +566,7 @@
 
   window.PageShared = {
     api: api,
+    getGroup: getGroup,
     isTypingTarget: isTypingTarget,
     initHotkeys: initHotkeys,
     normalizeVolume: normalizeVolume,

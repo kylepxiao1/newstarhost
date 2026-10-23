@@ -187,13 +187,17 @@ def sync_song_sheet(
     spreadsheet_id: Optional[str] = None,
     tab: Optional[str] = None,
     dry_run: bool = False,
+    songs: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
+    """Sync a song library into a Google Sheet. The app passes the logged-in group's
+    library and sheet; the CLI falls back to media/songs.json and SONG_SHEET_ID."""
     spreadsheet_id = spreadsheet_id or _env("SONG_SHEET_ID", "").strip()
     if not spreadsheet_id:
         raise SongSheetError("Missing SONG_SHEET_ID (spreadsheet ID to sync into).")
     tab = tab or _env("SONG_SHEET_TAB", DEFAULT_SHEET_TAB).strip() or DEFAULT_SHEET_TAB
 
-    songs = _load_songs()
+    if songs is None:
+        songs = _load_songs()
     ordered_songs = sorted(
         songs.values(),
         key=lambda s: str(s.get("name") or "").strip().casefold(),

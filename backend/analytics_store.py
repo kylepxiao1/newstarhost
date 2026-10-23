@@ -15,8 +15,10 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 class AnalyticsStore:
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
+    def __init__(self, db_path: Optional[Path] = None, group_id: Optional[str] = None) -> None:
+        self._db_path = Path(db_path) if db_path else None
+        # When set, events are tagged with and filtered to this dance group.
+        self._group_id = group_id
         self._client: Optional[httpx.Client] = None
         self._rest_url = ""
         self._enabled = False
@@ -46,6 +48,9 @@ class AnalyticsStore:
         self._enabled = True
         logger.info("Supabase analytics client initialized for %s", self._rest_url)
         self._start_worker()
+
+    def _group_filter(self) -> dict:
+        return {"group_id": f"eq.{self._group_id}"} if self._group_id else {}
 
     @property
     def enabled(self) -> bool:
@@ -202,6 +207,7 @@ class AnalyticsStore:
                 "order": "id.desc",
                 "limit": limit,
                 "offset": offset,
+                **self._group_filter(),
             },
         )
         return rows or []
@@ -238,12 +244,12 @@ class AnalyticsStore:
             return {}
         out: Dict[str, Dict[str, int]] = {}
         # Aggregate play counts + points from play_events (diamond_count)
-        limit = 2000
+        limit = 1000  # PostgREST returns at most 1000 rows per request; a larger page ended paging early
         offset = 0
         while True:
             rows = self._get_rows(
                 "play_events",
-                {"select": "song_url,diamond_count", "limit": limit, "offset": offset},
+                {"select": "song_url,diamond_count", "limit": limit, "offset": offset, "order": "id", **self._group_filter()},
             )
             if not rows:
                 break
@@ -303,6 +309,8 @@ class AnalyticsStore:
             "context": context,
             "duration": duration_sec,
         }
+        if self._group_id:
+            row["group_id"] = self._group_id
         self._enqueue(("play", row))
 
     def increment_points(
@@ -322,5 +330,5 @@ class AnalyticsStore:
             return
         if not self._enabled:
             return
-        self._patch_rows("play_events", {"song_url": f"eq.{old_url}"}, {"song_url": new_url})
+        self._patch_rows("play_events", {"song_url": f"eq.{old_url}", **self._group_filter()}, {"song_url": new_url})
         # song_stats removed; counts derived from events

@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Log in · NewStarHost</title>
+  <link rel="icon" href="/favicon.ico" type="image/x-icon">
+  <style>
+    :root { --bg:#0f172a; --panel:#111827; --border:#1f2937; --text:#e2e8f0; --muted:#94a3b8; --accent:#2563eb; --error:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center; padding:16px;
+           font-family:"Segoe UI", Arial, sans-serif; background:var(--bg); color:var(--text); }
+    form { width:100%; max-width:360px; background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:24px; }
+    h1 { margin:0 0 4px; font-size:22px; }
+    p.sub { margin:0 0 20px; color:var(--muted); font-size:14px; }
+    label { display:block; font-size:14px; font-weight:600; margin:14px 0 6px; }
+    input { width:100%; padding:10px; border-radius:6px; border:1px solid #334155; background:#0b1222; color:var(--text); font-size:16px; }
+    input:focus { outline:2px solid var(--accent); outline-offset:1px; }
+    button { width:100%; margin-top:20px; padding:11px; border:none; border-radius:6px; background:var(--accent); color:#fff;
+             font-size:16px; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:0.6; cursor:default; }
+    .error { min-height:20px; margin-top:12px; color:var(--error); font-size:14px; }
+  </style>
+</head>
+<body>
+  <form id="loginForm" autocomplete="on">
+    <h1>NewStarHost</h1>
+    <p class="sub">Log in with your group's account.</p>
+    <label for="username">Username</label>
+    <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+    <label for="password">Password</label>
+    <input id="password" name="password" type="password" autocomplete="current-password">
+    <button id="submitBtn" type="submit">Log in</button>
+    <div id="error" class="error" role="alert"></div>
+  </form>
+  <script>
+    document.getElementById("loginForm").addEventListener("submit", async (evt) => {
+      evt.preventDefault();
+      const btn = document.getElementById("submitBtn");
+      const error = document.getElementById("error");
+      btn.disabled = true;
+      error.textContent = "";
+      try {
+        const res = await fetch("/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: document.getElementById("username").value.trim(),
+            password: document.getElementById("password").value,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok && data.ok) {
+          window.location.href = "/";
+          return;
+        }
+        error.textContent = data.error || "Couldn't log in.";
+      } catch (e) {
+        error.textContent = "Couldn't reach the server.";
+      }
+      btn.disabled = false;
+    });
+  </script>
+</body>
+</html>

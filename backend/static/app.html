@@ -136,6 +136,8 @@
       <a href="#topgifters" data-target="topgifters">Top Gifters</a>
       <a href="#gifts" data-target="gifts">Gift Menu</a>
       <a href="https://newstarhost.grafana.net/goto/efdcjfk76r474e?orgId=stacks-1526098" target="_blank" rel="noopener noreferrer">Analytics</a>
+      <span id="groupBadge" style="margin-left:auto; opacity:0.8; font-weight:600;"></span>
+      <a href="#" id="logoutLink" style="display:none;">Log out</a>
     </div>
   </div>
   <div class="shell">
@@ -159,6 +161,21 @@
     <audio id="globalPlayer" controls></audio>
   </div>
   <script src="/static/state_ws_helper.js"></script>
+  <script>
+    // Logged-in group name + log out (no-ops in the offline bundle).
+    fetch("/auth/me").then((r) => (r.ok ? r.json() : null)).then((me) => {
+      if (!me || me.offline) return;
+      const badge = document.getElementById("groupBadge");
+      if (badge) badge.textContent = me.display_name || me.username;
+      const logout = document.getElementById("logoutLink");
+      if (!logout) return;
+      logout.style.display = "";
+      logout.addEventListener("click", (evt) => {
+        evt.preventDefault();
+        fetch("/auth/logout", { method: "POST" }).finally(() => { window.location.href = "/login"; });
+      });
+    }).catch(() => {});
+  </script>
   <script>
     const navEl = document.querySelector(".nav");
     const navBackdrop = document.getElementById("navBackdrop");

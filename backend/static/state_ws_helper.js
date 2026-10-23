@@ -1,6 +1,8 @@
 (function () {
   function defaultWsUrl() {
-    return (location.origin.replace(/^http/, "ws")) + "/ws/state";
+    // Overlay links carry the group's read-only key (?key=...); logged-in pages use the cookie.
+    var key = new URLSearchParams(location.search).get("key");
+    return (location.origin.replace(/^http/, "ws")) + "/ws/state" + (key ? "?key=" + encodeURIComponent(key) : "");
   }
 
   function connectStateSocket(options) {
