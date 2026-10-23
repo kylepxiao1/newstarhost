@@ -225,3 +225,6 @@ wildcardz-calendar-*.json
 
 # Zip files
 *.zip
+
+# macOS Finder metadata
+.DS_Store
