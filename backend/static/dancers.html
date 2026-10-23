@@ -45,18 +45,26 @@
   </header>
   <main>
   <section>
+    <h2>Group</h2>
+    <div class="row"><span id="groupInfo">Loading...</span></div>
+  </section>
+  <section>
     <h2>Add Dancer</h2>
     <div class="row">
-      <input id="dancerName" placeholder="Name">
       <input id="dancerHandle" placeholder="TikTok handle">
+      <input id="dancerName" placeholder="Name (optional, defaults to TikTok nickname)">
       <button onclick="addDancer()">Add</button>
     </div>
   </section>
   <section>
-    <h2>Registered Dancers</h2>
+    <div class="row" style="align-items:center;gap:10px;">
+      <h2 style="margin:0;">Registered Dancers</h2>
+      <button id="refreshTiktokBtn" onclick="refreshTiktok()" title="Updates handles from each dancer's TikTok ID and looks up missing IDs">Refresh TikTok info</button>
+      <span id="refreshStatus" style="opacity:0.8;"></span>
+    </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Handle</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Tournament MVP Song</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Handle</th><th>TikTok Nickname</th><th>TikTok ID</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Tournament MVP Song</th><th>Actions</th></tr></thead>
         <tbody id="dancerTable"></tbody>
       </table>
     </div>
@@ -115,7 +123,9 @@
         btnDel.onclick = () => deleteDancer(name);
         actions.appendChild(selKnow); actions.appendChild(btnAddKnow); actions.appendChild(btnRemKnow); actions.appendChild(btnDel);
 
-        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${knows.join(", ")}</td><td>${knowsOnly.join(", ")}</td><td>${fronts.join(", ")}</td><td>${mvps.join(", ")}</td><td>${tournamentMvps.join(", ")}</td>`;
+        const tiktokId = d.tiktok_id || d.tiktokId || "";
+        const idCell = tiktokId ? tiktokId : '<span style="color:#f87171;" title="Without an ID, a handle change breaks this dancer">missing</span>';
+        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${d.tiktok_nickname||""}</td><td>${idCell}</td><td>${knows.join(", ")}</td><td>${knowsOnly.join(", ")}</td><td>${fronts.join(", ")}</td><td>${mvps.join(", ")}</td><td>${tournamentMvps.join(", ")}</td>`;
         tr.appendChild(actions);
         tbody.appendChild(tr);
       });
@@ -147,9 +157,33 @@
     function addDancer() {
       const name = document.getElementById("dancerName").value.trim();
       const handle = document.getElementById("dancerHandle").value.trim();
-      if (!name || !handle) return;
+      if (!handle) return;
       api("/dancers/register",{method:"POST", body:{name, handle}}).then(()=>{document.getElementById("dancerName").value="";document.getElementById("dancerHandle").value="";load();});
     }
+
+    // Handles can change; the TikTok ID can't. This re-reads each dancer's current handle from
+    // their ID (and looks up missing IDs). It also runs automatically every few hours.
+    function refreshTiktok() {
+      const btn = document.getElementById("refreshTiktokBtn");
+      const status = document.getElementById("refreshStatus");
+      btn.disabled = true;
+      status.textContent = "Checking TikTok...";
+      api("/dancers/refresh_ids", {method:"POST"})
+        .then(() => { status.textContent = "Up to date."; load(); loadGroupInfo(); })
+        .catch(() => { status.textContent = "Couldn't reach TikTok."; })
+        .finally(() => { btn.disabled = false; });
+    }
+
+    function loadGroupInfo() {
+      fetch("/auth/me").then(r => r.ok ? r.json() : null).then(me => {
+        const el = document.getElementById("groupInfo");
+        if (!el || !me) return;
+        const handle = me.tiktok_handle ? `@${me.tiktok_handle}` : "no TikTok account set";
+        const id = me.tiktok_id ? ` · TikTok ID ${me.tiktok_id}` : "";
+        el.textContent = `${me.display_name || me.username} · ${handle}${id}`;
+      }).catch(() => {});
+    }
+    loadGroupInfo();
 
     function deleteDancer(name) {
       if (!confirm(`Delete dancer ${name} and remove from all songs?`)) return;

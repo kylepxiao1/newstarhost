@@ -594,11 +594,13 @@
     }
 
     function isGroupEntityName(name) {
-      const low = normalizeName(name);
-      return low.includes("boys") || low.includes("girls");
+      // The logged-in account is the group.
+      const group = normalizeName(window.NSH_GROUP?.display_name || "");
+      return !!group && normalizeName(name) === group;
     }
 
     function songHasGroupDance(song) {
+      if (song?.group_song) return true;
       const fields = [
         ...(Array.isArray(song?.dancers) ? song.dancers : []),
         ...(Array.isArray(song?.front_dancers) ? song.front_dancers : []),

@@ -427,27 +427,9 @@
     }
 
     async function loadGroups() {
-      // Online, the group is the logged-in one; the list below is only for the offline bundle.
+      // The logged-in group's own TikTok account.
       const me = await (window.PageShared?.getGroup?.() || Promise.resolve(null));
-      if (me && !me.offline) {
-        groups = me.tiktok_handle ? [{ name: me.display_name, handle: String(me.tiktok_handle).toLowerCase() }] : [];
-        renderGroupOptions();
-        return;
-      }
-      const dancers = await api("/dancers").then(r => r.json()).catch(() => []);
-      const out = [];
-      (Array.isArray(dancers) ? dancers : []).forEach(d => {
-        const name = String(d?.name || "").trim();
-        const handle = String(d?.handle || "").trim().replace(/^@+/, "");
-        if (!name || !handle) return;
-        const low = name.toLowerCase();
-        if (!low.includes("boys") && !low.includes("girls")) return;
-        out.push({ name, handle: handle.toLowerCase() });
-      });
-      out.push({ name: "AfterDark", handle: "viiceversa_ns" });
-      const dedup = new Map();
-      out.forEach(g => { if (!dedup.has(g.handle)) dedup.set(g.handle, g); });
-      groups = Array.from(dedup.values()).sort((a, b) => b.name.localeCompare(a.name));
+      groups = me && me.tiktok_handle ? [{ name: me.display_name, handle: String(me.tiktok_handle).toLowerCase() }] : [];
       renderGroupOptions();
     }
 

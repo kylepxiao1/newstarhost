@@ -1788,8 +1788,9 @@
         }
         return normalized;
       };
-      const client = await ensureSupabaseClient();
-      if (!client) {
+      // This group's own play history only (computed server-side).
+      const recencyCounts = await api("/analytics/plays-since-last").then(r => r.json()).then(d => d.counts || {}).catch(() => null);
+      if (!recencyCounts) {
         const fallbackWeights = normalizeWeights(list.map(() => 1));
         const chosenFallback = pickByWeights(list, fallbackWeights);
         try {
@@ -1808,21 +1809,10 @@
       const names = Array.from(new Set(list.map(s => s?.name).filter(Boolean)));
       const playsMap = new Map();
       if (names.length) {
-        const { data, error } = await client
-          .from("play_counts_after_last")
-          .select("song_name,plays_after_last")
-          .in("song_name", names);
-        if (error) {
-          console.warn("recencyPenalty query error", error);
-        }
-        if (!error && Array.isArray(data)) {
-          data.forEach(row => {
-            if (!row) return;
-            const name = row.song_name;
-            const val = Number(row.plays_after_last);
-            if (name && Number.isFinite(val)) playsMap.set(name, val);
-          });
-        }
+        names.forEach(name => {
+          const val = Number(recencyCounts[name]);
+          if (Number.isFinite(val)) playsMap.set(name, val);
+        });
       }
 
       const rawWeights = list.map(song => {
@@ -1938,8 +1928,9 @@
     }
 
     function isGroupEntityName(name) {
-      const low = String(name || "").toLowerCase();
-      return low.includes("boys") || low.includes("girls");
+      // The logged-in account is the group, not a dancer.
+      const group = String(state.group_name || "").toLowerCase();
+      return !!group && String(name || "").toLowerCase() === group;
     }
 
     function getSongByUrl(url) {

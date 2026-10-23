@@ -114,36 +114,96 @@ class BattleStateManager:
         )
         self._state.songs["library"] = library
         self._state.dancers = dancers
+        # The account is the group: fold any legacy dancer entry for the group itself
+        # (e.g. "Wildcard Boys") into a per-song group_song flag.
+        if self._absorb_group_entries(group_name, self._group_handle):
+            self._persist_dancers(self._state.dancers)
+            self._persist_library(library)
         if self._canonicalize_song_dancers(library.values()):
             self._persist_library(library)
         self._state.play_counts = plays
         self._state.points_counts = points
         if not self._state.enabled_dancers:
-            enabled = []
-            default_group = ""
-            for d in dancers:
-                name = (d.get("name") or "").strip()
-                if not name:
-                    continue
-                low = name.lower()
-                if not default_group and ("boys" in low or "girls" in low):
-                    default_group = name
-                if "boys" in low or "girls" in low:
-                    continue
-                enabled.append(name)
-            self._state.enabled_dancers = enabled
-            if default_group:
-                self._state.group_name = default_group
-        if group_name:
-            # The logged-in group is the group; no picking from the dancer list.
-            self._state.group_name = group_name
-            self._state.like_target_group_name = group_name
-            self._state.like_target_group_handle = self._group_handle
+            self._state.enabled_dancers = [
+                (d.get("name") or "").strip() for d in self._state.dancers if (d.get("name") or "").strip()
+            ]
+        self._state.group_name = group_name or ""
+        self._state.like_target_group_name = group_name or ""
+        self._state.like_target_group_handle = self._group_handle
         self._docs: Dict[str, Any] = {}
         self._lock = threading.RLock()
 
     def flush(self, timeout: float = 30.0) -> None:
         self._store.flush(timeout)
+
+    def _absorb_group_entries(self, group_name: str, group_handle: str) -> bool:
+        """Remove dancer entries that are the group itself and mark the songs tagged with
+        them as group songs. Returns True if anything changed."""
+        group_l = (group_name or "").strip().lower()
+        handle_l = (group_handle or "").strip().lstrip("@").lower()
+        if not group_l and not handle_l:
+            return False
+        names = {group_l} if group_l else set()
+        kept = []
+        for d in self._state.dancers or []:
+            name_l = (d.get("name") or "").strip().lower()
+            dancer_handle = (d.get("handle") or "").strip().lstrip("@").lower()
+            if (group_l and name_l == group_l) or (handle_l and dancer_handle == handle_l):
+                names.add(name_l)
+                continue
+            kept.append(d)
+        changed = len(kept) != len(self._state.dancers or [])
+        self._state.dancers = kept
+        for song in (self._state.songs.get("library") or {}).values():
+            for key in self._SONG_DANCER_LIST_FIELDS:
+                values = song.get(key)
+                if not isinstance(values, list):
+                    continue
+                remaining = [v for v in values if str(v or "").strip().lower() not in names]
+                if len(remaining) != len(values):
+                    song[key] = remaining
+                    song["group_song"] = True
+                    changed = True
+            for key in self._SONG_DANCER_STR_FIELDS:
+                if str(song.get(key) or "").strip().lower() in names:
+                    song[key] = ""
+                    changed = True
+        return changed
+
+    def set_group_identity(self, group_name: str, group_handle: str) -> Dict:
+        """Group renamed or its TikTok handle changed (login account details)."""
+        with self._lock:
+            self._group_handle = (group_handle or "").strip().lstrip("@")
+            self._state.group_name = group_name or ""
+            self._state.like_target_group_name = group_name or ""
+            self._state.like_target_group_handle = self._group_handle
+            return self._state.copy()
+
+    def apply_tiktok_sync(self, handles_by_id: Dict[str, str], ids_by_handle: Dict[str, str],
+                          nicknames_by_id: Optional[Dict[str, str]] = None) -> bool:
+        """Update dancer handles (and shown TikTok nicknames) from their stable TikTok ids, and
+        fill in missing ids. The dancer's name is left alone: it's what songs/rosters use.
+        Returns True if anything changed."""
+        nicknames_by_id = nicknames_by_id or {}
+        with self._lock:
+            changed = False
+            for dancer in self._state.dancers or []:
+                tid = str(dancer.get("tiktok_id") or dancer.get("tiktokId") or "").strip()
+                handle = (dancer.get("handle") or "").strip().lstrip("@")
+                if tid and handles_by_id.get(tid) and handles_by_id[tid].lower() != handle.lower():
+                    dancer["handle"] = handles_by_id[tid]
+                    changed = True
+                elif not tid and handle and ids_by_handle.get(handle.lower()):
+                    tid = ids_by_handle[handle.lower()]
+                    dancer["tiktok_id"] = tid
+                    changed = True
+                nickname = nicknames_by_id.get(tid) if tid else None
+                if nickname and dancer.get("tiktok_nickname") != nickname:
+                    dancer["tiktok_nickname"] = nickname
+                    changed = True
+            if changed:
+                self._persist_dancers(self._state.dancers)
+            return changed
 
     def get_doc(self, key: str, default: Any) -> Any:
         """A per-group document (settings, role_presets, rpd_queries, gift_notes), cached in memory."""
@@ -334,6 +394,7 @@ class BattleStateManager:
         tags: Optional[list] = None,
         battle_disabled: Optional[bool] = None,
         duration_sec: Optional[int] = None,
+        group_song: Optional[bool] = None,
     ) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
@@ -373,6 +434,7 @@ class BattleStateManager:
                 "duo_dance": bool(duo_dance) if duo_dance is not None else False,
                 "tags": tags if tags is not None else lib.get(song_id, {}).get("tags", []),
                 "battle_disabled": bool(battle_disabled) if battle_disabled is not None else lib.get(song_id, {}).get("battle_disabled", False),
+                "group_song": bool(group_song) if group_song is not None else lib.get(song_id, {}).get("group_song", False),
             }
             if self._media_dir and not lib[song_id].get("duration_sec"):
                 duration = self._get_duration_for_url(url, self._media_dir)
@@ -450,7 +512,7 @@ class BattleStateManager:
             self._persist_library(lib)
             return self._state.copy()
 
-    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, special_dance_for: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None, duo_dance: Optional[bool] = None, tags: Optional[list] = None, battle_disabled: Optional[bool] = None, exclusive_tournament_mvp_for: Optional[str] = None) -> Dict:
+    def update_song_dancers(self, song_id: str, dancers: list, front_dancers: list, mvp_dancers: list, roles: Optional[list] = None, knows_song: Optional[list] = None, special_dance_for: Optional[list] = None, exclusive_mvp_for: Optional[str] = None, volume: Optional[float] = None, difficulty: Optional[str] = None, camera_dance: Optional[bool] = None, duo_dance: Optional[bool] = None, tags: Optional[list] = None, battle_disabled: Optional[bool] = None, exclusive_tournament_mvp_for: Optional[str] = None, group_song: Optional[bool] = None) -> Dict:
         with self._lock:
             lib = self._state.songs.get("library", {})
             if song_id in lib:
@@ -516,6 +578,10 @@ class BattleStateManager:
                     lib[song_id]["battle_disabled"] = bool(battle_disabled)
                 else:
                     lib[song_id].setdefault("battle_disabled", False)
+                if group_song is not None:
+                    lib[song_id]["group_song"] = bool(group_song)
+                else:
+                    lib[song_id].setdefault("group_song", False)
                 self._canonicalize_song_dancers([lib[song_id]])
                 self._state.songs["library"] = lib
                 if roles is not None:
@@ -581,7 +647,7 @@ class BattleStateManager:
                 self._persist_library(lib)
             return self._state.copy()
 
-    def add_dancer(self, name: str, handle: str, tiktok_id: Optional[str] = None) -> Dict:
+    def add_dancer(self, name: str, handle: str, tiktok_id: Optional[str] = None, tiktok_nickname: Optional[str] = None) -> Dict:
         with self._lock:
             dancers = self._state.dancers or []
             name_l = (name or "").lower()
@@ -597,6 +663,8 @@ class BattleStateManager:
                         entry["tiktok_id"] = tiktok_id
                     elif existing_id:
                         entry["tiktok_id"] = existing_id
+                    if tiktok_nickname or d.get("tiktok_nickname"):
+                        entry["tiktok_nickname"] = tiktok_nickname or d.get("tiktok_nickname")
                     dancers[idx] = entry
                     replaced = True
                     break
@@ -604,6 +672,8 @@ class BattleStateManager:
                 entry = {"name": name, "handle": handle}
                 if tiktok_id:
                     entry["tiktok_id"] = tiktok_id
+                if tiktok_nickname:
+                    entry["tiktok_nickname"] = tiktok_nickname
                 dancers.append(entry)
             self._state.dancers = dancers
             self._persist_dancers(dancers)
@@ -771,6 +841,7 @@ class BattleStateManager:
             v.setdefault("duo_dance", False)
             v.setdefault("tags", [])
             v.setdefault("battle_disabled", False)
+            v.setdefault("group_song", False)
         if changed:
             self._persist_library(data)
         return data

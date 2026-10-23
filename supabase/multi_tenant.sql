@@ -57,3 +57,30 @@ alter table public.group_kv enable row level security;
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('song-audio', 'song-audio', true, 52428800, array['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/aac', 'audio/ogg'])
 on conflict (id) do update set public = true;
+
+-- TikTok identity by numeric id: handles can change, ids don't. past_handles keeps history
+-- recorded under a group's old handle visible after a handle change.
+alter table public.groups add column if not exists tiktok_id text;
+alter table public.groups add column if not exists past_handles text[] not null default '{}';
+
+-- Song recency for suggestions, per group ("plays since this song was last played").
+-- Replaces the browser reading play_counts_after_last, which mixed every group's plays.
+create or replace function public.plays_since_last(gid uuid, exclude text[] default '{}')
+returns table(song_name text, plays_after_last bigint)
+language sql stable security definer set search_path = public as $$
+  with ev as (
+    select p.song_name, p.unix_ts from public.play_events p
+    where p.group_id = gid and not (p.song_name = any(exclude))
+  ), last_play as (
+    select ev.song_name, max(ev.unix_ts) as last_ts from ev group by ev.song_name
+  )
+  select lp.song_name, (select count(*) from ev where ev.unix_ts > lp.last_ts) as plays_after_last
+  from last_play lp;
+$$;
+revoke all on function public.plays_since_last(uuid, text[]) from public, anon, authenticated;
+
+-- Groups must not see each other: no public reads of play history or stream notes
+-- (the app reads them server-side, filtered to the logged-in group).
+drop policy if exists "anon read play_events" on public.play_events;
+drop policy if exists "Allow read access to stream_notes" on public.stream_notes;
+revoke select on public.play_counts_after_last from anon, authenticated;

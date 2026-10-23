@@ -370,8 +370,9 @@
     }
 
     function isGroupName(name) {
-      const text = String(name || "").toLowerCase();
-      return text.includes("boys") || text.includes("girls");
+      // The logged-in account is the group; dancers are never groups.
+      const group = String(window.NSH_GROUP?.display_name || "").toLowerCase();
+      return !!group && String(name || "").toLowerCase() === group;
     }
 
     function groupRowsFromState() {

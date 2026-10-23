@@ -35,6 +35,13 @@ class Group:
     session_version: int
     overlay_key: str
     disabled: bool
+    tiktok_id: str = ""
+    past_handles: tuple = ()
+
+    def all_handles(self) -> list:
+        """Current handle first, then earlier ones (history recorded under old handles)."""
+        out = [h for h in [self.tiktok_handle, *self.past_handles] if h]
+        return list(dict.fromkeys(out))
 
 
 def hash_password(password: str) -> str:
@@ -104,10 +111,12 @@ def _to_group(row: dict) -> Group:
         session_version=int(row.get("session_version") or 1),
         overlay_key=str(row.get("overlay_key") or ""),
         disabled=bool(row.get("disabled")),
+        tiktok_id=str(row.get("tiktok_id") or ""),
+        past_handles=tuple(str(h).lstrip("@").lower() for h in (row.get("past_handles") or []) if h),
     )
 
 
-_PUBLIC_COLUMNS = "id,username,display_name,tiktok_handle,session_version,overlay_key,disabled"
+_PUBLIC_COLUMNS = "id,username,display_name,tiktok_handle,session_version,overlay_key,disabled,tiktok_id,past_handles"
 
 
 class GroupDirectory:

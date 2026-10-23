@@ -251,7 +251,6 @@
       songsState = songs || {};
       library = songs.library || {};
       renderFronts();
-      renderGroups();
       renderSongs();
       ensureBackground();
       renderPlayHistory();
@@ -318,47 +317,6 @@
       });
     }
 
-    function renderGroups() {
-      const sel = document.getElementById("groupSelect");
-      if (!sel) return;
-      const current = (sel.value || "").toLowerCase();
-      const stateGroup = (state.group_name || "").trim();
-      const groups = new Set();
-      Object.values(library).forEach(s => {
-        const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])];
-        all.forEach(name => {
-          const text = String(name || "").trim();
-          const low = text.toLowerCase();
-          if (text && (low.includes("boys") || low.includes("girls"))) groups.add(text);
-        });
-      });
-      if (stateGroup) {
-        const low = stateGroup.toLowerCase();
-        if (low.includes("boys") || low.includes("girls")) groups.add(stateGroup);
-      }
-      sel.innerHTML = "";
-      Array.from(groups).sort((a,b)=>b.localeCompare(a)).forEach(groupName => {
-        const opt = document.createElement("option");
-        opt.value = groupName;
-        opt.textContent = groupName;
-        sel.appendChild(opt);
-      });
-      if (current && Array.from(sel.options).some(o => o.value.toLowerCase() === current)) {
-        const match = Array.from(sel.options).find(o => o.value.toLowerCase() === current);
-        if (match) sel.value = match.value;
-        return;
-      }
-      if (stateGroup && Array.from(sel.options).some(o => o.value.toLowerCase() === stateGroup.toLowerCase())) {
-        const match = Array.from(sel.options).find(o => o.value.toLowerCase() === stateGroup.toLowerCase());
-        if (match) sel.value = match.value;
-        return;
-      }
-      if (sel.options.length) {
-        sel.selectedIndex = 0;
-      } else {
-        sel.value = "";
-      }
-    }
 
     // Songs with the fewest recorded plays among the currently displayed cards.
     // Capped so flagged cards never exceed 50% of the displayed group.
@@ -399,11 +357,11 @@
             return (s.front_dancers||[]).map(x=>x.toLowerCase()).includes(selectedFront);
           })
           .filter(s => {
+            // Group songs are flagged per song (Song Editor > "group dance").
+            if (s.group_song) return true;
             const all = [...(s.dancers||[]), ...(s.front_dancers||[]), ...(s.knows_song||[])]
               .map(n => String(n || "").trim().toLowerCase());
-            if (selectedGroup) return all.includes(selectedGroup);
-            // No group (offline bundle without one): any "...Boys"/"...Girls" tag marks a group song.
-            return all.some(n => n.includes("boys") || n.includes("girls"));
+            return !!selectedGroup && all.includes(selectedGroup);
           })
           .sort((a,b)=> (a.name||"").localeCompare(b.name||""));
         const lowPlaySet = getLowPlaySet(list);
@@ -563,7 +521,6 @@
     }
 
     function renderState() {
-      renderGroups();
       renderSongs();
     }
 
@@ -601,8 +558,7 @@
       dancers.forEach(d => {
         const name = d.name || "";
         if (!name) return;
-        const low = name.toLowerCase();
-        if (low.includes("boys") || low.includes("girls")) return;
+        if (name.toLowerCase() === String(state.group_name || "").toLowerCase()) return;
         const label = document.createElement("label");
         label.style.display = "flex";
         label.style.gap = "6px";

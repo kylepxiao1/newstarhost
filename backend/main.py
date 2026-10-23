@@ -248,6 +248,122 @@ async def _lookup_tiktok_id(handle: str) -> Optional[str]:
         return None
 
 
+_TIKTOK_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+TIKTOK_SYNC_INTERVAL_SECONDS = 6 * 3600
+
+
+async def _lookup_tiktok_profile(handle: str) -> Optional[Dict[str, str]]:
+    """{id, handle, nickname} from a TikTok profile page, or None."""
+    handle = (handle or "").strip().lstrip("@")
+    if not handle:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            resp = await client.get(f"https://www.tiktok.com/@{handle}",
+                                    headers={"User-Agent": _TIKTOK_UA, "Accept-Language": "en-US,en;q=0.9"})
+        if resp.status_code >= 400:
+            return None
+        match = re.search(r'<script[^>]+id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>(.*?)</script>', resp.text, re.S)
+        if match:
+            user = json.loads(match.group(1))["__DEFAULT_SCOPE__"]["webapp.user-detail"]["userInfo"]["user"]
+            if user.get("id"):
+                return {"id": str(user["id"]), "handle": str(user.get("uniqueId") or handle).lower(),
+                        "nickname": str(user.get("nickname") or "").strip()}
+        tid = _extract_tiktok_id_from_html(resp.text, handle)
+        return {"id": tid, "handle": handle.lower(), "nickname": ""} if tid else None
+    except Exception:
+        return None
+
+
+def _clean_nickname(nickname: str) -> str:
+    """A TikTok nickname as a dancer name: letters/digits/spaces only (drops emoji like the 🃏)."""
+    text = re.sub(r"[^\w\s.'&-]", "", nickname or "", flags=re.UNICODE)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+async def _resolve_tiktok_handle(tiktok_id: str) -> Optional[str]:
+    """Current handle for a (stable) TikTok user id, via TikTok's share/user redirect."""
+    tiktok_id = str(tiktok_id or "").strip()
+    if not tiktok_id.isdigit():
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
+            resp = await client.get(f"https://www.tiktok.com/share/user/{tiktok_id}", headers={"User-Agent": _TIKTOK_UA})
+    except Exception:
+        return None
+    match = re.search(r"tiktok\.com/@([A-Za-z0-9._]{2,64})", resp.headers.get("location", ""))
+    return match.group(1).lower() if match else None
+
+
+async def _sync_group_tiktok(group: Group) -> bool:
+    """Keep a group's dancer + account handles in step with their TikTok ids (ids never change,
+    handles can). Returns True if anything changed."""
+    manager = await asyncio.to_thread(group_registry.get, group)
+    handles_by_id: Dict[str, str] = {}
+    ids_by_handle: Dict[str, str] = {}
+    nicknames_by_id: Dict[str, str] = {}
+    for dancer in manager.get_state().get("dancers") or []:
+        tid = str(dancer.get("tiktok_id") or dancer.get("tiktokId") or "").strip()
+        handle = str(dancer.get("handle") or "").strip().lstrip("@")
+        if tid:
+            current = await _resolve_tiktok_handle(tid)
+            if current:
+                handles_by_id[tid] = current
+                handle = current
+        profile = await _lookup_tiktok_profile(handle) if handle else None
+        if profile and profile.get("id"):
+            if not tid:
+                ids_by_handle[handle.lower()] = profile["id"]
+            if profile.get("nickname"):
+                nicknames_by_id[profile["id"]] = profile["nickname"]
+        await asyncio.sleep(0.5)
+    changed = await asyncio.to_thread(manager.apply_tiktok_sync, handles_by_id, ids_by_handle, nicknames_by_id)
+
+    updates: Dict[str, object] = {}
+    if group.tiktok_id:
+        current = await _resolve_tiktok_handle(group.tiktok_id)
+        if current and current != group.tiktok_handle.lower():
+            updates["tiktok_handle"] = current
+            updates["past_handles"] = [h for h in group.all_handles() if h != current]
+    elif group.tiktok_handle:
+        found = await _lookup_tiktok_id(group.tiktok_handle)
+        if found:
+            updates["tiktok_id"] = found
+    if updates:
+        updates["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await asyncio.to_thread(supabase_rest.update, "groups", {"id": f"eq.{group.id}"}, updates)
+        group_directory.invalidate(group.id)
+    fresh = await asyncio.to_thread(group_directory.by_id, group.id) or group
+    state = manager.get_state()
+    if fresh.display_name != state.get("group_name") or fresh.tiktok_handle != state.get("like_target_group_handle"):
+        state = manager.set_group_identity(fresh.display_name, fresh.tiktok_handle)
+        changed = True
+    if changed or updates:
+        if "tiktok_handle" in updates:
+            logger.info("Group %s TikTok handle changed: %s -> %s", group.username, group.tiktok_handle, updates["tiktok_handle"])
+        await ws_manager.broadcast({"type": "state", "payload": manager.get_state()}, group.id)
+    return bool(changed or updates)
+
+
+async def _tiktok_sync_loop() -> None:
+    await asyncio.sleep(120)
+    while True:
+        try:
+            rows = await asyncio.to_thread(supabase_rest.select, "groups", {"select": "id", "disabled": "is.false"})
+            for row in rows:
+                group = await asyncio.to_thread(group_directory.by_id, str(row["id"]))
+                if group:
+                    try:
+                        await _sync_group_tiktok(group)
+                    except Exception as exc:
+                        logger.warning("TikTok sync failed for %s: %s", group.username, exc)
+        except Exception as exc:
+            logger.warning("TikTok sync loop error: %s", exc)
+        await asyncio.sleep(TIKTOK_SYNC_INTERVAL_SECONDS)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Standalone mode: skip OBS control
@@ -269,7 +385,10 @@ async def lifespan(app: FastAPI):
         finally:
             current_group.reset(token)
     access_logger.start()
+    sync_task = None if OFFLINE_MODE else asyncio.create_task(_tiktok_sync_loop())
     yield
+    if sync_task:
+        sync_task.cancel()
     await access_logger.stop()
     # Push any queued group writes to Supabase before the process exits.
     await asyncio.to_thread(group_registry.flush_all, 20.0)
@@ -422,7 +541,12 @@ obs = OBSController()
 
 def _make_group_state(group: Group) -> BattleStateManager:
     if OFFLINE_MODE:
-        return BattleStateManager(config.OVERLAY_SOURCES, LocalGroupStore(MEDIA_DIR), media_dir=MEDIA_DIR)
+        store = LocalGroupStore(MEDIA_DIR)
+        identity = store.load_kv("group", {}) or {}
+        return BattleStateManager(
+            config.OVERLAY_SOURCES, store, media_dir=MEDIA_DIR,
+            group_name=str(identity.get("display_name") or ""), group_handle=str(identity.get("tiktok_handle") or ""),
+        )
     return BattleStateManager(
         config.OVERLAY_SOURCES,
         SupabaseGroupStore(supabase_rest, group.id),
@@ -489,11 +613,17 @@ def _overlay_url(request: Request, group: Group) -> str:
 @app.get("/auth/me")
 async def auth_me(request: Request) -> JSONResponse:
     group = require_group()
+    if OFFLINE_MODE:
+        state = state_manager.get_state()
+        group = Group(id=group.id, username=group.username, display_name=state.get("group_name") or "",
+                      tiktok_handle=state.get("like_target_group_handle") or "", session_version=1,
+                      overlay_key="", disabled=False)
     return JSONResponse({
         "offline": OFFLINE_MODE,
         "username": group.username,
         "display_name": group.display_name,
         "tiktok_handle": group.tiktok_handle,
+        "tiktok_id": group.tiktok_id,
         "overlay_url": "" if OFFLINE_MODE else _overlay_url(request, group),
     })
 
@@ -591,6 +721,7 @@ class RegisterSongRequest(BaseModel):
     difficulty: Optional[str] = None
     camera_dance: Optional[bool] = None
     duo_dance: Optional[bool] = None
+    group_song: Optional[bool] = None
 
 
 class TagSongRequest(BaseModel):
@@ -614,6 +745,7 @@ class UpdateSongDancersRequest(BaseModel):
     duo_dance: Optional[bool] = None
     tags: Optional[List[dict]] = None
     battle_disabled: Optional[bool] = None
+    group_song: Optional[bool] = None
 
 
 class RenameSongRequest(BaseModel):
@@ -632,7 +764,7 @@ class RenameDancerRequest(BaseModel):
 
 
 class DancerRequest(BaseModel):
-    name: str
+    name: str = ""  # optional: defaults to the dancer's TikTok nickname
     handle: str
 
 
@@ -819,6 +951,7 @@ async def start_offline_bundle() -> JSONResponse:
                 "role_presets": state_manager.get_doc("role_presets", []),
                 "rpd_queries": state_manager.get_doc("rpd_queries", []),
                 "gift_notes": state_manager.get_doc("gift_notes", {}),
+                "group": {"display_name": group.display_name, "tiktok_handle": group.tiktok_handle},
             },
         }
         status.update(state="building", step="Starting", progress=0.0, error="")
@@ -1114,6 +1247,22 @@ async def _update_supabase_row(table: str, row_id: str, updates: dict, extra_fil
     return f"Supabase update failed (status={resp.status_code}): {payload}"
 
 
+def _handle_list(value) -> List[str]:
+    """One handle or a list of handles -> clean lowercase list for an in.(...) filter."""
+    items = value if isinstance(value, (list, tuple)) else [value]
+    out = []
+    for item in items:
+        handle = str(item or "").strip().lstrip("@").lower()
+        if re.fullmatch(r"[a-z0-9._]{2,64}", handle) and handle not in out:
+            out.append(handle)
+    return out
+
+
+def _group_handles(handle: str) -> List[str]:
+    """Handles whose history belongs to this group: the current one plus earlier ones."""
+    return [handle] if OFFLINE_MODE else require_group().all_handles()
+
+
 def _group_handle() -> str:
     """The logged-in group's TikTok handle (each group only ever sees its own TikTok data)."""
     return require_group().tiktok_handle
@@ -1311,15 +1460,15 @@ async def _fetch_gift_rows_for_window(
     offset = 0
     pages = 0
     out: list[dict] = []
-    handle = str(tiktok_username or "").strip().lstrip("@")
-    if not handle:
+    handles = _handle_list(tiktok_username)
+    if not handles:
         return out, None
     try:
         async with httpx.AsyncClient(base_url=SUPABASE_REST_URL, timeout=12.0) as client:
             while True:
                 query = [
                     ("select", "id,iso_ts,to_member_id_int,to_member_nickname,from_username,from_nickname,amount_value,diamond_count,repeat_count,combo_count,group_id,tiktok_username,gift_name"),
-                    ("tiktok_username", f"eq.{handle}"),
+                    ("tiktok_username", f"in.({','.join(handles)})"),
                     ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
                     ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),
                     ("order", "id.asc"),
@@ -1367,8 +1516,8 @@ async def _fetch_comment_rows_for_window(
     offset = 0
     pages = 0
     out: list[dict] = []
-    handle = str(tiktok_username or "").strip().lstrip("@")
-    if not handle:
+    handles = _handle_list(tiktok_username)
+    if not handles:
         return out, None
     username_filter = str(username or "").strip().lstrip("@")
     keyword_filter = str(keyword or "").strip()
@@ -1377,7 +1526,7 @@ async def _fetch_comment_rows_for_window(
             while True:
                 query = [
                     ("select", "id,iso_ts,username,nickname,comment_text,tiktok_username"),
-                    ("tiktok_username", f"eq.{handle}"),
+                    ("tiktok_username", f"in.({','.join(handles)})"),
                     ("iso_ts", f"gte.{start_utc.astimezone(timezone.utc).isoformat()}"),
                     ("iso_ts", f"lt.{end_utc.astimezone(timezone.utc).isoformat()}"),
                     ("order", "id.asc"),
@@ -1411,9 +1560,9 @@ async def _fetch_comment_rows_for_window(
     return out, None
 
 
-async def _fetch_latest_total_likes_today(tiktok_username: str) -> tuple[int, Optional[str]]:
-    handle = str(tiktok_username or "").strip().lstrip("@")
-    if not handle:
+async def _fetch_latest_total_likes_today(tiktok_username) -> tuple[int, Optional[str]]:
+    handles = _handle_list(tiktok_username)
+    if not handles:
         return 0, None
     headers = _supabase_headers()
     if not headers:
@@ -1427,7 +1576,7 @@ async def _fetch_latest_total_likes_today(tiktok_username: str) -> tuple[int, Op
     end_unix = int(end_day.timestamp())
     params = {
         "select": "total_like_count,unix_ts",
-        "tiktok_username": f"ilike.{handle}",
+        "tiktok_username": f"in.({','.join(handles)})",
         "total_like_count": "not.is.null",
         "and": f"(unix_ts.gte.{start_unix},unix_ts.lt.{end_unix})",
         "order": "unix_ts.desc",
@@ -1976,6 +2125,7 @@ async def register_song(body: RegisterSongRequest) -> JSONResponse:
         duo_dance=body.duo_dance,
         artist=body.artist,
         duration_sec=_AUDIO_DURATIONS.get(body.url),
+        group_song=body.group_song,
     )
     _broadcast_state(state)
     return JSONResponse(state)
@@ -2000,26 +2150,21 @@ async def tag_song(body: TagSongRequest) -> JSONResponse:
 
 @app.post("/dancers/register")
 async def register_dancer(body: DancerRequest) -> JSONResponse:
-    tiktok_id = await _lookup_tiktok_id(body.handle)
-    state = state_manager.add_dancer(body.name, body.handle, tiktok_id)
+    profile = await _lookup_tiktok_profile(body.handle)
+    name = (body.name or "").strip() or _clean_nickname((profile or {}).get("nickname", "")) or body.handle.strip().lstrip("@")
+    state = state_manager.add_dancer(
+        name, body.handle, (profile or {}).get("id"), (profile or {}).get("nickname") or None,
+    )
     _broadcast_state(state)
     return JSONResponse(state)
 
 @app.post("/dancers/refresh_ids")
 async def refresh_dancer_ids() -> JSONResponse:
-    dancers = state_manager.get_state().get("dancers", []) or []
-    updates = {}
-    for dancer in dancers:
-        handle = (dancer.get("handle") or "").strip()
-        if not handle:
-            continue
-        tiktok_id = await _lookup_tiktok_id(handle)
-        if tiktok_id:
-            updates[handle.lstrip("@").lower()] = tiktok_id
-        await asyncio.sleep(0.35)
-    state = state_manager.update_dancer_ids(updates)
-    _broadcast_state(state)
-    return JSONResponse(state)
+    """Update handles from stored TikTok ids (and look up missing ids) for this group now."""
+    if OFFLINE_MODE:
+        return JSONResponse(state_manager.get_state())
+    await _sync_group_tiktok(require_group())
+    return JSONResponse(state_manager.get_state())
 
 @app.post("/dancers/rename")
 async def rename_dancer(body: RenameDancerRequest) -> JSONResponse:
@@ -2063,6 +2208,7 @@ async def update_song_dancers(body: UpdateSongDancersRequest) -> JSONResponse:
         body.tags,
         body.battle_disabled,
         exclusive_tournament_mvp_for=body.exclusive_tournament_mvp_for,
+        group_song=body.group_song,
     )
     _broadcast_state(state)
     return JSONResponse(state)
@@ -2154,7 +2300,9 @@ async def camera_likes_summary() -> JSONResponse:
     warning: Optional[str] = None
 
     if tiktok_username:
-        total_likes, err = await _fetch_latest_total_likes_today(tiktok_username)
+        total_likes, err = await _fetch_latest_total_likes_today(
+            [tiktok_username] if OFFLINE_MODE else require_group().all_handles()
+        )
         if err:
             warning = err
             source = "error"
@@ -2209,7 +2357,7 @@ async def top_gifters_summary(group_handle: str = "", date_mt: Optional[str] = N
     start_local = datetime.combine(day, datetime.min.time(), tzinfo=mt_tz)
     end_local = start_local + timedelta(days=1)
     rows, err = await _fetch_gift_rows_for_window(
-        tiktok_username=handle,
+        tiktok_username=_group_handles(handle),
         start_utc=start_local.astimezone(timezone.utc),
         end_utc=end_local.astimezone(timezone.utc),
     )
@@ -2426,7 +2574,7 @@ async def gifts_list(group_handle: str = "", date_mt: Optional[str] = None) -> J
     start_local = datetime.combine(day, datetime.min.time(), tzinfo=mt_tz)
     end_local = start_local + timedelta(days=1)
     rows, err = await _fetch_gift_rows_for_window(
-        tiktok_username=handle,
+        tiktok_username=_group_handles(handle),
         start_utc=start_local.astimezone(timezone.utc),
         end_utc=end_local.astimezone(timezone.utc),
     )
@@ -2542,7 +2690,7 @@ async def comments_list(
         return JSONResponse({"ok": False, "error": "end must be after start."}, status_code=400)
 
     rows, err = await _fetch_comment_rows_for_window(
-        tiktok_username=handle,
+        tiktok_username=_group_handles(handle),
         start_utc=start_local.astimezone(timezone.utc),
         end_utc=end_local.astimezone(timezone.utc),
         username=username,
@@ -2576,6 +2724,32 @@ async def comments_list(
 @app.get("/gifts")
 async def gifts_page() -> FileResponse:
     return _static_file("gifts.html")
+
+
+@app.get("/analytics/plays-since-last")
+async def plays_since_last() -> JSONResponse:
+    """{song name: plays of this group since that song was last played} for song suggestions."""
+    if OFFLINE_MODE:
+        return JSONResponse({"counts": {}})
+    lib = state_manager.get_state().get("songs", {}).get("library", {}) or {}
+    # The background loop plays constantly; it shouldn't push every other song "back".
+    exclude = sorted({
+        str(v.get("name") or "") for v in lib.values()
+        if any(str(r).strip().lower() == "background" for r in (v.get("roles") or []))
+    } - {""})
+    group_id = require_group().id
+    try:
+        resp = await asyncio.to_thread(
+            lambda: supabase_rest._client().post(
+                f"{supabase_rest.base_url}/rest/v1/rpc/plays_since_last",
+                json={"gid": group_id, "exclude": exclude},
+            )
+        )
+        rows = resp.json() if resp.is_success else []
+    except Exception as exc:
+        logger.warning("plays_since_last failed: %s", exc)
+        rows = []
+    return JSONResponse({"counts": {r["song_name"]: int(r["plays_after_last"] or 0) for r in rows if r.get("song_name")}})
 
 
 @app.get("/analytics/plays")
