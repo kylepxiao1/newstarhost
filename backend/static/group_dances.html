@@ -486,9 +486,11 @@
             label += ` (Front: ${fronts})`;
           }
           opt.textContent = label;
-          const dancerMatch = tabFilter
-            ? (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
-            : true;
+          const dancerMatch = currentTab === "group"
+            ? !!lib[key].group_song || (lib[key].dancers || []).some(d => (d || "").toLowerCase() === tabFilter)
+            : tabFilter
+              ? (lib[key].dancers || []).some(d => (d || "").toLowerCase().includes(tabFilter))
+              : true;
           const matches = (
             !filter ||
             label.toLowerCase().includes(filter) ||

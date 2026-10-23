@@ -23,6 +23,13 @@
     li { padding: 8px; border-bottom: 1px solid #1f2937; display: flex; justify-content: space-between; align-items: center; }
     .badge { padding: 4px 8px; border-radius: 6px; background: #1e293b; font-size: 12px; }
     .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .dancer-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+    .dancer-bar label { display:flex; gap:6px; align-items:center; flex:1 1 220px; min-width:0; }
+    .dancer-bar label span { white-space:nowrap; font-weight:600; }
+    .dancer-bar select { flex:1; min-width:0; }
+    .dancer-bar button { flex:0 0 auto; }
+    body.battle-panel-hidden #battleSection { display:none; }
+    body.battle-panel-hidden #musicSection { grid-column: 1 / -1; }
     .status { display: inline-flex; align-items: center; gap: 6px; font-weight: 700; text-transform: uppercase; }
     .dot { width: 10px; height: 10px; border-radius: 50%; background: #22c55e; }
     table { width: 100%; border-collapse: collapse; }
@@ -74,7 +81,21 @@
     </div>
   </header>
   <main>
-    <section>
+    <section style="grid-column: 1 / -1;">
+      <div class="dancer-bar">
+        <label>
+          <span>Dancer 1:</span>
+          <select id="slotOneSelect" onchange="saveSlotSelects()"></select>
+        </label>
+        <label>
+          <span>Dancer 2:</span>
+          <select id="slotTwoSelect" onchange="saveSlotSelects()"></select>
+        </label>
+        <button class="secondary" id="battlePanelToggle" onclick="toggleBattlePanel()">Hide battle panel</button>
+      </div>
+    </section>
+
+    <section id="battleSection">
       <h2>Battle</h2>
       <div class="row" id="battleControlRow">
         <button class="secondary" id="battleListenerBtn" onclick="toggleBattleListener()">Start Battle Listener</button>
@@ -84,16 +105,6 @@
       <div class="row" id="battleSimRow">
         <button class="secondary" onclick="startRoutine(120000)">Simulate 2m Battle</button>
         <button class="secondary" onclick="startRoutine(60000)">Simulate 1m Battle</button>
-      </div>
-      <div class="grid-2" style="margin-bottom:10px; align-items:center;">
-        <label style="display:flex;gap:6px;align-items:center;">
-          <span style="white-space:nowrap;">Dancer 1:</span>
-          <select id="slotOneSelect" style="flex:1;" onchange="saveSlotSelects()"></select>
-        </label>
-        <label style="display:flex;gap:6px;align-items:center;">
-          <span style="white-space:nowrap;">Dancer 2:</span>
-          <select id="slotTwoSelect" style="flex:1;" onchange="saveSlotSelects()"></select>
-        </label>
       </div>
       <div class="row">
         <span>Timer: <strong id="timerDisplay">-</strong></span>
@@ -127,7 +138,7 @@
       </div>
     </section>
 
-    <section>
+    <section id="musicSection">
       <h2>Music Control</h2>
       <div class="row">
         <button class="secondary" id="tabGroup" onclick="selectTab('group')">Group</button>
@@ -1329,6 +1340,20 @@
     }
     function toggleOverlay(name, show) {}
 
+    // Hide/show the Battle panel (listener, simulate, timer, scores); remembered per browser.
+    const BATTLE_PANEL_KEY = "battle_panel_hidden";
+    function applyBattlePanel(hidden) {
+      document.body.classList.toggle("battle-panel-hidden", hidden);
+      const btn = document.getElementById("battlePanelToggle");
+      if (btn) btn.textContent = hidden ? "Show battle panel" : "Hide battle panel";
+    }
+    function toggleBattlePanel() {
+      const hidden = !document.body.classList.contains("battle-panel-hidden");
+      try { localStorage.setItem(BATTLE_PANEL_KEY, hidden ? "1" : "0"); } catch (e) {}
+      applyBattlePanel(hidden);
+    }
+    try { applyBattlePanel(localStorage.getItem(BATTLE_PANEL_KEY) === "1"); } catch (e) {}
+
     function selectTab(tab) {
       // toggle off if clicking the active tab
       if (currentTab === tab) {
@@ -1385,8 +1410,8 @@
         if (!currentTab) {
           list = missing("Select Group, Dancer 1, Dancer 2, or Intersect to view songs.");
         } else if (currentTab === "group") {
-          const groupName = (state.group_name || "").trim();
-          list = groupName ? groupSongs() : missing("Set Current group to view songs.");
+          list = groupSongs();
+          if (!list.length) list = missing("No group songs yet. Tick \"group dance\" on songs in the Song Editor.");
         } else if (currentTab === "slot_one") {
           const name = (state.slot_one || "").trim();
           list = name ? songsForDancer(name) : missing("Select Dancer 1 to view songs.");
@@ -2109,7 +2134,8 @@
       const lib = state.songs?.library || {};
       return Object.values(lib).filter(s => {
         const dancers = (s.dancers||[]).map(x=>x.toLowerCase());
-        if (!group || !dancers.includes(group)) return false;
+        // Group songs are flagged per song (Song Editor > "group dance").
+        if (!s.group_song && !(group && dancers.includes(group))) return false;
         if (!includeCameraDances && !!s.camera_dance) return false;
         const hasClosingRole = (s.roles || []).some(r => String(r || "").toLowerCase() === "closing");
         if (!includeClosingSongs && hasClosingRole) return false;
