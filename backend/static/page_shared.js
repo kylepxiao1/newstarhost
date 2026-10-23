@@ -149,15 +149,53 @@
 
   // Download the group's whole library in the background (once per app window) so every
   // song plays from local storage even if the connection drops. Removed songs are evicted.
+  // It must never compete with page loads or playback: it starts after the app has finished
+  // loading and the browser is idle, fetches one file at a time at low priority, and pauses
+  // while a song is streaming from the network or the device is offline.
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  function whenAppLoaded(host) {
+    return new Promise(function (resolve) {
+      var go = function () {
+        var idle = host.requestIdleCallback || window.requestIdleCallback;
+        setTimeout(function () { idle ? idle(function () { resolve(); }, { timeout: 15000 }) : resolve(); }, 8000);
+      };
+      try {
+        if (host.document.readyState === "complete") go();
+        else host.addEventListener("load", go, { once: true });
+      } catch (e) { go(); }
+    });
+  }
+
+  function playbackIsStreaming() {
+    try {
+      var player = getGlobalAudioPlayer();
+      if (!player || player.paused) return false;
+      var src = player.currentSrc || player.src || "";
+      return /^https?:/i.test(src);  // blob: = playing from the local cache
+    } catch (e) {
+      return false;
+    }
+  }
+
+  async function prefetchOne(absUrl) {
+    var cache = await caches.open(AUDIO_CACHE_NAME);
+    var hit = await cache.match(absUrl);
+    if (hit && hit.ok) return;
+    var resp = await fetch(absUrl, { mode: "cors", credentials: "omit", priority: "low" });
+    if (resp && resp.ok && resp.status === 200) await cache.put(absUrl, resp);
+  }
+
   function prefetchSongLibrary() {
     var host;
     try { host = window.top || window; host.document; } catch (e) { host = window; }
     if (host.__nshSongPrefetch || typeof caches === "undefined") return;
     host.__nshSongPrefetch = true;
-    setTimeout(async function () {
+    whenAppLoaded(host).then(async function () {
       try {
+        if (navigator.connection && navigator.connection.saveData) return;
         if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(function () {});
-        var resp = await fetch("/songs", { credentials: "same-origin" });
+        var resp = await fetch("/songs", { credentials: "same-origin", priority: "low" });
         if (!resp.ok) { host.__nshSongPrefetch = false; return; }
         var songs = await resp.json();
         var wanted = Object.create(null);
@@ -174,20 +212,18 @@
           else await cache.delete(cachedKeys[i]);
         }
         var queue = Object.keys(wanted).filter(function (u) { return !have[u]; });
-        async function worker() {
-          while (queue.length) {
-            if (navigator.onLine === false) {
-              await new Promise(function (r) { setTimeout(r, 30000); });
-              continue;
-            }
-            await cacheAudioUrl(queue.shift());
+        while (queue.length) {
+          if (navigator.onLine === false || playbackIsStreaming() || _audioCacheInFlight[queue[0]]) {
+            await sleep(5000);
+            continue;
           }
+          try { await prefetchOne(queue.shift()); } catch (e) {}
+          await sleep(250);
         }
-        await Promise.all([worker(), worker()]);
       } catch (e) {
         host.__nshSongPrefetch = false;
       }
-    }, 5000);
+    });
   }
   prefetchSongLibrary();
 

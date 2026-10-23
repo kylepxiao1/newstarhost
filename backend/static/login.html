@@ -16,6 +16,11 @@
     label { display:block; font-size:14px; font-weight:600; margin:14px 0 6px; }
     input { width:100%; padding:10px; border-radius:6px; border:1px solid #334155; background:#0b1222; color:var(--text); font-size:16px; }
     input:focus { outline:2px solid var(--accent); outline-offset:1px; }
+    .pw-wrap { position:relative; }
+    .pw-wrap input { padding-right:64px; }
+    .pw-toggle { position:absolute; right:6px; top:50%; transform:translateY(-50%); width:auto; margin:0;
+                 padding:5px 9px; font-size:13px; background:transparent; border:1px solid #334155; color:var(--muted); }
+    .pw-toggle:hover { color:var(--text); }
     button { width:100%; margin-top:20px; padding:11px; border:none; border-radius:6px; background:var(--accent); color:#fff;
              font-size:16px; font-weight:600; cursor:pointer; }
     button:disabled { opacity:0.6; cursor:default; }
@@ -29,11 +34,24 @@
     <label for="username">Username</label>
     <input id="username" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
     <label for="password">Password</label>
-    <input id="password" name="password" type="password" autocomplete="current-password">
+    <div class="pw-wrap">
+      <input id="password" name="password" type="password" autocomplete="current-password">
+      <button type="button" id="pwToggle" class="pw-toggle" aria-label="Show password" aria-pressed="false">Show</button>
+    </div>
     <button id="submitBtn" type="submit">Log in</button>
     <div id="error" class="error" role="alert"></div>
   </form>
   <script>
+    document.getElementById("pwToggle").addEventListener("click", () => {
+      const input = document.getElementById("password");
+      const toggle = document.getElementById("pwToggle");
+      const show = input.type === "password";
+      input.type = show ? "text" : "password";
+      toggle.textContent = show ? "Hide" : "Show";
+      toggle.setAttribute("aria-label", show ? "Hide password" : "Show password");
+      toggle.setAttribute("aria-pressed", String(show));
+      input.focus();
+    });
     document.getElementById("loginForm").addEventListener("submit", async (evt) => {
       evt.preventDefault();
       const btn = document.getElementById("submitBtn");

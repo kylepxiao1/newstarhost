@@ -59,12 +59,12 @@
   <section>
     <div class="row" style="align-items:center;gap:10px;">
       <h2 style="margin:0;">Registered Dancers</h2>
-      <button id="refreshTiktokBtn" onclick="refreshTiktok()" title="Updates handles from each dancer's TikTok ID and looks up missing IDs">Refresh TikTok info</button>
+      <button id="refreshTiktokBtn" onclick="refreshTiktok()" title="Updates each dancer's TikTok handle and nickname, even if they changed their handle">Refresh TikTok info</button>
       <span id="refreshStatus" style="opacity:0.8;"></span>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Name</th><th>Handle</th><th>TikTok Nickname</th><th>TikTok ID</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Tournament MVP Song</th><th>Actions</th></tr></thead>
+        <thead><tr><th>Name</th><th>Handle</th><th>TikTok Nickname</th><th>Assigned Songs</th><th>Knows Songs</th><th>Front Dancer</th><th>MVP Song</th><th>Tournament MVP Song</th><th>Actions</th></tr></thead>
         <tbody id="dancerTable"></tbody>
       </table>
     </div>
@@ -123,12 +123,39 @@
         btnDel.onclick = () => deleteDancer(name);
         actions.appendChild(selKnow); actions.appendChild(btnAddKnow); actions.appendChild(btnRemKnow); actions.appendChild(btnDel);
 
-        const tiktokId = d.tiktok_id || d.tiktokId || "";
-        const idCell = tiktokId ? tiktokId : '<span style="color:#f87171;" title="Without an ID, a handle change breaks this dancer">missing</span>';
-        tr.innerHTML = `<td>${name}</td><td>${d.handle||""}</td><td>${d.tiktok_nickname||""}</td><td>${idCell}</td><td>${knows.join(", ")}</td><td>${knowsOnly.join(", ")}</td><td>${fronts.join(", ")}</td><td>${mvps.join(", ")}</td><td>${tournamentMvps.join(", ")}</td>`;
+        tr.innerHTML = `<td></td><td>${d.handle||""}</td><td>${d.tiktok_nickname||""}</td><td>${knows.join(", ")}</td><td>${knowsOnly.join(", ")}</td><td>${fronts.join(", ")}</td><td>${mvps.join(", ")}</td><td>${tournamentMvps.join(", ")}</td>`;
         tr.appendChild(actions);
+        tr.firstElementChild.appendChild(nameEditor(name));
         tbody.appendChild(tr);
       });
+    }
+
+    // Click a name to rename the dancer everywhere (songs, battle, enabled dancers, RPD queries).
+    function nameEditor(name) {
+      const input = document.createElement("input");
+      input.value = name;
+      input.title = "Click to rename";
+      input.style.cssText = "background:transparent;border:1px solid transparent;color:inherit;font:inherit;padding:4px;width:100%;min-width:90px;";
+      input.onfocus = () => { input.style.borderColor = "#334155"; };
+      const commit = async () => {
+        input.style.borderColor = "transparent";
+        const next = input.value.trim();
+        if (!next || next === name) { input.value = name; return; }
+        const res = await api("/dancers/rename", {method:"POST", body:{old_name: name, new_name: next}});
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          alert(data.error || "Couldn't rename.");
+          input.value = name;
+          return;
+        }
+        load();
+      };
+      input.onblur = commit;
+      input.onkeydown = (evt) => {
+        if (evt.key === "Enter") input.blur();
+        if (evt.key === "Escape") { input.value = name; input.blur(); }
+      };
+      return input;
     }
 
     function updateDancerList(dancerName, songName, add=true) {
@@ -179,8 +206,7 @@
         const el = document.getElementById("groupInfo");
         if (!el || !me) return;
         const handle = me.tiktok_handle ? `@${me.tiktok_handle}` : "no TikTok account set";
-        const id = me.tiktok_id ? ` · TikTok ID ${me.tiktok_id}` : "";
-        el.textContent = `${me.display_name || me.username} · ${handle}${id}`;
+        el.textContent = `${me.display_name || me.username} · ${handle}`;
       }).catch(() => {});
     }
     loadGroupInfo();

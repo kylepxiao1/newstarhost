@@ -57,11 +57,17 @@ class SupabaseRest:
 
     # --- PostgREST -------------------------------------------------------------------
     def select(self, table: str, params: Optional[dict] = None, page_size: int = 1000) -> list[dict]:
-        """All rows matching params (paged)."""
+        """All rows matching params (paged), or at most params["limit"] rows if given."""
+        params = dict(params or {})
+        cap = int(params.pop("limit")) if "limit" in params else None
+        if cap is not None:
+            page_size = min(page_size, cap)
         out: list[dict] = []
         offset = 0
         while True:
-            q = dict(params or {})
+            if cap is not None and len(out) >= cap:
+                return out[:cap]
+            q = dict(params)
             q.setdefault("select", "*")
             q["limit"] = page_size
             q["offset"] = offset

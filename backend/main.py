@@ -2174,6 +2174,13 @@ async def rename_dancer(body: RenameDancerRequest) -> JSONResponse:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=404)
     except ValueError as exc:
         return JSONResponse({"ok": False, "error": str(exc)}, status_code=400)
+    # Saved RPD queries use dancer names in their expressions, e.g. "(Niko | Teru) & Zero".
+    old = re.escape(body.old_name.strip())
+    pattern = re.compile(rf"(?<![\w]){old}(?![\w])", re.IGNORECASE)
+    queries = _load_rpd_queries()
+    renamed = [{**q, "expression": pattern.sub(body.new_name.strip(), q["expression"])} for q in queries]
+    if renamed != queries:
+        _save_rpd_queries(renamed)
     _broadcast_state(state)
     return JSONResponse(state)
 
