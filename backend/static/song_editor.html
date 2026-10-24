@@ -398,21 +398,28 @@
     if (!id) return;
     const song = songs[id] || {};
     if (!song.url) return;
-    const audio = getAudioPlayer();
-    let playUrl = song.url;
-    if (window.PageShared?.resolveAudioUrlFromCache) {
-      try {
-        playUrl = await window.PageShared.resolveAudioUrlFromCache(song.url);
-      } catch (e) {
-        playUrl = song.url;
-      }
-      window.PageShared.primeAudioCache?.(song.url);
-    }
-    audio.src = playUrl;
-    try { audio.dataset.originalSrc = song.url; } catch (e) {}
-    audio.volume = volumeToScalar(song.volume);
-    audio.loop = false;
-    audio.play().catch(()=>{});
+    // Same sequence as the dance pages: bell -> song -> applause (no background after a preview).
+    const roleUrl = (role) => Object.values(songs).find(s => (s.roles || []).includes(role))?.url || "";
+    const songVolume = (url) => {
+      const match = Object.values(songs).find(s => s.url === url);
+      return window.PageShared.normalizeVolume(match ? match.volume : 100);
+    };
+    const bellUrl = roleUrl("bell");
+    const applauseUrl = roleUrl("applause");
+    const isSfx = song.url === bellUrl || song.url === applauseUrl;
+    const steps = (isSfx ? [song.url] : [bellUrl, song.url, applauseUrl]).filter(Boolean);
+    steps.forEach(url => window.PageShared.primeAudioCache?.(url));
+    const playStep = (i) => {
+      if (i >= steps.length) return;
+      window.PageShared.startAudio({
+        player: getAudioPlayer(),
+        url: steps[i],
+        getRoleUrl: roleUrl,
+        getSongVolume: songVolume,
+        opts: { loop: false, fade: true, fadeOut: false, skipFadeOut: true, onEnd: () => playStep(i + 1) },
+      });
+    };
+    playStep(0);
   }
 
   async function downloadSelected() {
@@ -428,13 +435,6 @@
     a.href = url;
     a.download = (song.name || id) + ".mp3";
     a.click();
-  }
-
-  function volumeToScalar(val) {
-    let v = parseFloat(val);
-    if (!Number.isFinite(v)) return 1;
-    if (v <= 1) return Math.max(0, Math.min(1, v));
-    return Math.max(0, Math.min(1, v / 200));
   }
 
   function getVolumeValue() {
